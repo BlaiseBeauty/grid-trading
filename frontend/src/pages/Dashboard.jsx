@@ -9,8 +9,19 @@ import EventCalendar from '../components/EventCalendar';
 import { formatMoney, formatPct, formatPrice, timeAgo } from '../lib/format';
 
 export default function Dashboard() {
-  const { fetchPortfolio, fetchAgents, fetchSignals, fetchTrades, fetchSystem, fetchPrices,
-    triggerCycle, refreshData, signals, regime, openTrades, lastCycle, system } = useDataStore();
+  const fetchPortfolio = useDataStore(s => s.fetchPortfolio);
+  const fetchAgents = useDataStore(s => s.fetchAgents);
+  const fetchSignals = useDataStore(s => s.fetchSignals);
+  const fetchTrades = useDataStore(s => s.fetchTrades);
+  const fetchSystem = useDataStore(s => s.fetchSystem);
+  const fetchPrices = useDataStore(s => s.fetchPrices);
+  const triggerCycle = useDataStore(s => s.triggerCycle);
+  const refreshData = useDataStore(s => s.refreshData);
+  const signals = useDataStore(s => s.signals);
+  const regime = useDataStore(s => s.regime);
+  const openTrades = useDataStore(s => s.openTrades);
+  const lastCycle = useDataStore(s => s.lastCycle);
+  const system = useDataStore(s => s.system);
   const prices = useDataStore(s => s.prices);
   const [selectedTrade, setSelectedTrade] = useState(null);
 
@@ -21,6 +32,10 @@ export default function Dashboard() {
     fetchTrades();
     fetchSystem();
     fetchPrices();
+
+    // Poll prices every 30s for live P&L updates
+    const priceInterval = setInterval(fetchPrices, 30_000);
+    return () => clearInterval(priceInterval);
   }, []);
 
   return (

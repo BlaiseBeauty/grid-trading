@@ -67,7 +67,9 @@ export function useWebSocket() {
               s.fetchStandingOrders();
               break;
           }
-        } catch {}
+        } catch (err) {
+          console.error('[WS] Message handling error:', err);
+        }
       };
 
       ws.onclose = () => {

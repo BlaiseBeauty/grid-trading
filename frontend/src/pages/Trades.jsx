@@ -5,7 +5,11 @@ import { formatMoney, formatPct, formatPrice, timeAgo } from '../lib/format';
 import TradeDetail from '../components/TradeDetail';
 
 export default function Trades() {
-  const { fetchTrades, fetchPortfolio, trades, openTrades, tradeStats } = useDataStore();
+  const fetchTrades = useDataStore(s => s.fetchTrades);
+  const fetchPortfolio = useDataStore(s => s.fetchPortfolio);
+  const trades = useDataStore(s => s.trades);
+  const openTrades = useDataStore(s => s.openTrades);
+  const tradeStats = useDataStore(s => s.tradeStats);
   const prices = useDataStore(s => s.prices);
   const [filter, setFilter] = useState('all');
   const [selectedTrade, setSelectedTrade] = useState(null);

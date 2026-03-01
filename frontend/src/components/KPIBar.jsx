@@ -37,12 +37,23 @@ function KPICard({ label, children }) {
 export default function KPIBar() {
   const portfolioValue = useDataStore(s => s.portfolioValue);
   const realisedPnl = useDataStore(s => s.realisedPnl);
-  const unrealisedPnl = useDataStore(s => s.unrealisedPnl);
   const stats = useDataStore(s => s.tradeStats);
   const openTrades = useDataStore(s => s.openTrades);
+  const prices = useDataStore(s => s.prices);
   const costs = useDataStore(s => s.costs);
 
-  const totalPnl = realisedPnl + unrealisedPnl;
+  // Compute live unrealised P&L from current prices
+  const liveUnrealisedPnl = (openTrades || []).reduce((sum, t) => {
+    const entry = parseFloat(t.actual_fill_price || t.entry_price);
+    const qty = parseFloat(t.quantity);
+    const dashSymbol = t.symbol.replace('/', '-');
+    const curPrice = prices[dashSymbol]?.price;
+    if (!curPrice) return sum;
+    const pnl = t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty;
+    return sum + pnl;
+  }, 0);
+
+  const totalPnl = realisedPnl + liveUnrealisedPnl;
   const winRate = parseFloat(stats?.win_rate || 0);
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
 

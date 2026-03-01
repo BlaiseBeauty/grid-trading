@@ -73,8 +73,6 @@ export const useDataStore = create((set, get) => ({
         api('/portfolio'),
         api('/trades/stats'),
       ]);
-      console.log('portfolio response:', JSON.stringify(portfolioData));
-      console.log('trades/stats response:', JSON.stringify(stats));
       const { holdings = [], total_value, realised_pnl, unrealised_pnl, starting_capital } = portfolioData;
       set({
         portfolio: holdings,
@@ -156,12 +154,24 @@ export const useDataStore = create((set, get) => ({
         api('/costs/summary'),
         api('/system/last-cycle'),
       ]);
-      console.log('costs API response:', JSON.stringify(costs));
       set({ system, costs, lastCycle });
     } catch (err) { console.error('System fetch:', err); }
   },
 
   fetchPrices: async () => {
+    try {
+      // Fetch live exchange prices (Binance fallback, no Python engine needed)
+      const res = await fetch('/api/prices/live');
+      if (res.ok) {
+        const prices = await res.json();
+        for (const [symbol, data] of Object.entries(prices)) {
+          if (data.price) get().updatePrice(symbol, data.price, data.change24h ?? null);
+        }
+        return;
+      }
+    } catch {}
+
+    // Fallback: read from DB candles
     const symbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
     for (const symbol of symbols) {
       try {
@@ -169,7 +179,6 @@ export const useDataStore = create((set, get) => ({
         if (!candles?.length) continue;
         const latest = candles[candles.length - 1];
         const close = parseFloat(latest.close);
-        // 24h change: compare latest close to close ~24 candles ago (1h candles)
         const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
         const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
         get().updatePrice(symbol, close, change24h);

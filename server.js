@@ -62,6 +62,31 @@ async function registerRoutes() {
   // Public healthcheck (no auth — used by Railway)
   fastify.get('/api/system/health', async () => ({ status: 'ok', timestamp: Date.now() }));
 
+  // Live prices from exchange (no auth — used for real-time display)
+  const { queryOne: queryOnePriceLive } = require('./db/connection');
+  fastify.get('/api/prices/live', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const results = await Promise.all(
+      CANDLE_SYMBOLS.map(async (symbol) => {
+        const result = await fetchLivePrice(symbol);
+        if (!result) return null;
+        // Get 24h change from DB
+        const old24h = await queryOnePriceLive(
+          `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
+          [symbol]
+        );
+        const oldPrice = old24h ? parseFloat(old24h.close) : null;
+        const change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
+        return { symbol: result.dashSym, price: result.price, change24h };
+      })
+    );
+    const prices = {};
+    for (const r of results) {
+      if (r) prices[r.symbol] = { price: r.price, change24h: r.change24h };
+    }
+    return prices;
+  });
+
   // Protected API routes
   fastify.register(require('./api/portfolio'), { prefix: '/api' });
   fastify.register(require('./api/trades'), { prefix: '/api' });
@@ -97,6 +122,33 @@ async function registerRoutes() {
 // ---------- Market Data ----------
 const PYTHON_ENGINE_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
 const CANDLE_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+const BINANCE_MAP = { 'BTC/USDT': 'BTCUSDT', 'ETH/USDT': 'ETHUSDT', 'SOL/USDT': 'SOLUSDT' };
+
+async function fetchLivePrice(symbol) {
+  const dashSym = symbol.replace('/', '-');
+
+  // Try Python engine first
+  try {
+    const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.price) return { dashSym, price: data.price };
+    }
+  } catch {}
+
+  // Fallback: Binance public API
+  try {
+    const binanceSym = BINANCE_MAP[symbol];
+    if (!binanceSym) return null;
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binanceSym}`, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.price) return { dashSym, price: parseFloat(data.price) };
+    }
+  } catch {}
+
+  return null;
+}
 
 async function refreshCandles({ backfill = false } = {}) {
   for (const symbol of CANDLE_SYMBOLS) {
@@ -180,27 +232,27 @@ function setupCron() {
     catch (err) { console.error('[CRON] Candle refresh failed:', err.message); }
   });
 
-  // Broadcast live prices every 60 seconds (from exchange, not DB)
+  // Broadcast live prices every 30 seconds
   const { queryOne: queryOnePrice } = require('./db/connection');
+
   setInterval(async () => {
     for (const symbol of CANDLE_SYMBOLS) {
       try {
-        const dashSym = symbol.replace('/', '-');
-        const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`);
-        if (!res.ok) continue;
-        const data = await res.json();
-        const price = data.price;
+        const result = await fetchLivePrice(symbol);
+        if (!result) continue;
 
         const old24h = await queryOnePrice(
           `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
           [symbol]
         );
         const oldPrice = old24h ? parseFloat(old24h.close) : null;
-        const change24h = oldPrice && oldPrice > 0 ? ((price - oldPrice) / oldPrice) * 100 : null;
-        broadcast('price_update', { symbol: dashSym, price, change24h });
-      } catch {}
+        const change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
+        broadcast('price_update', { symbol: result.dashSym, price: result.price, change24h });
+      } catch (err) {
+        console.error(`[PRICE] ${symbol} broadcast failed:`, err.message);
+      }
     }
-  }, 60_000);
+  }, 30_000);
 }
 
 // ---------- Boot ----------
