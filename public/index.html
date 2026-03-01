@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GRID — Autonomous Trading Intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@800&family=Instrument+Sans:wght@400;500;600&family=Outfit:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --void: #050608;
+      --abyss: #090b10;
+      --surface: #0d0f15;
+      --elevated: #12141c;
+      --raised: #171a24;
+      --shelf: #1c1f2c;
+      --cyan: #00e5ff;
+      --profit: #00ff88;
+      --loss: #ff2d55;
+      --warn: #ffb800;
+      --ai: #a78bfa;
+      --t1: #f4f5f9;
+      --t2: #b8bdd0;
+      --t3: #6e7590;
+      --t4: #3d4260;
+      --t5: #252940;
+      --border-0: rgba(255,255,255,0.03);
+      --border-1: rgba(255,255,255,0.06);
+      --border-2: rgba(255,255,255,0.10);
+      --border-3: rgba(255,255,255,0.16);
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 12px;
+      --space-lg: 16px;
+      --space-xl: 24px;
+      --space-2xl: 32px;
+      --space-3xl: 48px;
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --panel-padding: 16px;
+      --panel-gap: 12px;
+      --transition-fast: 100ms ease;
+      --transition-normal: 200ms ease;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Outfit', sans-serif;
+      background: var(--void);
+      color: var(--t1);
+      min-height: 100vh;
+    }
+
+    .number, [data-number] {
+      font-family: 'IBM Plex Mono', monospace;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ---------- Login ---------- */
+    #login-view {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: var(--void);
+    }
+
+    .login-card {
+      background: var(--surface);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-lg);
+      padding: var(--space-3xl) var(--space-2xl);
+      width: 360px;
+      text-align: center;
+    }
+
+    .login-card h1 {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 28px;
+      letter-spacing: 8px;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: var(--space-xs);
+    }
+
+    .login-card p {
+      font-size: 12px;
+      color: var(--t3);
+      margin-bottom: var(--space-2xl);
+    }
+
+    .login-card input {
+      width: 100%;
+      padding: var(--space-md) var(--space-lg);
+      background: var(--elevated);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-md);
+      color: var(--t1);
+      font-family: 'Outfit', sans-serif;
+      font-size: 14px;
+      margin-bottom: var(--space-md);
+      outline: none;
+      transition: border-color var(--transition-fast);
+    }
+
+    .login-card input:focus {
+      border-color: var(--cyan);
+    }
+
+    .login-card button {
+      width: 100%;
+      padding: var(--space-md);
+      background: var(--cyan);
+      color: var(--void);
+      border: none;
+      border-radius: var(--radius-md);
+      font-family: 'Instrument Sans', sans-serif;
+      font-weight: 600;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: opacity var(--transition-fast);
+    }
+
+    .login-card button:hover { opacity: 0.85; }
+
+    .login-error {
+      color: var(--loss);
+      font-size: 12px;
+      margin-top: var(--space-sm);
+      min-height: 18px;
+    }
+
+    /* ---------- App Shell ---------- */
+    #app-view { display: none; min-height: 100vh; }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: var(--space-md) var(--space-xl);
+      background: var(--abyss);
+      border-bottom: 1px solid var(--border-1);
+    }
+
+    .topbar-brand {
+      font-family: 'Syne', sans-serif;
+      font-weight: 800;
+      font-size: 18px;
+      letter-spacing: 6px;
+      text-transform: uppercase;
+      color: var(--cyan);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+    }
+
+    .badge {
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+      font-size: 9px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 2px 8px;
+      border-radius: var(--radius-sm);
+    }
+
+    .badge-warn { color: var(--warn); background: rgba(255,184,0,0.10); }
+    .badge-neutral { color: var(--t3); background: rgba(255,255,255,0.05); }
+
+    .btn-logout {
+      background: none;
+      border: 1px solid var(--border-2);
+      color: var(--t3);
+      font-family: 'Instrument Sans', sans-serif;
+      font-size: 11px;
+      padding: 4px 12px;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: color var(--transition-fast);
+    }
+
+    .btn-logout:hover { color: var(--t1); border-color: var(--border-3); }
+
+    /* ---------- Nav ---------- */
+    .nav {
+      display: flex;
+      gap: 0;
+      padding: 0 var(--space-xl);
+      background: var(--abyss);
+      border-bottom: 1px solid var(--border-0);
+    }
+
+    .nav-item {
+      font-family: 'Instrument Sans', sans-serif;
+      font-weight: 500;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--t3);
+      padding: var(--space-md) var(--space-lg);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color var(--transition-fast), border-color var(--transition-fast);
+    }
+
+    .nav-item:hover { color: var(--t2); }
+    .nav-item.active { color: var(--cyan); border-bottom-color: var(--cyan); }
+
+    /* ---------- Dashboard ---------- */
+    .page { padding: var(--space-xl); display: none; }
+    .page.active { display: block; }
+
+    .kpi-bar {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: var(--panel-gap);
+      margin-bottom: var(--space-xl);
+    }
+
+    .kpi-card {
+      background: var(--surface);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-md);
+      padding: var(--space-lg);
+    }
+
+    .kpi-label {
+      font-family: 'Instrument Sans', sans-serif;
+      font-weight: 600;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--t3);
+      margin-bottom: var(--space-xs);
+    }
+
+    .kpi-value {
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 300;
+      font-size: 24px;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .kpi-value.profit { color: var(--profit); }
+    .kpi-value.loss { color: var(--loss); }
+
+    .panel-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: var(--panel-gap);
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border-1);
+      border-radius: var(--radius-md);
+      padding: var(--panel-padding);
+    }
+
+    .panel-title {
+      font-family: 'Instrument Sans', sans-serif;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--t2);
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: var(--space-md);
+    }
+
+    .panel-empty {
+      color: var(--t4);
+      font-size: 13px;
+      text-align: center;
+      padding: var(--space-2xl) 0;
+    }
+
+    /* Agent feed */
+    .agent-feed-item {
+      border-left: 2px solid var(--ai);
+      padding: var(--space-sm) var(--space-md);
+      margin-bottom: var(--space-sm);
+      background: rgba(167,139,250,0.03);
+    }
+
+    .agent-name {
+      font-family: 'IBM Plex Mono', monospace;
+      font-weight: 600;
+      font-size: 10px;
+      color: var(--ai);
+      text-transform: uppercase;
+    }
+
+    .agent-reasoning {
+      font-family: 'Outfit', sans-serif;
+      font-weight: 300;
+      font-size: 13px;
+      color: var(--t2);
+    }
+
+    /* WS indicator */
+    .ws-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--loss);
+      display: inline-block;
+    }
+
+    .ws-dot.connected { background: var(--profit); }
+  </style>
+</head>
+<body>
+  <!-- Login -->
+  <div id="login-view">
+    <div class="login-card">
+      <h1>GRID</h1>
+      <p>Autonomous Trading Intelligence</p>
+      <input type="email" id="login-email" placeholder="Email" autocomplete="email">
+      <input type="password" id="login-password" placeholder="Password" autocomplete="current-password">
+      <button id="login-btn">Authenticate</button>
+      <div class="login-error" id="login-error"></div>
+    </div>
+  </div>
+
+  <!-- App -->
+  <div id="app-view">
+    <div class="topbar">
+      <div class="topbar-brand">GRID</div>
+      <div class="topbar-right">
+        <span class="ws-dot" id="ws-dot" title="WebSocket"></span>
+        <span class="badge badge-warn" id="bootstrap-badge">INFANT</span>
+        <span class="badge badge-neutral">PAPER</span>
+        <button class="btn-logout" id="logout-btn">Logout</button>
+      </div>
+    </div>
+
+    <div class="nav">
+      <div class="nav-item active" data-page="command">Command Centre</div>
+      <div class="nav-item" data-page="agents">Agents</div>
+      <div class="nav-item" data-page="trades">Trades</div>
+      <div class="nav-item" data-page="strategy">Strategy Lab</div>
+      <div class="nav-item" data-page="research">Research</div>
+      <div class="nav-item" data-page="settings">Settings</div>
+    </div>
+
+    <!-- Command Centre -->
+    <div class="page active" id="page-command">
+      <div class="kpi-bar">
+        <div class="kpi-card">
+          <div class="kpi-label">Portfolio Value</div>
+          <div class="kpi-value number" id="kpi-value">$0.00</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Unrealised P&L</div>
+          <div class="kpi-value number" id="kpi-pnl">$0.00</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Win Rate</div>
+          <div class="kpi-value number" id="kpi-winrate">&mdash;</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Open Positions</div>
+          <div class="kpi-value number" id="kpi-open">0</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">AI Cost (30d)</div>
+          <div class="kpi-value number" id="kpi-cost">$0.00</div>
+        </div>
+      </div>
+
+      <div class="panel-grid">
+        <div class="panel" style="grid-column: span 2;">
+          <div class="panel-title">Chart</div>
+          <div class="panel-empty">TradingView chart — Phase 2</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Agent Feed</div>
+          <div id="agent-feed">
+            <div class="panel-empty">No agent activity yet</div>
+          </div>
+        </div>
+        <div class="panel" style="grid-column: span 2;">
+          <div class="panel-title">Open Trades</div>
+          <div class="panel-empty" id="trades-panel">No open trades</div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Active Signals</div>
+          <div class="panel-empty" id="signals-panel">No active signals</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Other pages -->
+    <div class="page" id="page-agents">
+      <div class="panel"><div class="panel-title">Agent Grid</div><div class="panel-empty">Agent management — Phase 2</div></div>
+    </div>
+    <div class="page" id="page-trades">
+      <div class="panel"><div class="panel-title">Trade History</div><div class="panel-empty">Trade table — Phase 2</div></div>
+    </div>
+    <div class="page" id="page-strategy">
+      <div class="panel"><div class="panel-title">Strategy Templates</div><div class="panel-empty">Strategy lab — Phase 2</div></div>
+    </div>
+    <div class="page" id="page-research">
+      <div class="panel"><div class="panel-title">Research Dashboard</div><div class="panel-empty">Research tools — Phase 2</div></div>
+    </div>
+    <div class="page" id="page-settings">
+      <div class="panel"><div class="panel-title">Settings</div><div class="panel-empty">Settings panel — Phase 2</div></div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+    let accessToken = localStorage.getItem('grid_token');
+    let ws = null;
+
+    // ---------- Auth ----------
+    async function api(path, opts = {}) {
+      const res = await fetch(API + path, {
+        ...opts,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': accessToken ? `Bearer ${accessToken}` : '',
+          ...opts.headers,
+        },
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+      });
+      if (res.status === 401) { logout(); return null; }
+      return res.json();
+    }
+
+    async function login() {
+      const email = document.getElementById('login-email').value;
+      const password = document.getElementById('login-password').value;
+      const errEl = document.getElementById('login-error');
+      errEl.textContent = '';
+
+      try {
+        const res = await fetch(API + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await res.json();
+        if (data.error) { errEl.textContent = data.error; return; }
+        accessToken = data.accessToken;
+        localStorage.setItem('grid_token', accessToken);
+        localStorage.setItem('grid_refresh', data.refreshToken);
+        showApp();
+      } catch (e) {
+        errEl.textContent = 'Connection failed';
+      }
+    }
+
+    function logout() {
+      accessToken = null;
+      localStorage.removeItem('grid_token');
+      localStorage.removeItem('grid_refresh');
+      if (ws) ws.close();
+      document.getElementById('login-view').style.display = 'flex';
+      document.getElementById('app-view').style.display = 'none';
+    }
+
+    document.getElementById('login-btn').addEventListener('click', login);
+    document.getElementById('login-password').addEventListener('keydown', e => {
+      if (e.key === 'Enter') login();
+    });
+    document.getElementById('logout-btn').addEventListener('click', () => {
+      api('/api/auth/logout', { method: 'POST' });
+      logout();
+    });
+
+    // ---------- Navigation ----------
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        item.classList.add('active');
+        document.getElementById('page-' + item.dataset.page).classList.add('active');
+      });
+    });
+
+    // ---------- WebSocket ----------
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      const dot = document.getElementById('ws-dot');
+
+      ws.onopen = () => { dot.classList.add('connected'); };
+      ws.onclose = () => {
+        dot.classList.remove('connected');
+        setTimeout(connectWS, 3000);
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          handleWSMessage(msg);
+        } catch {}
+      };
+    }
+
+    function handleWSMessage(msg) {
+      if (msg.type === 'trade' || msg.type === 'trade_closed') {
+        loadDashboard();
+      }
+      if (msg.type === 'cycle') {
+        addAgentFeedItem('ORCHESTRATOR', msg.data.message);
+      }
+    }
+
+    function addAgentFeedItem(agent, text) {
+      const feed = document.getElementById('agent-feed');
+      if (feed.querySelector('.panel-empty')) feed.innerHTML = '';
+      const item = document.createElement('div');
+      item.className = 'agent-feed-item';
+      item.innerHTML = `<div class="agent-name">${agent}</div><div class="agent-reasoning">${text}</div>`;
+      feed.prepend(item);
+      // Keep max 20 items
+      while (feed.children.length > 20) feed.removeChild(feed.lastChild);
+    }
+
+    // ---------- Dashboard Data ----------
+    function formatMoney(v) {
+      const abs = Math.abs(v);
+      const sign = v >= 0 ? '+' : '\u2212';
+      const [whole, cents] = abs.toFixed(2).split('.');
+      return `${sign}$${Number(whole).toLocaleString('en-US')}.${cents}`;
+    }
+
+    async function loadDashboard() {
+      const [health, tradeStats] = await Promise.all([
+        api('/api/system/health'),
+        api('/api/trades/stats'),
+      ]);
+
+      if (health) {
+        document.getElementById('kpi-open').textContent = health.open_trades || 0;
+        const pnl = parseFloat(health.total_pnl) || 0;
+        document.getElementById('kpi-pnl').textContent = formatMoney(pnl);
+        document.getElementById('kpi-pnl').className = `kpi-value number ${pnl >= 0 ? 'profit' : 'loss'}`;
+        document.getElementById('kpi-cost').textContent = `$${parseFloat(health.total_ai_cost || 0).toFixed(2)}`;
+        document.getElementById('bootstrap-badge').textContent = (health.bootstrap_phase || 'infant').toUpperCase();
+      }
+
+      if (tradeStats) {
+        const wr = tradeStats.win_rate;
+        document.getElementById('kpi-winrate').textContent = wr ? `${wr}%` : '\u2014';
+      }
+    }
+
+    // ---------- Boot ----------
+    async function showApp() {
+      document.getElementById('login-view').style.display = 'none';
+      document.getElementById('app-view').style.display = 'block';
+      connectWS();
+      loadDashboard();
+    }
+
+    // Auto-login if token exists
+    if (accessToken) {
+      // Verify token still works
+      api('/api/system/health').then(data => {
+        if (data) showApp();
+        else logout();
+      });
+    }
+  </script>
+</body>
+</html>
