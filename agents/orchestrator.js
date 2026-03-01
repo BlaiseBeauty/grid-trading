@@ -158,6 +158,133 @@ function monitorPositions() {
 }
 
 /**
+ * Check active standing orders against current prices. Trigger + execute as paper trades.
+ */
+async function checkStandingOrders(broadcast) {
+  const { queryAll: dbQueryAll } = require('../db/connection');
+
+  // 1. Fetch active, non-expired standing orders
+  let orders;
+  try {
+    orders = await dbQueryAll(`
+      SELECT * FROM standing_orders WHERE status = 'active' AND expires_at > NOW()
+    `);
+  } catch (err) {
+    console.error('[MONITOR] Failed to fetch standing orders:', err.message);
+    return [];
+  }
+
+  if (orders.length === 0) return [];
+
+  console.log(`[MONITOR] Checking ${orders.length} active standing order(s)...`);
+  const triggered = [];
+
+  for (const order of orders) {
+    // 2. Get current price — prefer live exchange price, fall back to DB candle close
+    let currentPrice;
+    try {
+      const dashSymbol = order.symbol.replace('/', '-');
+      const res = await fetch(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/price/${dashSymbol}`);
+      if (res.ok) {
+        const data = await res.json();
+        currentPrice = data.price;
+      }
+    } catch {}
+
+    if (!currentPrice) {
+      try {
+        const row = await dbQueryOne(
+          `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
+          [order.symbol]
+        );
+        if (!row) continue;
+        currentPrice = parseFloat(row.close);
+      } catch (err) {
+        console.warn(`[MONITOR] Could not get price for ${order.symbol}:`, err.message);
+        continue;
+      }
+    }
+
+    // 3. Check trigger conditions
+    const cond = typeof order.conditions === 'string' ? JSON.parse(order.conditions) : (order.conditions || {});
+    let shouldTrigger = false;
+
+    if (cond.price_below != null && currentPrice <= cond.price_below) {
+      shouldTrigger = true;
+    } else if (cond.price_above != null && currentPrice >= cond.price_above) {
+      shouldTrigger = true;
+    }
+
+    if (!shouldTrigger) continue;
+
+    // 4. Trigger: update status, create trade, broadcast
+    try {
+      // Mark as triggered
+      await dbQuery(
+        `UPDATE standing_orders SET status = 'triggered', triggered_at = NOW() WHERE id = $1`,
+        [order.id]
+      );
+
+      // Parse execution params for TP/SL
+      const exec = typeof order.execution_params === 'string' ? JSON.parse(order.execution_params) : (order.execution_params || {});
+
+      // Execute paper trade via Python engine
+      const tradeResult = await executeTrade({
+        symbol: order.symbol,
+        side: order.side,
+        quantity: await calculateQuantity({
+          approved_size_pct: exec.position_size_pct || 1.0,
+          entry_price: currentPrice,
+        }),
+        entry_price: currentPrice,
+        tp_price: exec.take_profit || null,
+        sl_price: exec.stop_loss || null,
+        confidence: order.confidence,
+        agent_decision_id: order.agent_decision_id,
+        reasoning: `Standing order #${order.id} triggered at $${currentPrice}`,
+        asset_class: order.asset_class || 'crypto',
+        exchange: 'binance',
+      });
+
+      // Link trade back to standing order
+      await dbQuery(
+        `UPDATE standing_orders SET status = 'executed', executed_at = NOW(), trade_id = $2 WHERE id = $1`,
+        [order.id, tradeResult.trade_id]
+      );
+
+      const triggerPrice = cond.price_below || cond.price_above || currentPrice;
+      console.log(`[MONITOR] Standing order triggered: ${order.symbol} ${order.side} @ ${triggerPrice}`);
+
+      if (broadcast) {
+        broadcast('standing_order_triggered', {
+          order_id: order.id,
+          symbol: order.symbol,
+          side: order.side,
+          trigger_price: triggerPrice,
+          fill_price: tradeResult.fill_price,
+          trade_id: tradeResult.trade_id,
+        });
+      }
+
+      triggered.push({ order_id: order.id, trade_id: tradeResult.trade_id, symbol: order.symbol });
+    } catch (err) {
+      console.error(`[MONITOR] Failed to execute standing order #${order.id} for ${order.symbol}:`, err.message);
+      // Revert to active so it can retry next check
+      await dbQuery(
+        `UPDATE standing_orders SET status = 'active' WHERE id = $1 AND status = 'triggered'`,
+        [order.id]
+      ).catch(() => {});
+    }
+  }
+
+  if (triggered.length > 0) {
+    console.log(`[MONITOR] ${triggered.length} standing order(s) triggered`);
+  }
+
+  return triggered;
+}
+
+/**
  * Fetch fresh market data for all tracked symbols.
  */
 async function refreshMarketData() {
@@ -544,6 +671,9 @@ async function calculateQuantity(trade) {
   } catch {
     portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
   }
+  if (!trade.entry_price || trade.entry_price <= 0) {
+    throw new Error(`Invalid entry_price: ${trade.entry_price}`);
+  }
   const positionValue = portfolioValue * (sizePct / 100);
   return positionValue / trade.entry_price;
 }
@@ -734,5 +864,6 @@ module.exports = {
   runStrategyLayer,
   runAnalysisLayer,
   monitorPositions,
+  checkStandingOrders,
   runCycle,
 };

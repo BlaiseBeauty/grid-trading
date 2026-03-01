@@ -97,6 +97,7 @@ class BaseAgent {
     }
 
     let decision;
+    let inputTokens = 0, outputTokens = 0, costUsd = 0;
     try {
       // Call Claude with retry on rate limit
       let response;
@@ -121,9 +122,9 @@ class BaseAgent {
       }
 
       const outputText = response.content[0]?.text || '';
-      const inputTokens = response.usage?.input_tokens || 0;
-      const outputTokens = response.usage?.output_tokens || 0;
-      const costUsd = this.calculateCost(inputTokens, outputTokens);
+      inputTokens = response.usage?.input_tokens || 0;
+      outputTokens = response.usage?.output_tokens || 0;
+      costUsd = this.calculateCost(inputTokens, outputTokens);
       const durationMs = Date.now() - start;
 
       // Parse signals from response
@@ -198,9 +199,9 @@ class BaseAgent {
         agent_layer: this.layer,
         cycle_number: cycleNumber,
         model_used: this.model,
-        input_tokens: 0,
-        output_tokens: 0,
-        cost_usd: 0,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+        cost_usd: costUsd,
         reasoning: null,
         confidence_score: null,
         output_json: null,

@@ -1,18 +1,18 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { createChart, CandlestickSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
+import { useDataStore } from '../stores/data';
 
 const SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
-const TIMEFRAMES = ['1h', '4h', '1d'];
 
-export default function Chart() {
+function MiniChart({ symbol }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const [symbol, setSymbol] = useState('BTC-USDT');
-  const [timeframe, setTimeframe] = useState('4h');
+  const prices = useDataStore(s => s.prices);
+  const price = prices[symbol];
 
-  // Create chart once
+  // Create chart
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -21,7 +21,7 @@ export default function Chart() {
         background: { color: '#0d0f15' },
         textColor: '#6e7590',
         fontFamily: "'IBM Plex Mono', monospace",
-        fontSize: 11,
+        fontSize: 10,
       },
       grid: {
         vertLines: { color: 'rgba(255,255,255,0.03)' },
@@ -64,11 +64,11 @@ export default function Chart() {
     };
   }, []);
 
-  // Fetch data when symbol/timeframe changes
+  // Fetch candle data
   useEffect(() => {
     async function loadData() {
       try {
-        const candles = await api(`/market-data/${symbol}?timeframe=${timeframe}&limit=200`);
+        const candles = await api(`/market-data/${symbol}?timeframe=4h&limit=200`);
         if (!seriesRef.current || !candles?.length) return;
 
         const data = candles
@@ -84,70 +84,120 @@ export default function Chart() {
         seriesRef.current.setData(data);
         chartRef.current?.timeScale().fitContent();
       } catch (err) {
-        console.error('Chart data load failed:', err);
+        console.error(`Chart data load failed for ${symbol}:`, err);
       }
     }
     loadData();
-  }, [symbol, timeframe]);
+  }, [symbol]);
+
+  const ticker = symbol.split('-')[0];
+  const currentPrice = price?.price;
+  const change24h = price?.change24h;
+  const hasChange = change24h != null;
+  const isPositive = change24h >= 0;
 
   return (
-    <div className="panel chart-panel">
-      <div className="chart-header">
-        <div className="panel-title">Price Chart</div>
-        <div className="chart-controls">
-          <div className="symbol-selector">
-            {SYMBOLS.map(s => (
-              <button
-                key={s}
-                className={`chart-btn ${symbol === s ? 'active' : ''}`}
-                onClick={() => setSymbol(s)}
-              >{s.split('-')[0]}</button>
-            ))}
-          </div>
-          <div className="tf-selector">
-            {TIMEFRAMES.map(tf => (
-              <button
-                key={tf}
-                className={`chart-btn ${timeframe === tf ? 'active' : ''}`}
-                onClick={() => setTimeframe(tf)}
-              >{tf}</button>
-            ))}
-          </div>
+    <div className="mini-chart-card">
+      <div className="mini-chart-ticker">
+        <div className="ticker-left">
+          <span className="ticker-symbol">{ticker}</span>
+          <span className="ticker-pair">/ USDT</span>
+          <span className={`live-dot ${price ? 'live' : ''}`} />
+        </div>
+        <div className="ticker-right">
+          <span className="ticker-price">
+            {currentPrice != null
+              ? `$${Number(currentPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : '—'}
+          </span>
+          {hasChange && (
+            <span className={`ticker-change ${isPositive ? 'profit' : 'loss'}`}>
+              {isPositive ? '+' : ''}{change24h.toFixed(2)}%
+            </span>
+          )}
         </div>
       </div>
-      <div ref={containerRef} className="chart-container" />
+      <div ref={containerRef} className="mini-chart-container" />
+    </div>
+  );
+}
+
+export default function Chart() {
+  return (
+    <div className="multi-chart-row">
+      {SYMBOLS.map(s => <MiniChart key={s} symbol={s} />)}
 
       <style>{`
-        .chart-panel { padding: 0; overflow: hidden; }
-        .chart-header {
+        .multi-chart-row {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: var(--panel-gap);
+        }
+        .mini-chart-card {
+          background: var(--surface);
+          border: 1px solid var(--border-1);
+          border-radius: var(--radius-md);
+          overflow: hidden;
+        }
+        .mini-chart-ticker {
           display: flex;
           justify-content: space-between;
           align-items: center;
-          padding: var(--space-md) var(--panel-padding);
+          padding: var(--space-sm) var(--space-md);
           border-bottom: 1px solid var(--border-0);
         }
-        .chart-header .panel-title { margin-bottom: 0; }
-        .chart-controls { display: flex; gap: var(--space-md); }
-        .symbol-selector, .tf-selector { display: flex; gap: 1px; }
-        .chart-btn {
-          padding: 4px 10px;
+        .ticker-left {
+          display: flex;
+          align-items: center;
+          gap: var(--space-xs);
+        }
+        .ticker-symbol {
+          font-family: 'IBM Plex Mono', monospace;
+          font-weight: 600;
+          font-size: 14px;
+          color: var(--t1);
+        }
+        .ticker-pair {
           font-family: 'IBM Plex Mono', monospace;
           font-size: 10px;
+          color: var(--t4);
+        }
+        .live-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: var(--t4);
+          margin-left: var(--space-xs);
+        }
+        .live-dot.live {
+          background: var(--cyan);
+          box-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+          animation: pulse-dot 2s ease-in-out infinite;
+        }
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(0, 229, 255, 0.6); }
+          50% { opacity: 0.5; box-shadow: 0 0 2px rgba(0, 229, 255, 0.3); }
+        }
+        .ticker-right {
+          display: flex;
+          align-items: baseline;
+          gap: var(--space-sm);
+        }
+        .ticker-price {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 16px;
           font-weight: 500;
-          color: var(--t3);
-          background: var(--elevated);
-          border: 1px solid var(--border-0);
-          transition: all var(--transition-fast);
+          font-variant-numeric: tabular-nums;
+          color: var(--t1);
         }
-        .chart-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-        .chart-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-        .chart-btn.active {
-          color: var(--cyan);
-          background: rgba(0,229,255,0.08);
-          border-color: rgba(0,229,255,0.2);
+        .ticker-change {
+          font-family: 'IBM Plex Mono', monospace;
+          font-size: 11px;
+          font-variant-numeric: tabular-nums;
         }
-        .chart-btn:hover:not(.active) { color: var(--t1); }
-        .chart-container { width: 100%; height: 400px; }
+        .ticker-change.profit { color: var(--green); }
+        .ticker-change.loss { color: var(--red); }
+        .mini-chart-container { width: 100%; height: 260px; }
       `}</style>
     </div>
   );

@@ -38,6 +38,10 @@ class PositionMonitor:
             action = None
             pnl = 0
 
+            if not entry_price or float(entry_price) <= 0:
+                results.append({'trade_id': trade_id, 'error': f'Invalid entry_price: {entry_price}'})
+                continue
+
             if side == 'buy':
                 pnl_pct = ((current_price - float(entry_price)) / float(entry_price)) * 100
                 if tp_price and current_price >= float(tp_price):

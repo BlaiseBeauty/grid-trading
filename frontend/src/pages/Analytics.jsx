@@ -217,7 +217,7 @@ export default function Analytics() {
                 <div key={i} className="cost-row">
                   <span className="cost-date">{new Date(c.date).toLocaleDateString()}</span>
                   <span className="num cost-calls">{c.call_count} calls</span>
-                  <span className="num cost-tokens">{(parseInt(c.total_tokens) / 1000).toFixed(0)}k tok</span>
+                  <span className="num cost-tokens">{(parseInt(c.total_tokens || 0) / 1000).toFixed(0)}k tok</span>
                   <span className="num" style={{ color: 'var(--ai)' }}>${parseFloat(c.daily_cost).toFixed(2)}</span>
                 </div>
               ))}

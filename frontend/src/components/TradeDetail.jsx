@@ -78,7 +78,7 @@ export default function TradeDetail({ trade, open, onClose }) {
           <div className="td-section td-full">
             <div className="td-section-title">Signal Domains</div>
             <div className="td-tags">
-              {(typeof trade.signal_domains === 'string' ? JSON.parse(trade.signal_domains) : trade.signal_domains || []).map((d, i) => (
+              {(() => { try { return typeof trade.signal_domains === 'string' ? JSON.parse(trade.signal_domains) : trade.signal_domains || []; } catch { return []; } })().map((d, i) => (
                 <span key={i} className="badge badge-neutral">{d}</span>
               ))}
             </div>

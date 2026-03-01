@@ -152,9 +152,11 @@ def _last(series):
         return None
     if isinstance(series, pd.Series):
         val = series.iloc[-1]
-        if pd.isna(val):
+        if pd.isna(val) or np.isinf(val):
             return None
         return float(val)
     if isinstance(series, (int, float)):
-        return float(series) if not np.isnan(series) else None
+        if np.isnan(series) or np.isinf(series):
+            return None
+        return float(series)
     return None

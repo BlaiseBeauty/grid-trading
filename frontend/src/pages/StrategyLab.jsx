@@ -61,7 +61,8 @@ export default function StrategyLab() {
               <span className="so-col so-col-status">Status</span>
             </div>
             {standingOrders.map((o) => {
-              const cond = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {});
+              let cond = {};
+              try { cond = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {}); } catch { /* malformed JSON */ }
               const priceKeys = ['price_below', 'price_above', 'price', 'entry_price', 'price_level'];
               let triggerPrice = null;
               let triggerLabel = null;

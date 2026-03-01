@@ -9,7 +9,7 @@ import EventCalendar from '../components/EventCalendar';
 import { formatMoney, timeAgo } from '../lib/format';
 
 export default function Dashboard() {
-  const { fetchPortfolio, fetchAgents, fetchSignals, fetchTrades, fetchSystem,
+  const { fetchPortfolio, fetchAgents, fetchSignals, fetchTrades, fetchSystem, fetchPrices,
     triggerCycle, refreshData, signals, regime, openTrades, lastCycle, system } = useDataStore();
   const [selectedTrade, setSelectedTrade] = useState(null);
 
@@ -19,6 +19,7 @@ export default function Dashboard() {
     fetchSignals();
     fetchTrades();
     fetchSystem();
+    fetchPrices();
   }, []);
 
   return (

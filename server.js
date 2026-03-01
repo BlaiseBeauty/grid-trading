@@ -107,7 +107,7 @@ function setupCron() {
     }
   });
 
-  // Monitor open positions every 15 minutes
+  // Monitor open positions + check standing orders every 15 minutes
   cron.schedule('*/15 * * * *', async () => {
     console.log('[CRON] Monitoring positions...');
     try {
@@ -119,6 +119,13 @@ function setupCron() {
       }
     } catch (err) {
       console.error('[CRON] Position monitor failed:', err.message);
+    }
+
+    // Check standing order triggers
+    try {
+      await orchestrator.checkStandingOrders(broadcast);
+    } catch (err) {
+      console.error('[CRON] Standing order check failed:', err.message);
     }
   });
 
@@ -139,6 +146,29 @@ function setupCron() {
     try { await fetchAll(); }
     catch (err) { console.error('[CRON] External data fetch failed:', err.message); }
   });
+
+  // Broadcast live prices every 60 seconds
+  const { queryOne } = require('./db/connection');
+  const priceSymbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
+  setInterval(async () => {
+    for (const symbol of priceSymbols) {
+      try {
+        const latest = await queryOne(
+          `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
+          [symbol]
+        );
+        const old24h = await queryOne(
+          `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
+          [symbol]
+        );
+        if (!latest) continue;
+        const price = parseFloat(latest.close);
+        const oldPrice = old24h ? parseFloat(old24h.close) : null;
+        const change24h = oldPrice && oldPrice > 0 ? ((price - oldPrice) / oldPrice) * 100 : null;
+        broadcast('price_update', { symbol, price, change24h });
+      } catch {}
+    }
+  }, 60_000);
 }
 
 // ---------- Boot ----------

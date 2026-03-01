@@ -56,6 +56,16 @@ export function useWebSocket() {
               s.fetchTemplates();
               s.fetchLearnings();
               break;
+            case 'price_update':
+              if (msg.data?.symbol) {
+                s.updatePrice(msg.data.symbol, msg.data.price, msg.data.change24h);
+              }
+              break;
+            case 'standing_order_triggered':
+              s.fetchTrades();
+              s.fetchPortfolio();
+              s.fetchStandingOrders();
+              break;
           }
         } catch {}
       };

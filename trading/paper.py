@@ -58,7 +58,7 @@ class PaperTrader:
             symbol,
             trade_data.get('asset_class', 'crypto'),
             trade_data.get('exchange', 'binance'),
-            side, quantity, actual_price,
+            side, quantity, entry_price,
             trade_data.get('tp_price'),
             trade_data.get('sl_price'),
             trade_data.get('template_id'),

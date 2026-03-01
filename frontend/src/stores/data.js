@@ -29,6 +29,9 @@ export const useDataStore = create((set, get) => ({
   // Standing Orders
   standingOrders: [],
 
+  // Live prices { 'BTC-USDT': { price, change24h } }
+  prices: {},
+
   // System
   system: null,
   costs: null,
@@ -42,6 +45,10 @@ export const useDataStore = create((set, get) => ({
   loading: {},
 
   setLoading: (key, val) => set(s => ({ loading: { ...s.loading, [key]: val } })),
+
+  updatePrice: (symbol, price, change24h) => set(s => ({
+    prices: { ...s.prices, [symbol]: { price, change24h } },
+  })),
 
   addFeedItem: (item) => set(s => ({
     feed: [{ ...item, ts: Date.now() }, ...s.feed].slice(0, 100),
@@ -145,6 +152,22 @@ export const useDataStore = create((set, get) => ({
       ]);
       set({ system, costs, lastCycle });
     } catch (err) { console.error('System fetch:', err); }
+  },
+
+  fetchPrices: async () => {
+    const symbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
+    for (const symbol of symbols) {
+      try {
+        const candles = await api(`/market-data/${symbol}?timeframe=1h&limit=25`);
+        if (!candles?.length) continue;
+        const latest = candles[candles.length - 1];
+        const close = parseFloat(latest.close);
+        // 24h change: compare latest close to close ~24 candles ago (1h candles)
+        const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
+        const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
+        get().updatePrice(symbol, close, change24h);
+      } catch {}
+    }
   },
 
   // Actions
