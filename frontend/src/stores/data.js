@@ -152,7 +152,7 @@ export const useDataStore = create((set, get) => ({
   fetchSystem: async () => {
     try {
       const [system, costs, lastCycle] = await Promise.all([
-        api('/system/health'),
+        api('/system/health-detail'),
         api('/costs/summary'),
         api('/system/last-cycle'),
       ]);

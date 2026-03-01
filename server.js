@@ -59,6 +59,9 @@ async function registerRoutes() {
   // Auth routes (no auth required)
   fastify.register(require('./api/auth'), { prefix: '/api/auth' });
 
+  // Public healthcheck (no auth — used by Railway)
+  fastify.get('/api/system/health', async () => ({ status: 'ok', timestamp: Date.now() }));
+
   // Protected API routes
   fastify.register(require('./api/portfolio'), { prefix: '/api' });
   fastify.register(require('./api/trades'), { prefix: '/api' });

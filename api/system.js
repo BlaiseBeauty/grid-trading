@@ -15,8 +15,8 @@ async function routes(fastify) {
     return queryAll("SELECT * FROM scram_events WHERE cleared_at IS NULL ORDER BY activated_at DESC");
   });
 
-  // GET /api/system/health — overall system health
-  fastify.get('/system/health', async () => {
+  // GET /api/system/health-detail — authenticated system health (used by dashboard)
+  fastify.get('/system/health-detail', async () => {
     const [bootstrap, scramEvents, tradeStats, costTotal] = await Promise.all([
       queryOne('SELECT * FROM bootstrap_status ORDER BY id DESC LIMIT 1'),
       queryAll("SELECT * FROM scram_events WHERE cleared_at IS NULL"),
