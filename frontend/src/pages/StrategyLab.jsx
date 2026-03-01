@@ -61,12 +61,37 @@ export default function StrategyLab() {
               <span className="so-col so-col-status">Status</span>
             </div>
             {standingOrders.map((o) => {
-              const conditions = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {});
-              const condText = conditions.entry_trigger
-                || conditions.price_level
-                || (conditions.price ? `$${Number(conditions.price).toLocaleString()}` : null)
-                || Object.entries(conditions).map(([k, v]) => `${k}: ${v}`).join(', ')
-                || '—';
+              const cond = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {});
+              const priceKeys = ['price_below', 'price_above', 'price', 'entry_price', 'price_level'];
+              let triggerPrice = null;
+              let triggerLabel = null;
+              for (const k of priceKeys) {
+                const v = cond[k];
+                if (v != null && typeof v === 'number') {
+                  triggerLabel = k.replace('price_', '').replace('price', 'at');
+                  triggerPrice = v;
+                  break;
+                }
+              }
+              const condText = triggerPrice
+                ? `${triggerLabel} $${Number(triggerPrice).toLocaleString()}`
+                : cond.entry_trigger || cond.logic || '—';
+
+              // expires_at is a future timestamp — show "in Xh/Xd" not "Xs ago"
+              let expiresText = '—';
+              if (o.expires_at) {
+                const diff = Math.floor((new Date(o.expires_at).getTime() - Date.now()) / 1000);
+                if (diff <= 0) {
+                  expiresText = 'expired';
+                } else if (diff < 3600) {
+                  expiresText = `in ${Math.floor(diff / 60)}m`;
+                } else if (diff < 86400) {
+                  expiresText = `in ${Math.floor(diff / 3600)}h`;
+                } else {
+                  expiresText = `in ${Math.floor(diff / 86400)}d`;
+                }
+              }
+
               return (
                 <div key={o.id} className="so-row">
                   <span className="so-col so-col-symbol">
@@ -76,7 +101,7 @@ export default function StrategyLab() {
                   <span className="so-col so-col-conditions so-conditions-text">{condText}</span>
                   <span className="so-col so-col-template">{o.template_id ? `#${o.template_id}` : '—'}</span>
                   <span className="so-col so-col-conf num">{o.confidence != null ? `${o.confidence}%` : '—'}</span>
-                  <span className="so-col so-col-expires">{o.expires_at ? timeAgo(o.expires_at) : '—'}</span>
+                  <span className="so-col so-col-expires">{expiresText}</span>
                   <span className="so-col so-col-status">
                     <span className={`badge badge-so-${o.status || 'active'}`}>{o.status || 'active'}</span>
                   </span>

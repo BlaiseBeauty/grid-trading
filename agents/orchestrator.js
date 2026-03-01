@@ -371,10 +371,50 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     });
     proposals = synthDecision?.output_json?.proposals || [];
     console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals`);
+
+    // Persist standing orders to DB
+    const standingOrders = synthDecision?.output_json?.standing_orders || [];
+    if (standingOrders.length > 0) {
+      let soStored = 0;
+      for (const so of standingOrders) {
+        try {
+          const side = so.direction === 'long' ? 'buy' : 'sell';
+          const expiresHours = so.expires_in_hours || 48;
+          await dbQuery(`
+            INSERT INTO standing_orders (
+              created_by_agent, agent_decision_id, symbol, asset_class, side,
+              conditions, execution_params, confidence,
+              risk_validated_at, expires_at
+            ) VALUES (
+              $1, $2, $3, 'crypto', $4,
+              $5, $6, $7,
+              NOW(), NOW() + make_interval(hours => $8)
+            )
+          `, [
+            'strategySynthesizer',
+            synthDecision?.id || null,
+            so.symbol,
+            side,
+            JSON.stringify(so.trigger_conditions),
+            JSON.stringify(so.exit_plan),
+            so.confidence,
+            expiresHours,
+          ]);
+          const triggerPrice = so.trigger_conditions?.price_below || so.trigger_conditions?.price_above || so.entry_price || '—';
+          console.log(`[ORCHESTRATOR] Standing order saved: ${so.symbol} ${side} @ ${triggerPrice}`);
+          soStored++;
+        } catch (soErr) {
+          console.warn(`[ORCHESTRATOR] Failed to store standing order for ${so.symbol}:`, soErr.message);
+        }
+      }
+      console.log(`[ORCHESTRATOR] Stored ${soStored}/${standingOrders.length} standing orders`);
+    }
+
     if (broadcast) {
       broadcast('agent_complete', {
         cycleNumber: cycleNum, agent_name: 'synthesizer', layer: 'strategy',
         proposals: proposals.length,
+        standing_orders: standingOrders.length,
         cost_usd: synthDecision?.cost_usd || 0, duration_ms: Date.now() - synthStart,
       });
     }
@@ -590,6 +630,15 @@ async function runCycle({ broadcast } = {}) {
       agents: knowledgeAgents.map(a => a.name),
     });
   }
+
+  // Step 0: Expire old standing orders
+  try {
+    const expired = await dbQuery(`
+      UPDATE standing_orders SET status = 'expired'
+      WHERE status = 'active' AND expires_at < NOW()
+    `);
+    if (expired.rowCount > 0) console.log(`[ORCHESTRATOR] Expired ${expired.rowCount} standing orders`);
+  } catch { /* ignore */ }
 
   // Step 1: Refresh market data
   await refreshMarketData();
