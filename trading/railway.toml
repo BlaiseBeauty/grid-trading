@@ -1,0 +1,8 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "trading/Dockerfile"
+
+[deploy]
+startCommand = "python engine.py"
+healthcheckPath = "/health"
+healthcheckTimeout = 60
