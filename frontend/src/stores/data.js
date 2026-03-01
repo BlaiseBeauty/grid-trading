@@ -5,6 +5,8 @@ export const useDataStore = create((set, get) => ({
   // Portfolio
   portfolio: [],
   portfolioValue: 0,
+  realisedPnl: 0,
+  unrealisedPnl: 0,
   tradeStats: null,
 
   // Agents
@@ -71,10 +73,14 @@ export const useDataStore = create((set, get) => ({
         api('/portfolio'),
         api('/trades/stats'),
       ]);
-      const { holdings = [], total_value, realised_pnl, unrealised_pnl, starting_capital, ...rest } = portfolioData;
+      console.log('portfolio response:', JSON.stringify(portfolioData));
+      console.log('trades/stats response:', JSON.stringify(stats));
+      const { holdings = [], total_value, realised_pnl, unrealised_pnl, starting_capital } = portfolioData;
       set({
         portfolio: holdings,
         portfolioValue: total_value || starting_capital || 10000,
+        realisedPnl: parseFloat(realised_pnl || 0),
+        unrealisedPnl: parseFloat(unrealised_pnl || 0),
         tradeStats: stats,
       });
     } catch (err) { console.error('Portfolio fetch:', err); }
@@ -150,6 +156,7 @@ export const useDataStore = create((set, get) => ({
         api('/costs/summary'),
         api('/system/last-cycle'),
       ]);
+      console.log('costs API response:', JSON.stringify(costs));
       set({ system, costs, lastCycle });
     } catch (err) { console.error('System fetch:', err); }
   },

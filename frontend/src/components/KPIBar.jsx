@@ -36,13 +36,15 @@ function KPICard({ label, children }) {
 
 export default function KPIBar() {
   const portfolioValue = useDataStore(s => s.portfolioValue);
+  const realisedPnl = useDataStore(s => s.realisedPnl);
+  const unrealisedPnl = useDataStore(s => s.unrealisedPnl);
   const stats = useDataStore(s => s.tradeStats);
   const openTrades = useDataStore(s => s.openTrades);
   const costs = useDataStore(s => s.costs);
 
-  const totalPnl = parseFloat(stats?.total_pnl || 0);
+  const totalPnl = realisedPnl + unrealisedPnl;
   const winRate = parseFloat(stats?.win_rate || 0);
-  const totalCost = costs?.total_usd ? parseFloat(costs.total_usd) : 0;
+  const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
 
   return (
     <div className="kpi-bar">
@@ -53,7 +55,7 @@ export default function KPIBar() {
         {formatMoney(totalPnl)}
       </KPICard>
       <KPICard label="Win Rate">
-        {formatPct(winRate, 1)}
+        <span className="num">{winRate.toFixed(1)}%</span>
       </KPICard>
       <KPICard label="Open Positions">
         <span className="num">{openTrades?.length || 0}</span>

@@ -1,20 +1,35 @@
 import { useDataStore } from '../stores/data';
 import { timeAgo } from '../lib/format';
 
+const agentName = (item) => (item.agent_name || item.agent || 'unknown').toUpperCase();
+
 export default function AgentFeed() {
   const feed = useDataStore(s => s.feed);
   const decisions = useDataStore(s => s.decisions);
   const cycleStatus = useDataStore(s => s.cycleStatus);
 
-  // Combine WS feed + recent decisions
-  const items = feed.length > 0 ? feed : decisions.slice(0, 15).map(d => ({
+  const wsItems = feed.slice(0, 50);
+  const decisionItems = decisions.slice(0, 15).map(d => ({
     type: 'decision',
-    agent: d.agent_name,
+    agent_name: d.agent_name,
     ts: new Date(d.created_at).getTime(),
-    signals: d.output_json?.signals?.length || 0,
-    cost: d.cost_usd,
+    signals_count: d.output_json?.signals?.length || 0,
+    cost_usd: d.cost_usd,
+    layer: d.agent_layer,
     error: d.error,
+    description: d.agent_layer === 'strategy'
+      ? (d.agent_name === 'synthesizer' ? `${d.output_json?.proposals?.length || 0} proposals`
+        : d.agent_name === 'regime_classifier' ? `${d.output_json?.regime || 'classified'}`
+        : `${d.output_json?.approved?.length || 0} approved`)
+      : null,
   }));
+
+  // Use WS feed only if it has meaningful content (not just system connect messages)
+  const meaningfulWsItems = wsItems.filter(item =>
+    item.type !== 'system' || wsItems.some(i => i.type === 'agent_complete' || i.type === 'cycle_complete')
+  );
+
+  const items = meaningfulWsItems.length > 0 ? wsItems : decisionItems;
 
   return (
     <div className="panel agent-feed">
@@ -51,7 +66,11 @@ export default function AgentFeed() {
                   <span className="chip-name">{name.replace('_', ' ').replace('regime classifier', 'regime')}</span>
                   {done && !done.error && (
                     <span className="chip-signals">
-                      {name === 'regime_classifier' ? done.regime : name === 'synthesizer' ? `${done.proposals}p` : `${done.approved}ok`}
+                      {name === 'regime_classifier'
+                        ? done.regime
+                        : name === 'synthesizer'
+                          ? `${done.proposals}p${done.standing_orders ? ` +${done.standing_orders}so` : ''}`
+                          : `${done.approved}ok`}
                     </span>
                   )}
                   {done?.error && <span className="chip-err">!</span>}
@@ -67,18 +86,14 @@ export default function AgentFeed() {
           <div className="feed-empty">No activity yet. Trigger a cycle to start.</div>
         )}
         {items.map((item, i) => (
-          <div key={i} className={`feed-item ${item.type === 'agent_complete' ? 'feed-agent-complete' : ''}`}>
+          <div key={i} className="feed-item">
             <div className="feed-left">
               {item.type === 'system' ? (
                 <span className="feed-agent" style={{ color: 'var(--cyan)' }}>SYSTEM</span>
-              ) : item.type === 'cycle_start' ? (
+              ) : item.type === 'cycle_start' || item.type === 'cycle_complete' ? (
                 <span className="feed-agent" style={{ color: 'var(--cyan)' }}>CYCLE</span>
-              ) : item.type === 'cycle_complete' ? (
-                <span className="feed-agent" style={{ color: 'var(--cyan)' }}>CYCLE</span>
-              ) : item.type === 'agent_complete' ? (
-                <span className="feed-agent">{(item.agent_name || 'unknown').toUpperCase()}</span>
               ) : (
-                <span className="feed-agent">{(item.agent || item.agent_name || 'unknown').toUpperCase()}</span>
+                <span className="feed-agent">{agentName(item)}</span>
               )}
               <span className="feed-text">
                 {item.type === 'system'
@@ -91,19 +106,19 @@ export default function AgentFeed() {
                         ? item.error
                           ? `Error: ${item.error}`
                           : item.layer === 'strategy'
-                            ? item.agent_name === 'regime_classifier' ? `${item.regime || '?'} (${item.confidence || 0}%)`
-                            : item.agent_name === 'synthesizer' ? `${item.proposals || 0} proposals`
+                            ? agentName(item) === 'REGIME_CLASSIFIER' ? `${item.regime || '?'} (${item.confidence || 0}%)`
+                            : agentName(item) === 'SYNTHESIZER' ? `${item.proposals || 0} proposals${item.standing_orders ? `, ${item.standing_orders} standing orders` : ''}`
                             : `${item.approved || 0} approved, ${item.rejected || 0} rejected`
                           : `${item.signals_count || 0} signals`
                         : item.error
                           ? `Error: ${item.error}`
-                          : `${item.signals || 0} signals`
+                          : item.description || `${item.signals_count || item.signals || 0} signals`
                 }
               </span>
             </div>
             <div className="feed-right">
-              {item.type === 'agent_complete' && item.cost_usd > 0 && (
-                <span className="feed-cost">${Number(item.cost_usd || 0).toFixed(2)}</span>
+              {(item.cost_usd > 0 || item.cost > 0) && (
+                <span className="feed-cost">${Number(item.cost_usd || item.cost || 0).toFixed(2)}</span>
               )}
               <span className="feed-time">{timeAgo(item.ts)}</span>
             </div>

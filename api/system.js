@@ -21,9 +21,12 @@ async function routes(fastify) {
       queryOne('SELECT * FROM bootstrap_status ORDER BY id DESC LIMIT 1'),
       queryAll("SELECT * FROM scram_events WHERE cleared_at IS NULL"),
       queryOne(`
-        SELECT COUNT(*) FILTER (WHERE status = 'open')::int as open_trades,
+        SELECT COUNT(*)::int as total_trades,
+               COUNT(*) FILTER (WHERE status = 'open')::int as open_trades,
                COUNT(*) FILTER (WHERE status = 'closed')::int as closed_trades,
-               COALESCE(SUM(pnl_realised) FILTER (WHERE status = 'closed'), 0) as total_pnl
+               COALESCE(SUM(pnl_realised) FILTER (WHERE status = 'closed'), 0) as total_pnl,
+               ROUND(100.0 * COUNT(*) FILTER (WHERE pnl_realised > 0 AND status = 'closed') /
+                 NULLIF(COUNT(*) FILTER (WHERE status = 'closed'), 0), 1) as win_rate
         FROM trades
       `),
       queryOne('SELECT COALESCE(SUM(cost_usd), 0) as total_cost FROM system_costs'),
@@ -33,8 +36,12 @@ async function routes(fastify) {
       bootstrap_phase: bootstrap?.phase || 'infant',
       scram_active: scramEvents.length > 0,
       scram_level: scramEvents[0]?.level || null,
-      open_trades: tradeStats.open_trades,
-      closed_trades: tradeStats.closed_trades,
+      trade_stats: {
+        total_trades: tradeStats.total_trades,
+        total_closed: tradeStats.closed_trades,
+        open_trades: tradeStats.open_trades,
+        win_rate: parseFloat(tradeStats.win_rate || 0),
+      },
       total_pnl: tradeStats.total_pnl,
       total_ai_cost: costTotal.total_cost,
       live_trading: process.env.LIVE_TRADING_ENABLED === 'true',

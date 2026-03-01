@@ -1,6 +1,8 @@
 node_modules/
+frontend/node_modules/
+trading/venv/
 .env
+frontend/dist/
+*.log
 __pycache__/
 *.pyc
-trading/venv/
-frontend/dist/

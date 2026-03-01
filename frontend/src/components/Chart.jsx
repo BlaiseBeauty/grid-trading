@@ -49,6 +49,14 @@ function MiniChart({ symbol }) {
       wickDownColor: '#ff2d55',
     });
 
+    series.applyOptions({
+      lastValueVisible: true,
+      priceLineVisible: true,
+      priceLineColor: '#00e5ff',
+      priceLineStyle: 2,
+      priceLineWidth: 1,
+    });
+
     chartRef.current = chart;
     seriesRef.current = series;
 
@@ -68,7 +76,7 @@ function MiniChart({ symbol }) {
   useEffect(() => {
     async function loadData() {
       try {
-        const candles = await api(`/market-data/${symbol}?timeframe=4h&limit=200`);
+        const candles = await api(`/market-data/${symbol}?timeframe=5m&limit=200`);
         if (!seriesRef.current || !candles?.length) return;
 
         const data = candles

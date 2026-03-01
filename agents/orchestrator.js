@@ -552,7 +552,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
 
   if (proposals.length === 0) {
     console.log('[ORCHESTRATOR] No proposals to evaluate — strategy layer complete');
-    return { regime, proposals: [], approved: [], rejected: [], trades: [] };
+    return { regime, proposals: [], approved: [], rejected: [], trades: [], standing_orders: standingOrders };
   }
 
   // Step 3: Risk Manager — validate proposals against limits
@@ -624,7 +624,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     broadcast('trades_executed', { cycleNumber: cycleNum, trades });
   }
 
-  return { regime, proposals, approved: riskResult.approved, rejected: riskResult.rejected, trades };
+  return { regime, proposals, approved: riskResult.approved, rejected: riskResult.rejected, trades, standing_orders: standingOrders };
 }
 
 /**
@@ -839,6 +839,7 @@ async function runCycle({ broadcast } = {}) {
         approved: strategy.approved.length,
         rejected: strategy.rejected.length,
         trades: strategy.trades.length,
+        standing_orders: strategy.standing_orders?.length || 0,
       },
       analysis: analysis.length > 0 ? analysis : null,
       elapsed: `${elapsed}s`,
@@ -848,7 +849,7 @@ async function runCycle({ broadcast } = {}) {
   // Notify cycle complete
   notifications.cycleComplete({
     cycleNumber, elapsed: `${elapsed}s`,
-    strategy: { proposals: strategy.proposals.length, approved: strategy.approved.length, trades: strategy.trades.length },
+    strategy: { proposals: strategy.proposals.length, approved: strategy.approved.length, trades: strategy.trades.length, standing_orders: strategy.standing_orders?.length || 0 },
   }).catch(() => {});
 
   return { cycleNumber, knowledge, strategy, analysis };

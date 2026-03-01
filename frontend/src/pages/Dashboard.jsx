@@ -46,7 +46,7 @@ export default function Dashboard() {
           ) : regime.map((r, i) => (
             <div key={i} className="regime-row">
               <span className="regime-class">{r.asset_class}</span>
-              <span className={`badge badge-${r.regime?.includes('up') ? 'profit' : r.regime?.includes('down') ? 'loss' : 'neutral'}`}>
+              <span className={`badge badge-${r.regime?.includes('up') ? 'maturing' : r.regime?.includes('down') ? 'warn' : 'neutral'}`}>
                 {r.regime}
               </span>
               {r.sub_regime && <span className="regime-sub">{r.sub_regime}</span>}
@@ -65,7 +65,7 @@ export default function Dashboard() {
               {signals.slice(0, 10).map((s, i) => (
                 <div key={i} className="signal-row">
                   <span className="signal-symbol">{s.symbol}</span>
-                  <span className={`badge badge-${s.direction === 'bullish' ? 'profit' : s.direction === 'bearish' ? 'loss' : 'neutral'}`}>
+                  <span className={`badge badge-${s.direction === 'bullish' ? 'bullish' : s.direction === 'bearish' ? 'bearish' : 'neutral'}`}>
                     {s.direction}
                   </span>
                   <span className="signal-type">{s.signal_type}</span>
@@ -118,28 +118,49 @@ export default function Dashboard() {
               </div>
               {lastCycle.strategy && (
                 <>
-                  <div className="cycle-row">
-                    <span className="cycle-label">Proposals</span>
-                    <span className="num">{lastCycle.strategy.proposals}</span>
-                  </div>
-                  <div className="cycle-row">
-                    <span className="cycle-label">Approved</span>
-                    <span className="num profit">{lastCycle.strategy.approved}</span>
-                  </div>
-                  <div className="cycle-row">
-                    <span className="cycle-label">Rejected</span>
-                    <span className="num loss">{lastCycle.strategy.rejected}</span>
-                  </div>
-                  <div className="cycle-row">
-                    <span className="cycle-label">Executed</span>
-                    <span className="num">{lastCycle.strategy.trades}</span>
-                  </div>
+                  {lastCycle.strategy.proposals > 0 && (
+                    <div className="cycle-row">
+                      <span className="cycle-label">Proposals</span>
+                      <span className="num">{lastCycle.strategy.proposals}</span>
+                    </div>
+                  )}
+                  {lastCycle.strategy.approved > 0 && (
+                    <div className="cycle-row">
+                      <span className="cycle-label">Approved</span>
+                      <span className="num profit">{lastCycle.strategy.approved}</span>
+                    </div>
+                  )}
+                  {lastCycle.strategy.rejected > 0 && (
+                    <div className="cycle-row">
+                      <span className="cycle-label">Rejected</span>
+                      <span className="num loss">{lastCycle.strategy.rejected}</span>
+                    </div>
+                  )}
+                  {lastCycle.strategy.trades > 0 && (
+                    <div className="cycle-row">
+                      <span className="cycle-label">Executed</span>
+                      <span className="num">{lastCycle.strategy.trades}</span>
+                    </div>
+                  )}
+                  {lastCycle.strategy.standing_orders > 0 && (
+                    <div className="cycle-row">
+                      <span className="cycle-label">Standing Orders</span>
+                      <span className="badge badge-ai">{lastCycle.strategy.standing_orders} placed</span>
+                    </div>
+                  )}
+                  {lastCycle.strategy.proposals === 0 && (
+                    <div className="cycle-status-line">
+                      {lastCycle.strategy.standing_orders > 0
+                        ? 'Waiting for trigger prices'
+                        : 'No entries — regime unfavorable'}
+                    </div>
+                  )}
                 </>
               )}
               {lastCycle.agents?.map((a, i) => (
                 <div key={i} className="cycle-row">
                   <span className="cycle-label">{a.agent}</span>
-                  <span className={`badge badge-${a.status === 'fulfilled' ? 'profit' : 'loss'}`}>
+                  <span className={`badge badge-${a.status === 'fulfilled' ? 'ai' : 'loss'}`}>
                     {a.status === 'fulfilled' ? `${a.signals} signals` : 'failed'}
                   </span>
                 </div>
@@ -161,7 +182,7 @@ export default function Dashboard() {
               </div>
               <div className="cycle-row">
                 <span className="cycle-label">Total Trades</span>
-                <span className="num">{system.trade_stats?.total_closed || 0}</span>
+                <span className="num">{system.trade_stats?.total_trades || 0}</span>
               </div>
               <div className="cycle-row">
                 <span className="cycle-label">Win Rate</span>
@@ -260,6 +281,15 @@ export default function Dashboard() {
           flex: 1;
         }
         .cycle-info, .system-info { display: flex; flex-direction: column; gap: 2px; }
+        .cycle-status-line {
+          font-size: 12px;
+          color: var(--t4);
+          font-style: italic;
+          padding: var(--space-xs) 0;
+        }
+        .badge-bullish { color: var(--cyan); background: rgba(0,229,255,0.10); }
+        .badge-bearish { color: var(--warn); background: rgba(255,184,0,0.10); }
+        .badge-maturing { color: var(--green); background: rgba(0,255,136,0.10); }
       `}</style>
     </div>
   );

@@ -91,6 +91,30 @@ async function registerRoutes() {
   });
 }
 
+// ---------- Market Data ----------
+const PYTHON_ENGINE_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
+const CANDLE_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+
+async function refreshCandles({ backfill = false } = {}) {
+  for (const symbol of CANDLE_SYMBOLS) {
+    for (const tf of ['5m', '1h', '4h']) {
+      try {
+        // On boot/backfill fetch 200 candles for 5m (covers ~16h), otherwise just 10 for incremental
+        const limit = backfill ? 200 : 10;
+        const res = await fetch(`${PYTHON_ENGINE_URL}/fetch-ohlcv`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol, timeframe: tf, limit }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+      } catch (err) {
+        console.error(`[CANDLES] ${symbol} ${tf}:`, err.message);
+      }
+    }
+  }
+}
+
 // ---------- Cron ----------
 const cron = require('node-cron');
 
@@ -147,25 +171,30 @@ function setupCron() {
     catch (err) { console.error('[CRON] External data fetch failed:', err.message); }
   });
 
-  // Broadcast live prices every 60 seconds
-  const { queryOne } = require('./db/connection');
-  const priceSymbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
+  // Fetch fresh candles every 5 minutes (keeps market_data current)
+  cron.schedule('*/5 * * * *', async () => {
+    try { await refreshCandles(); }
+    catch (err) { console.error('[CRON] Candle refresh failed:', err.message); }
+  });
+
+  // Broadcast live prices every 60 seconds (from exchange, not DB)
+  const { queryOne: queryOnePrice } = require('./db/connection');
   setInterval(async () => {
-    for (const symbol of priceSymbols) {
+    for (const symbol of CANDLE_SYMBOLS) {
       try {
-        const latest = await queryOne(
-          `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
-          [symbol]
-        );
-        const old24h = await queryOne(
+        const dashSym = symbol.replace('/', '-');
+        const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`);
+        if (!res.ok) continue;
+        const data = await res.json();
+        const price = data.price;
+
+        const old24h = await queryOnePrice(
           `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
           [symbol]
         );
-        if (!latest) continue;
-        const price = parseFloat(latest.close);
         const oldPrice = old24h ? parseFloat(old24h.close) : null;
         const change24h = oldPrice && oldPrice > 0 ? ((price - oldPrice) / oldPrice) * 100 : null;
-        broadcast('price_update', { symbol, price, change24h });
+        broadcast('price_update', { symbol: dashSym, price, change24h });
       } catch {}
     }
   }, 60_000);
@@ -187,9 +216,10 @@ async function start() {
     // Start cron
     setupCron();
 
-    // Fetch external data on boot
+    // Fetch external data + fresh candles on boot
     const { fetchAll } = require('./agents/external-data-fetcher');
     fetchAll().catch(err => console.error('[BOOT] External data fetch failed:', err.message));
+    refreshCandles({ backfill: true }).then(() => console.log('[BOOT] Candle refresh complete')).catch(err => console.error('[BOOT] Candle refresh failed:', err.message));
 
     // Listen
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
