@@ -7,3 +7,5 @@ frontend/dist/
 __pycache__/
 *.pyc
 backup.sql
+backup-clean.sql
+*.sql.bak
