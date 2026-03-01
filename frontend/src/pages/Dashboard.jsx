@@ -6,11 +6,12 @@ import EquityCurve from '../components/EquityCurve';
 import AgentFeed from '../components/AgentFeed';
 import TradeDetail from '../components/TradeDetail';
 import EventCalendar from '../components/EventCalendar';
-import { formatMoney, timeAgo } from '../lib/format';
+import { formatMoney, formatPct, timeAgo } from '../lib/format';
 
 export default function Dashboard() {
   const { fetchPortfolio, fetchAgents, fetchSignals, fetchTrades, fetchSystem, fetchPrices,
     triggerCycle, refreshData, signals, regime, openTrades, lastCycle, system } = useDataStore();
+  const prices = useDataStore(s => s.prices);
   const [selectedTrade, setSelectedTrade] = useState(null);
 
   useEffect(() => {
@@ -84,16 +85,32 @@ export default function Dashboard() {
             <div className="empty-state">No open positions</div>
           ) : (
             <div className="positions-list">
-              {openTrades.map((t, i) => (
-                <div key={i} className="position-row clickable" onClick={() => setSelectedTrade(t)}>
-                  <span className="pos-symbol">{t.symbol}</span>
-                  <span className={`badge badge-${t.side === 'buy' ? 'profit' : 'loss'}`}>
-                    {t.side === 'buy' ? 'LONG' : 'SHORT'}
-                  </span>
-                  <span className="num">{formatMoney(parseFloat(t.entry_price))}</span>
-                  <span className="pos-time">{timeAgo(t.opened_at || t.created_at)}</span>
-                </div>
-              ))}
+              {openTrades.map((t, i) => {
+                const entry = parseFloat(t.actual_fill_price || t.entry_price);
+                const qty = parseFloat(t.quantity);
+                const dashSymbol = t.symbol.replace('/', '-');
+                const curPrice = prices[dashSymbol]?.price;
+                const pnl = curPrice ? (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty) : null;
+                const pnlPct = pnl != null ? (pnl / (entry * qty)) * 100 : null;
+                return (
+                  <div key={i} className="position-row clickable" onClick={() => setSelectedTrade(t)}>
+                    <span className="pos-symbol">{t.symbol}</span>
+                    <span className={`badge badge-${t.side === 'buy' ? 'profit' : 'loss'}`}>
+                      {t.side === 'buy' ? 'LONG' : 'SHORT'}
+                    </span>
+                    <span className="num">{formatMoney(entry)}</span>
+                    {pnl != null ? (
+                      <>
+                        <span className="pos-pnl">{formatMoney(pnl)}</span>
+                        <span className="pos-pnl">{formatPct(pnlPct, 2)}</span>
+                      </>
+                    ) : (
+                      <span className="pos-pnl" style={{ color: 'var(--t4)' }}>—</span>
+                    )}
+                    <span className="pos-time">{timeAgo(t.opened_at || t.created_at)}</span>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

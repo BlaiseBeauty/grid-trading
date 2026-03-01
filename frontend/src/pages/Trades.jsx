@@ -6,6 +6,7 @@ import TradeDetail from '../components/TradeDetail';
 
 export default function Trades() {
   const { fetchTrades, fetchPortfolio, trades, openTrades, tradeStats } = useDataStore();
+  const prices = useDataStore(s => s.prices);
   const [filter, setFilter] = useState('all');
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [standingOrders, setStandingOrders] = useState([]);
@@ -108,27 +109,37 @@ export default function Trades() {
           {filtered.length === 0 && (
             <div className="empty-state">No trades to display</div>
           )}
-          {filtered.map((t, i) => (
-            <div key={i} className="t-row clickable" onClick={() => setSelectedTrade(t)}>
-              <span className="t-col t-symbol">{t.symbol}</span>
-              <span className="t-col t-side">
-                <span className={`badge badge-${t.side === 'buy' ? 'profit' : 'loss'}`}>
-                  {t.side === 'buy' ? 'LONG' : 'SHORT'}
+          {filtered.map((t, i) => {
+            const entry = parseFloat(t.actual_fill_price || t.entry_price);
+            const qty = parseFloat(t.quantity);
+            const dashSymbol = t.symbol.replace('/', '-');
+            const curPrice = prices[dashSymbol]?.price;
+            const unrealisedPnl = (t.status === 'open' && curPrice)
+              ? (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty)
+              : null;
+            const unrealisedPct = unrealisedPnl != null ? (unrealisedPnl / (entry * qty)) * 100 : null;
+            return (
+              <div key={i} className="t-row clickable" onClick={() => setSelectedTrade(t)}>
+                <span className="t-col t-symbol">{t.symbol}</span>
+                <span className="t-col t-side">
+                  <span className={`badge badge-${t.side === 'buy' ? 'profit' : 'loss'}`}>
+                    {t.side === 'buy' ? 'LONG' : 'SHORT'}
+                  </span>
                 </span>
-              </span>
-              <span className="t-col t-entry num">{formatPrice(t.entry_price)}</span>
-              <span className="t-col t-exit num">{t.exit_price ? formatPrice(t.exit_price) : '\u2014'}</span>
-              <span className="t-col t-pnl">{t.pnl_realised != null ? formatMoney(parseFloat(t.pnl_realised)) : '\u2014'}</span>
-              <span className="t-col t-pct">{t.pnl_pct != null ? formatPct(parseFloat(t.pnl_pct)) : '\u2014'}</span>
-              <span className="t-col t-conf num" style={{ color: 'var(--ai)' }}>{t.confidence || '\u2014'}</span>
-              <span className="t-col t-status">
-                <span className={`badge badge-${t.status === 'open' ? 'cyan' : t.pnl_realised > 0 ? 'profit' : t.pnl_realised < 0 ? 'loss' : 'neutral'}`}>
-                  {t.status}
+                <span className="t-col t-entry num">{formatPrice(t.entry_price)}</span>
+                <span className="t-col t-exit num">{t.exit_price ? formatPrice(t.exit_price) : curPrice && t.status === 'open' ? formatPrice(curPrice) : '\u2014'}</span>
+                <span className="t-col t-pnl">{t.pnl_realised != null ? formatMoney(parseFloat(t.pnl_realised)) : unrealisedPnl != null ? formatMoney(unrealisedPnl) : '\u2014'}</span>
+                <span className="t-col t-pct">{t.pnl_pct != null ? formatPct(parseFloat(t.pnl_pct)) : unrealisedPct != null ? formatPct(unrealisedPct, 2) : '\u2014'}</span>
+                <span className="t-col t-conf num" style={{ color: 'var(--ai)' }}>{t.confidence || '\u2014'}</span>
+                <span className="t-col t-status">
+                  <span className={`badge badge-${t.status === 'open' ? 'cyan' : t.pnl_realised > 0 ? 'profit' : t.pnl_realised < 0 ? 'loss' : 'neutral'}`}>
+                    {t.status}
+                  </span>
                 </span>
-              </span>
-              <span className="t-col t-time">{timeAgo(t.closed_at || t.opened_at || t.created_at)}</span>
-            </div>
-          ))}
+                <span className="t-col t-time">{timeAgo(t.closed_at || t.opened_at || t.created_at)}</span>
+              </div>
+            );
+          })}
         </div>
       </div>
 
