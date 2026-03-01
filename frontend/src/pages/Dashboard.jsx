@@ -6,7 +6,7 @@ import EquityCurve from '../components/EquityCurve';
 import AgentFeed from '../components/AgentFeed';
 import TradeDetail from '../components/TradeDetail';
 import EventCalendar from '../components/EventCalendar';
-import { formatMoney, formatPct, timeAgo } from '../lib/format';
+import { formatMoney, formatPct, formatPrice, timeAgo } from '../lib/format';
 
 export default function Dashboard() {
   const { fetchPortfolio, fetchAgents, fetchSignals, fetchTrades, fetchSystem, fetchPrices,
@@ -98,7 +98,7 @@ export default function Dashboard() {
                     <span className={`badge badge-${t.side === 'buy' ? 'profit' : 'loss'}`}>
                       {t.side === 'buy' ? 'LONG' : 'SHORT'}
                     </span>
-                    <span className="num">{formatMoney(entry)}</span>
+                    {formatPrice(entry)}
                     {pnl != null ? (
                       <>
                         <span className="pos-pnl">{formatMoney(pnl)}</span>
