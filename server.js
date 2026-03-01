@@ -147,6 +147,13 @@ async function fetchLivePrice(symbol) {
     }
   } catch {}
 
+  // Fallback: latest candle from DB
+  try {
+    const { queryOne: qo } = require('./db/connection');
+    const row = await qo(`SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`, [symbol]);
+    if (row?.close) return { dashSym, price: parseFloat(row.close) };
+  } catch {}
+
   return null;
 }
 

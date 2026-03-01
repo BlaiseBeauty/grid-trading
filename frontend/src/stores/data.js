@@ -159,30 +159,34 @@ export const useDataStore = create((set, get) => ({
   },
 
   fetchPrices: async () => {
+    let fetched = 0;
     try {
-      // Fetch live exchange prices (Binance fallback, no Python engine needed)
       const res = await fetch('/api/prices/live');
       if (res.ok) {
         const prices = await res.json();
         for (const [symbol, data] of Object.entries(prices)) {
-          if (data.price) get().updatePrice(symbol, data.price, data.change24h ?? null);
+          if (data.price) {
+            get().updatePrice(symbol, data.price, data.change24h ?? null);
+            fetched++;
+          }
         }
-        return;
       }
     } catch {}
 
-    // Fallback: read from DB candles
-    const symbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
-    for (const symbol of symbols) {
-      try {
-        const candles = await api(`/market-data/${symbol}?timeframe=1h&limit=25`);
-        if (!candles?.length) continue;
-        const latest = candles[candles.length - 1];
-        const close = parseFloat(latest.close);
-        const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
-        const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
-        get().updatePrice(symbol, close, change24h);
-      } catch {}
+    // Fallback: read from DB candles if live endpoint returned nothing
+    if (fetched === 0) {
+      const symbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
+      for (const symbol of symbols) {
+        try {
+          const candles = await api(`/market-data/${symbol}?timeframe=1h&limit=25`);
+          if (!candles?.length) continue;
+          const latest = candles[candles.length - 1];
+          const close = parseFloat(latest.close);
+          const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
+          const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
+          get().updatePrice(symbol, close, change24h);
+        } catch {}
+      }
     }
   },
 
