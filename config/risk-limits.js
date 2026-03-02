@@ -52,8 +52,8 @@ module.exports = {
     infant: {
       MAX_SINGLE_POSITION_PCT: 2,
       MAX_OPEN_POSITIONS: 3,
-      MAX_DAILY_LOSS_PCT: 1,
-      MIN_CONFIDENCE_TO_TRADE: 70,
+      MAX_DAILY_LOSS_PCT: 3,
+      MIN_CONFIDENCE_TO_TRADE: 55,
       PAPER_ONLY: true,
     },
     learning: {
