@@ -611,7 +611,7 @@ async function buildRiskManagerContext(trigger) {
 
 
 async function buildRegimeContext(trigger) {
-  // 30-day price data for key assets
+  // 30-day price data for key assets (daily candles)
   const assets = ['BTC/USDT', 'ETH/USDT', 'SPY', 'DXY', 'GLD'];
   const priceData = {};
   for (const sym of assets) {
@@ -620,6 +620,30 @@ async function buildRegimeContext(trigger) {
       FROM market_data WHERE symbol = $1 AND timeframe = '1d'
       ORDER BY timestamp DESC LIMIT 30
     `, [sym]);
+  }
+
+  // Recent intraday data (1h candles, last 24h) for crypto assets
+  // This ensures the classifier sees current-day moves, not just yesterday's close
+  const cryptoAssets = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+  const intradayData = {};
+  for (const sym of cryptoAssets) {
+    const candles = await queryAll(`
+      SELECT open, high, low, close, volume, timestamp
+      FROM market_data WHERE symbol = $1 AND timeframe = '1h'
+        AND timestamp > NOW() - INTERVAL '24 hours'
+      ORDER BY timestamp DESC
+    `, [sym]);
+    if (candles.length > 0) {
+      const latest = candles[0];
+      const oldest = candles[candles.length - 1];
+      const latestClose = parseFloat(latest.close);
+      const oldestOpen = parseFloat(oldest.open);
+      intradayData[sym] = {
+        candles_1h: candles,
+        current_price: latestClose,
+        change_24h_pct: oldestOpen > 0 ? ((latestClose - oldestOpen) / oldestOpen) * 100 : 0,
+      };
+    }
   }
 
   // Volatility metrics
@@ -651,6 +675,7 @@ async function buildRegimeContext(trigger) {
   return formatUserMessage({
     section1_market_data: {
       price_data_30d: priceData,
+      intraday_24h: intradayData,
       volatility_metrics: volatility?.data || {},
       mvrv_data: mvrv,
       vix_data: vix,
@@ -660,7 +685,7 @@ async function buildRegimeContext(trigger) {
       regime_history: regimeHistory
     },
     section3_memory: null,
-    section4_task: `Classify current market regime. Estimate transition probabilities for next 7 days. Include MVRV cycle overlay.`
+    section4_task: `Classify current market regime. The intraday_24h section contains the most recent price action (1h candles + 24h change %) — weigh this heavily alongside the 30-day daily data. Estimate transition probabilities for next 7 days. Include MVRV cycle overlay.`
   });
 }
 

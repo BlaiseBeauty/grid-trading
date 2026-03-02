@@ -208,6 +208,64 @@ async function fetchLivePrice(symbol) {
   return null;
 }
 
+/**
+ * Node.js fallback for stop-loss enforcement when Python engine is unreachable.
+ * Uses the same fetchLivePrice() chain (Python → Binance → CoinGecko → DB candle).
+ */
+async function checkStopLossesFallback() {
+  const tradesDb = require('./db/queries/trades');
+  const openTrades = await tradesDb.getOpen();
+  const closed = [];
+
+  for (const trade of openTrades) {
+    const sl = parseFloat(trade.sl_price);
+    const tp = parseFloat(trade.tp_price);
+    if (!sl && !tp) continue;
+
+    const priceData = await fetchLivePrice(trade.symbol);
+    if (!priceData?.price) {
+      console.warn(`[FALLBACK] Could not fetch price for ${trade.symbol} — skipping trade #${trade.id}`);
+      continue;
+    }
+
+    const currentPrice = priceData.price;
+    const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
+    const qty = parseFloat(trade.quantity);
+    let action = null;
+
+    if (trade.side === 'buy') {
+      if (tp && currentPrice >= tp) action = 'tp_hit';
+      else if (sl && currentPrice <= sl) action = 'sl_hit';
+    } else {
+      if (tp && currentPrice <= tp) action = 'tp_hit';
+      else if (sl && currentPrice >= sl) action = 'sl_hit';
+    }
+
+    if (action) {
+      const pnl = trade.side === 'buy'
+        ? (currentPrice - entry) * qty
+        : (entry - currentPrice) * qty;
+      const pnlPct = trade.side === 'buy'
+        ? ((currentPrice - entry) / entry) * 100
+        : ((entry - currentPrice) / entry) * 100;
+
+      await tradesDb.closeTrade(trade.id, {
+        exit_price: currentPrice,
+        pnl_realised: Math.round(pnl * 10000) / 10000,
+        pnl_pct: Math.round(pnlPct * 10000) / 10000,
+        outcome_class: null,
+        outcome_reasoning: `Node.js fallback: ${action} @ ${currentPrice} (source: ${priceData.source})`,
+        close_reason: action,
+      });
+
+      console.log(`[FALLBACK] ${action.upper ? action.toUpperCase() : action} — trade #${trade.id} ${trade.symbol} ${trade.side} closed @ ${currentPrice} (P&L: ${pnlPct.toFixed(2)}%)`);
+      closed.push({ trade_id: trade.id, action, exit_price: currentPrice, pnl_pct: Math.round(pnlPct * 100) / 100 });
+    }
+  }
+
+  return closed;
+}
+
 async function refreshCandles({ backfill = false } = {}) {
   for (const symbol of CANDLE_SYMBOLS) {
     for (const tf of ['5m', '1h', '4h']) {
@@ -247,15 +305,28 @@ function setupCron() {
   // Monitor open positions + check standing orders every 15 minutes
   cron.schedule('*/15 * * * *', async () => {
     console.log('[CRON] Monitoring positions...');
+    let closed = [];
     try {
       const result = await orchestrator.monitorPositions();
-      const closed = result?.closed || [];
+      // Python returns { checked, results } — filter for actual closures
+      closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit');
       if (closed.length > 0) {
-        console.log(`[CRON] ${closed.length} position(s) closed by monitor`);
+        console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
         broadcast('positions_closed', { closed });
       }
     } catch (err) {
-      console.error('[CRON] Position monitor failed:', err.message);
+      console.error('[CRON] Python position monitor failed:', err.message);
+      // Node.js fallback: check stop losses directly when Python is unreachable
+      console.log('[CRON] Running Node.js stop-loss fallback...');
+      try {
+        closed = await checkStopLossesFallback();
+        if (closed.length > 0) {
+          console.log(`[CRON] ${closed.length} position(s) closed by Node.js fallback`);
+          broadcast('positions_closed', { closed });
+        }
+      } catch (fallbackErr) {
+        console.error('[CRON] Node.js stop-loss fallback also failed:', fallbackErr.message);
+      }
     }
 
     // Check standing order triggers

@@ -484,7 +484,35 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'regime_classifier', layer: 'strategy', error: err.message });
   }
 
-  // Step 1.5: Last trade check for forced exploration
+  // Step 1.5: Regime-flip detection — trigger immediate position review if direction reversed
+  const BEARISH_REGIMES = ['trending_down'];
+  const BULLISH_REGIMES = ['trending_up'];
+  const newRegime = regime?.crypto?.regime;
+  if (newRegime) {
+    try {
+      // Get the PREVIOUS regime (second most recent, since the new one was just stored)
+      const prevRow = await dbQueryOne(`
+        SELECT regime FROM market_regime ORDER BY created_at DESC LIMIT 1 OFFSET 1
+      `);
+      const prevRegime = prevRow?.regime;
+      const flippedBearishToBullish = BEARISH_REGIMES.includes(prevRegime) && BULLISH_REGIMES.includes(newRegime);
+      const flippedBullishToBearish = BULLISH_REGIMES.includes(prevRegime) && BEARISH_REGIMES.includes(newRegime);
+
+      if (flippedBearishToBullish || flippedBullishToBearish) {
+        console.log(`[ORCHESTRATOR] REGIME FLIP detected: ${prevRegime} → ${newRegime} — triggering immediate position review`);
+        try {
+          const flipReview = await reviewOpenPositions(cycleNum, broadcast);
+          console.log(`[ORCHESTRATOR] Regime-flip position review: ${flipReview.reviews.length} reviewed — ${flipReview.actions.close || 0} closed`);
+        } catch (reviewErr) {
+          console.error('[ORCHESTRATOR] Regime-flip position review failed:', reviewErr.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[ORCHESTRATOR] Regime-flip detection failed:', err.message);
+    }
+  }
+
+  // Step 1.5b: Last trade check for forced exploration
   let hoursSinceLastTrade = null;
   let forcedExploration = false;
   try {
@@ -515,8 +543,17 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
       hoursSinceLastTrade,
       forcedExploration,
     });
-    proposals = synthDecision?.output_json?.proposals || [];
-    console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals`);
+    // Synthesizer outputs trade proposals in "actions" array (type: "trade_proposal")
+    const rawActions = synthDecision?.output_json?.actions || [];
+    proposals = rawActions
+      .filter(a => a.type === 'trade_proposal')
+      .map(a => ({
+        ...a,
+        // Normalize exit_plan fields to top-level for risk manager + executeTrade
+        tp_price: a.exit_plan?.take_profit ?? a.tp_price,
+        sl_price: a.exit_plan?.stop_loss ?? a.sl_price,
+      }));
+    console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals (from ${rawActions.length} actions)`);
 
     // Persist standing orders to DB
     standingOrders = synthDecision?.output_json?.standing_orders || [];
@@ -574,8 +611,14 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
       proposals,
       broadcast,
     });
+    const rawApproved = riskDecision?.approved || riskDecision?.output_json?.approved || [];
+    // Normalize approved trades: ensure tp_price/sl_price at top level
     riskResult = {
-      approved: riskDecision?.approved || riskDecision?.output_json?.approved || [],
+      approved: rawApproved.map(t => ({
+        ...t,
+        tp_price: t.tp_price ?? t.exit_plan?.take_profit ?? t.take_profit,
+        sl_price: t.sl_price ?? t.exit_plan?.stop_loss ?? t.stop_loss,
+      })),
       rejected: riskDecision?.rejected || [],
     };
     console.log(`[ORCHESTRATOR] Risk Manager: ${riskResult.approved.length} approved, ${riskResult.rejected.length} rejected`);

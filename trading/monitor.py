@@ -3,6 +3,7 @@ Position Monitor — checks TP/SL on open positions.
 """
 
 import os
+import time
 import psycopg2
 from data import MarketData
 
@@ -14,6 +15,23 @@ class PositionMonitor:
 
     def _get_db(self):
         return psycopg2.connect(self.db_url)
+
+    def _fetch_price(self, symbol, exchange):
+        """Fetch current price with symbol normalization and 1 retry."""
+        # ccxt expects '/' separator (e.g. BTC/USDT), DB may store with '-'
+        normalized = symbol.replace('-', '/')
+        exc = exchange or 'binance'
+
+        try:
+            return self.market_data.get_current_price(normalized, exc)
+        except Exception as first_err:
+            print(f'[MONITOR] Price fetch failed for {normalized} (attempt 1): {first_err}')
+            time.sleep(2)
+            try:
+                return self.market_data.get_current_price(normalized, exc)
+            except Exception as retry_err:
+                print(f'[MONITOR] Price fetch failed for {normalized} (attempt 2): {retry_err}')
+                raise retry_err
 
     def check_all(self):
         """Check all open positions for TP/SL hits."""
@@ -31,8 +49,9 @@ class PositionMonitor:
             for pos in positions:
                 trade_id, symbol, side, quantity, entry_price, tp_price, sl_price, exchange = pos
                 try:
-                    current_price = self.market_data.get_current_price(symbol, exchange or 'binance')
+                    current_price = self._fetch_price(symbol, exchange)
                 except Exception as e:
+                    print(f'[MONITOR] SKIPPING trade #{trade_id} ({symbol}) — could not fetch price: {e}')
                     results.append({'trade_id': trade_id, 'error': str(e)})
                     continue
 
@@ -67,6 +86,8 @@ class PositionMonitor:
                             status = 'closed', closed_at = NOW(), close_reason = %s
                         WHERE id = %s
                     """, (current_price, round(pnl_realised, 4), round(pnl_pct, 4), action, trade_id))
+
+                    print(f'[MONITOR] {action.upper()} — trade #{trade_id} {symbol} {side} closed @ {current_price} (P&L: {round(pnl_pct, 2)}%)')
 
                     results.append({
                         'trade_id': trade_id,
