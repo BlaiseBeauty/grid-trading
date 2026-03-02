@@ -3,9 +3,10 @@
  * These are the absolute maximums; bootstrap mode applies stricter limits.
  */
 
-module.exports = {
+const LIVE_LIMITS = {
   // Position sizing
   MAX_SINGLE_POSITION_PCT: 5,       // Max 5% of portfolio in one position
+  MIN_POSITION_PCT: 1,              // Min 1% of portfolio per position
   MAX_ASSET_CLASS_EXPOSURE_PCT: 40, // Max 40% in one asset class
   MAX_CORRELATED_EXPOSURE_PCT: 30,  // Max 30% in correlated positions (r > 0.7)
   MAX_OPEN_POSITIONS: 8,
@@ -22,6 +23,29 @@ module.exports = {
 
   // Event blackout
   EVENT_BLACKOUT_HOURS: 2,          // No new positions 2h before high-impact events
+};
+
+// Paper trading overrides — more aggressive limits for testing
+const PAPER_OVERRIDES = {
+  MIN_POSITION_PCT: 3,              // 3% minimum (take meaningful positions)
+  MAX_SINGLE_POSITION_PCT: 8,       // 8% maximum per position
+  MAX_OPEN_POSITIONS: 8,
+  MIN_CONFIDENCE_TO_TRADE: 55,      // 55% confidence threshold
+  MAX_SINGLE_TRADE_LOSS_PCT: 5,     // 5% risk per trade
+};
+
+/**
+ * Returns risk limits based on trading mode.
+ * Paper mode (LIVE_TRADING_ENABLED !== 'true') uses more aggressive limits.
+ */
+function getRiskLimits() {
+  const isLive = process.env.LIVE_TRADING_ENABLED === 'true';
+  if (isLive) return { ...LIVE_LIMITS };
+  return { ...LIVE_LIMITS, ...PAPER_OVERRIDES };
+}
+
+module.exports = {
+  ...LIVE_LIMITS,
 
   // Bootstrap phase overrides (stricter limits for new system)
   BOOTSTRAP: {
@@ -69,4 +93,6 @@ module.exports = {
       CLOSE_ALL_POSITIONS: true,
     },
   },
+
+  getRiskLimits,
 };

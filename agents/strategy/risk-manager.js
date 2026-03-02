@@ -4,7 +4,8 @@
  */
 
 const BaseAgent = require('../base-agent');
-const riskLimits = require('../../config/risk-limits');
+const riskLimitsConfig = require('../../config/risk-limits');
+const { getRiskLimits } = riskLimitsConfig;
 const { queryOne, queryAll, query } = require('../../db/connection');
 
 class RiskManagerAgent extends BaseAgent {
@@ -89,8 +90,8 @@ class RiskManagerAgent extends BaseAgent {
       }
 
       // Min complexity score
-      if ((proposal.complexity_score || 0) < riskLimits.MIN_SIGNAL_COMPLEXITY) {
-        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${riskLimits.MIN_SIGNAL_COMPLEXITY})`);
+      if ((proposal.complexity_score || 0) < riskLimitsConfig.MIN_SIGNAL_COMPLEXITY) {
+        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${riskLimitsConfig.MIN_SIGNAL_COMPLEXITY})`);
       }
 
       // Position size limit
@@ -129,17 +130,17 @@ class RiskManagerAgent extends BaseAgent {
    * Get effective limits based on bootstrap phase and SCRAM level.
    */
   getEffectiveLimits(state) {
-    let limits = { ...riskLimits };
+    let limits = getRiskLimits();
 
     // Apply bootstrap overrides
-    const bootstrapOverride = riskLimits.BOOTSTRAP[state.bootstrapPhase];
+    const bootstrapOverride = riskLimitsConfig.BOOTSTRAP[state.bootstrapPhase];
     if (bootstrapOverride) {
       limits = { ...limits, ...bootstrapOverride };
     }
 
     // Apply SCRAM overrides (strictest wins)
     if (state.scramLevel) {
-      const scramOverride = riskLimits.SCRAM[state.scramLevel];
+      const scramOverride = riskLimitsConfig.SCRAM[state.scramLevel];
       if (scramOverride) {
         limits = { ...limits, ...scramOverride };
       }

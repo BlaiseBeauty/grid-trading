@@ -555,9 +555,12 @@ async function buildRiskManagerContext(trigger) {
     FROM exchange_health ORDER BY exchange, checked_at DESC
   `);
 
-  // Risk limits config
+  // Risk limits config (paper/live aware)
   let riskLimits = {};
-  try { riskLimits = require('../config/risk-limits'); } catch { /* may not exist */ }
+  try {
+    const { getRiskLimits } = require('../config/risk-limits');
+    riskLimits = getRiskLimits();
+  } catch { /* may not exist */ }
 
   // Ruin simulation latest
   let ruin = null;
@@ -720,9 +723,12 @@ async function buildPositionReviewerContext(trigger) {
     `);
   } catch { /* table may not exist yet */ }
 
-  // Risk limits config
+  // Risk limits config (paper/live aware)
   let riskLimits = {};
-  try { riskLimits = require('../config/risk-limits'); } catch { /* may not exist */ }
+  try {
+    const { getRiskLimits } = require('../config/risk-limits');
+    riskLimits = getRiskLimits();
+  } catch { /* may not exist */ }
 
   // Memory injection (800 token budget)
   const memory = await getRelevantMemory('positionReviewer', {

@@ -1,5 +1,6 @@
 const { queryOne, queryAll } = require('../db/connection');
-const riskLimits = require('../config/risk-limits');
+const riskLimitsConfig = require('../config/risk-limits');
+const { getRiskLimits } = riskLimitsConfig;
 const { notifications } = require('../services/notifications');
 
 async function routes(fastify) {
@@ -62,28 +63,21 @@ async function routes(fastify) {
   fastify.get('/system/risk-limits', async () => {
     const bootstrap = await queryOne('SELECT * FROM bootstrap_status ORDER BY id DESC LIMIT 1');
     const phase = bootstrap?.phase || 'infant';
-    const overrides = riskLimits.BOOTSTRAP[phase] || {};
+    const baseLimits = getRiskLimits();
+    const overrides = riskLimitsConfig.BOOTSTRAP[phase] || {};
     return {
       phase,
+      paper_mode: process.env.LIVE_TRADING_ENABLED !== 'true',
       limits: {
-        MAX_SINGLE_POSITION_PCT: overrides.MAX_SINGLE_POSITION_PCT ?? riskLimits.MAX_SINGLE_POSITION_PCT,
-        MAX_ASSET_CLASS_EXPOSURE_PCT: riskLimits.MAX_ASSET_CLASS_EXPOSURE_PCT,
-        MAX_CORRELATED_EXPOSURE_PCT: riskLimits.MAX_CORRELATED_EXPOSURE_PCT,
-        MAX_OPEN_POSITIONS: overrides.MAX_OPEN_POSITIONS ?? riskLimits.MAX_OPEN_POSITIONS,
-        MAX_DAILY_LOSS_PCT: overrides.MAX_DAILY_LOSS_PCT ?? riskLimits.MAX_DAILY_LOSS_PCT,
-        MAX_DRAWDOWN_PCT: riskLimits.MAX_DRAWDOWN_PCT,
-        MAX_SINGLE_TRADE_LOSS_PCT: riskLimits.MAX_SINGLE_TRADE_LOSS_PCT,
-        MIN_RISK_REWARD_RATIO: riskLimits.MIN_RISK_REWARD_RATIO,
-        MIN_CONFIDENCE_TO_TRADE: overrides.MIN_CONFIDENCE_TO_TRADE ?? riskLimits.MIN_CONFIDENCE_TO_TRADE,
-        MIN_SIGNAL_COMPLEXITY: riskLimits.MIN_SIGNAL_COMPLEXITY,
-        EVENT_BLACKOUT_HOURS: riskLimits.EVENT_BLACKOUT_HOURS,
+        ...baseLimits,
+        ...overrides,
         PAPER_ONLY: overrides.PAPER_ONLY ?? false,
       },
       graduated_limits: {
-        MAX_SINGLE_POSITION_PCT: riskLimits.MAX_SINGLE_POSITION_PCT,
-        MAX_OPEN_POSITIONS: riskLimits.MAX_OPEN_POSITIONS,
-        MAX_DAILY_LOSS_PCT: riskLimits.MAX_DAILY_LOSS_PCT,
-        MIN_CONFIDENCE_TO_TRADE: riskLimits.MIN_CONFIDENCE_TO_TRADE,
+        MAX_SINGLE_POSITION_PCT: baseLimits.MAX_SINGLE_POSITION_PCT,
+        MAX_OPEN_POSITIONS: baseLimits.MAX_OPEN_POSITIONS,
+        MAX_DAILY_LOSS_PCT: baseLimits.MAX_DAILY_LOSS_PCT,
+        MIN_CONFIDENCE_TO_TRADE: baseLimits.MIN_CONFIDENCE_TO_TRADE,
       },
     };
   });
