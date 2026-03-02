@@ -99,7 +99,7 @@ async function getStats() {
       COUNT(*) FILTER (WHERE status = 'open') as total_open,
       COALESCE(SUM(pnl_realised) FILTER (WHERE status = 'closed'), 0) as total_pnl,
       ROUND(AVG(pnl_pct) FILTER (WHERE status = 'closed'), 2) as avg_return_pct,
-      ROUND(100.0 * COUNT(*) FILTER (WHERE pnl_realised > 0) /
+      ROUND(100.0 * COUNT(*) FILTER (WHERE pnl_realised > 0 AND status = 'closed') /
         NULLIF(COUNT(*) FILTER (WHERE status = 'closed'), 0), 1) as win_rate
     FROM trades
   `);

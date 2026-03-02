@@ -168,7 +168,8 @@ export default function MobileDashboard() {
     fetchPrices();
   };
 
-  const winRate = tradeStats?.win_rate ?? 0;
+  const closedCount = parseInt(tradeStats?.total_closed || 0);
+  const winRate = closedCount > 0 ? parseFloat(tradeStats?.win_rate || 0) : null;
   const totalTrades = tradeStats?.total_trades ?? 0;
   const feedItems = (feed || []).slice(0, 5);
 
@@ -204,10 +205,11 @@ export default function MobileDashboard() {
         </div>
         <div className="mob-hero-ring">
           <ProgressRing
-            value={winRate}
+            value={winRate ?? 0}
             size={52}
             strokeWidth={4}
-            color={winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-red)'}
+            color={winRate != null && winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
+            label={winRate === null ? '--' : undefined}
           />
           <span className="mob-hero-ring-label">{totalTrades} trades</span>
         </div>

@@ -112,7 +112,8 @@ export default function Dashboard() {
     return sum + (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty);
   }, 0);
   const totalPnl = realisedPnl + liveUnrealisedPnl;
-  const winRate = parseFloat(tradeStats?.win_rate || 0);
+  const closedCount = parseInt(tradeStats?.total_closed || 0);
+  const winRate = closedCount > 0 ? parseFloat(tradeStats?.win_rate || 0) : null;
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
 
   return (
@@ -142,7 +143,7 @@ export default function Dashboard() {
         </GlowCard>
         <GlowCard className="v2-kpi v2-kpi--ring v2-animate-in v2-stagger-3">
           <div className="v2-kpi-label">Win Rate</div>
-          <ProgressRing value={winRate} size={52} strokeWidth={3} />
+          <ProgressRing value={winRate ?? 0} size={52} strokeWidth={3} label={winRate === null ? '--' : undefined} />
         </GlowCard>
         <GlowCard className="v2-kpi v2-animate-in v2-stagger-4">
           <div className="v2-kpi-label">Open Positions</div>
@@ -346,10 +347,11 @@ export default function Dashboard() {
               <div className="v2-health-row">
                 <span className="v2-health-label">Win Rate</span>
                 <ProgressRing
-                  value={system.trade_stats?.win_rate || 0}
+                  value={(system.trade_stats?.total_closed || 0) > 0 ? (system.trade_stats?.win_rate || 0) : 0}
                   size={40}
                   strokeWidth={3}
-                  color={winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
+                  color={winRate != null && winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
+                  label={(system.trade_stats?.total_closed || 0) === 0 ? '--' : undefined}
                 />
               </div>
               <div className="v2-health-row">
