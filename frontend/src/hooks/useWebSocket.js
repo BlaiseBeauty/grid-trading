@@ -26,7 +26,9 @@ export function useWebSocket() {
         try {
           const msg = JSON.parse(event.data);
           const s = storeRef.current;
-          s.addFeedItem({ type: msg.type, ...msg.data });
+          if (msg.type !== 'price_update') {
+            s.addFeedItem({ type: msg.type, ...msg.data });
+          }
 
           switch (msg.type) {
             case 'cycle_start':

@@ -1,7 +1,20 @@
 import { useDataStore } from '../stores/data';
 import { timeAgo } from '../lib/format';
 
-const agentName = (item) => (item.agent_name || item.agent || 'unknown').toUpperCase();
+const EVENT_LABELS = {
+  trades_executed: 'EXECUTION',
+  positions_closed: 'MONITOR',
+  standing_order_triggered: 'STANDING ORDER',
+  position_review: 'POSITION MGR',
+  trade: 'TRADE',
+  trade_closed: 'TRADE',
+  scram_activated: 'SCRAM',
+  scram_cleared: 'SCRAM',
+  analysis_complete: 'ANALYSIS',
+};
+
+const agentName = (item) =>
+  (item.agent_name || item.agent || EVENT_LABELS[item.type] || 'unknown').toUpperCase();
 
 export default function AgentFeed() {
   const feed = useDataStore(s => s.feed);
@@ -112,6 +125,22 @@ export default function AgentFeed() {
                           : `${item.signals_count || 0} signals`
                         : item.error
                           ? `Error: ${item.error}`
+                          : item.type === 'trades_executed'
+                            ? `${item.trades?.length || 0} trade(s) executed`
+                          : item.type === 'positions_closed'
+                            ? `${item.count || 0} position(s) closed`
+                          : item.type === 'standing_order_triggered'
+                            ? `${item.symbol} ${item.side} @ ${Number(item.fill_price || 0).toFixed(0)}`
+                          : item.type === 'position_review'
+                            ? `${item.summary || 'Positions reviewed'}`
+                          : item.type === 'trade' || item.type === 'trade_closed'
+                            ? `${item.symbol || ''} ${item.side || ''} ${item.type === 'trade_closed' ? 'closed' : 'opened'}`
+                          : item.type === 'scram_activated'
+                            ? `${item.level || 'EMERGENCY'} — all risk suspended`
+                          : item.type === 'scram_cleared'
+                            ? 'Risk controls restored'
+                          : item.type === 'analysis_complete'
+                            ? 'Analysis cycle complete'
                           : item.description || `${item.signals_count || item.signals || 0} signals`
                 }
               </span>
