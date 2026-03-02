@@ -70,13 +70,18 @@ async function registerRoutes() {
       CANDLE_SYMBOLS.map(async (symbol) => {
         const result = await fetchLivePrice(symbol);
         if (!result) return null;
-        // Get 24h change from DB
-        const old24h = await queryOnePriceLive(
-          `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
-          [symbol]
-        );
-        const oldPrice = old24h ? parseFloat(old24h.close) : null;
-        const change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
+        // Use CoinGecko's 24h change if available, otherwise compute from DB
+        let change24h = result.change24h ?? null;
+        if (change24h == null) {
+          try {
+            const old24h = await queryOnePriceLive(
+              `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
+              [symbol]
+            );
+            const oldPrice = old24h ? parseFloat(old24h.close) : null;
+            change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
+          } catch {}
+        }
         return { symbol: result.dashSym, price: result.price, change24h };
       })
     );
@@ -123,35 +128,70 @@ async function registerRoutes() {
 const PYTHON_ENGINE_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
 const CANDLE_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
 const BINANCE_MAP = { 'BTC/USDT': 'BTCUSDT', 'ETH/USDT': 'ETHUSDT', 'SOL/USDT': 'SOLUSDT' };
+const COINGECKO_MAP = { 'BTC/USDT': 'bitcoin', 'ETH/USDT': 'ethereum', 'SOL/USDT': 'solana' };
+
+// Cached CoinGecko prices (fetched in batch, shared across symbols)
+let coingeckoCache = { prices: {}, fetchedAt: 0 };
+
+async function fetchCoinGeckoPrices() {
+  if (Date.now() - coingeckoCache.fetchedAt < 20_000) return coingeckoCache.prices;
+  try {
+    const res = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true',
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (res.ok) {
+      const data = await res.json();
+      coingeckoCache = { prices: data, fetchedAt: Date.now() };
+      console.log('[PRICE] CoinGecko fetch OK');
+      return data;
+    }
+  } catch (err) {
+    console.error('[PRICE] CoinGecko failed:', err.message);
+  }
+  return coingeckoCache.prices;
+}
 
 async function fetchLivePrice(symbol) {
   const dashSym = symbol.replace('/', '-');
 
-  // Try Python engine first
+  // 1. Try Python engine
   try {
-    const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`, { signal: AbortSignal.timeout(3000) });
     if (res.ok) {
       const data = await res.json();
-      if (data.price) return { dashSym, price: data.price };
+      if (data.price) return { dashSym, price: data.price, source: 'engine' };
     }
   } catch {}
 
-  // Fallback: Binance public API
+  // 2. Try Binance
   try {
     const binanceSym = BINANCE_MAP[symbol];
-    if (!binanceSym) return null;
-    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binanceSym}`, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.price) return { dashSym, price: parseFloat(data.price) };
+    if (binanceSym) {
+      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binanceSym}`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.price) return { dashSym, price: parseFloat(data.price), source: 'binance' };
+      }
     }
   } catch {}
 
-  // Fallback: latest candle from DB
+  // 3. Try CoinGecko
+  try {
+    const cgId = COINGECKO_MAP[symbol];
+    if (cgId) {
+      const cgData = await fetchCoinGeckoPrices();
+      if (cgData[cgId]?.usd) {
+        return { dashSym, price: cgData[cgId].usd, change24h: cgData[cgId].usd_24h_change, source: 'coingecko' };
+      }
+    }
+  } catch {}
+
+  // 4. Latest DB candle
   try {
     const { queryOne: qo } = require('./db/connection');
     const row = await qo(`SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`, [symbol]);
-    if (row?.close) return { dashSym, price: parseFloat(row.close) };
+    if (row?.close) return { dashSym, price: parseFloat(row.close), source: 'db' };
   } catch {}
 
   return null;
