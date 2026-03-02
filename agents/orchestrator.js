@@ -856,9 +856,9 @@ async function storePositionReview(review, cycleNum, agentDecisionId) {
 
 /**
  * Execute a single review decision (HOLD, CLOSE, TIGHTEN, PARTIAL_CLOSE).
- * Enforces minimum 4-hour hold time unless close_reason is sl_hit or regime flipped against position.
+ * Enforces minimum 1-hour hold time unless SL/TP hit, regime flipped against position, or bleeding out (>-3%).
  */
-const MIN_HOLD_HOURS = 4;
+const MIN_HOLD_HOURS = 1;
 
 async function executeReviewDecision(review, cycleNum) {
   // Minimum hold time enforcement: skip CLOSE/TIGHTEN/PARTIAL_CLOSE if trade is too young
@@ -868,10 +868,12 @@ async function executeReviewDecision(review, cycleNum) {
       const hoursHeld = (Date.now() - new Date(trade.opened_at).getTime()) / (1000 * 60 * 60);
 
       if (hoursHeld < MIN_HOLD_HOURS) {
-        // Allow early close ONLY for stop-loss hits
-        const isSlHit = review.close_reason === 'sl_hit' || review.reasoning?.toLowerCase().includes('stop loss');
+        // Reason 1: SL/TP hit — always allowed
+        const isSlTpHit = review.close_reason === 'sl_hit' || review.close_reason === 'tp_hit'
+          || review.reasoning?.toLowerCase().includes('stop loss')
+          || review.reasoning?.toLowerCase().includes('take profit');
 
-        // Allow early close if regime flipped directly against position direction
+        // Reason 2: Regime flipped against position direction
         let regimeFlippedAgainst = false;
         try {
           const currentRegime = await dbQueryOne(
@@ -885,12 +887,36 @@ async function executeReviewDecision(review, cycleNum) {
           }
         } catch { /* regime check failure — enforce hold */ }
 
-        if (!isSlHit && !regimeFlippedAgainst) {
+        // Reason 3: Bleeding out — unrealised P&L worse than -3%
+        let bleedingOut = false;
+        try {
+          let currentPrice;
+          const dashSymbol = trade.symbol.replace('/', '-');
+          try {
+            const res = await fetch(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/price/${dashSymbol}`,
+              { signal: AbortSignal.timeout(3000) });
+            if (res.ok) currentPrice = (await res.json()).price;
+          } catch { /* fall through to DB */ }
+          if (!currentPrice) {
+            const row = await marketDataDb.getLatestClose(trade.symbol);
+            if (row) currentPrice = parseFloat(row.close);
+          }
+          if (currentPrice) {
+            const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
+            const pnlPct = trade.side === 'buy'
+              ? ((currentPrice - entry) / entry) * 100
+              : ((entry - currentPrice) / entry) * 100;
+            bleedingOut = pnlPct <= -3;
+          }
+        } catch { /* price fetch failure — enforce hold */ }
+
+        if (!isSlTpHit && !regimeFlippedAgainst && !bleedingOut) {
           console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): ${review.decision.toUpperCase()} blocked — held only ${hoursHeld.toFixed(1)}h (min ${MIN_HOLD_HOURS}h). Forcing HOLD.`);
           review.decision = 'hold';
           review.hold_reason = `min_hold_time (${hoursHeld.toFixed(1)}h < ${MIN_HOLD_HOURS}h)`;
         } else {
-          console.log(`[ORCHESTRATOR] Position #${review.trade_id}: early ${review.decision} allowed (${isSlHit ? 'sl_hit' : 'regime_flipped'})`);
+          const reason = isSlTpHit ? 'sl_tp_hit' : regimeFlippedAgainst ? 'regime_flipped' : 'bleeding_out';
+          console.log(`[ORCHESTRATOR] Position #${review.trade_id}: early ${review.decision} allowed (${reason})`);
         }
       }
     }
