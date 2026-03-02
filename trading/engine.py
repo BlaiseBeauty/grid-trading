@@ -123,4 +123,5 @@ def monitor_positions():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5100))
-    app.run(host='0.0.0.0', port=port, debug=os.getenv('NODE_ENV') == 'development')
+    # Bind to '::' for dual-stack (IPv4 + IPv6) — required for Railway private networking
+    app.run(host='::', port=port, debug=os.getenv('NODE_ENV') == 'development')

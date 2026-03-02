@@ -4,4 +4,4 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY . .
 EXPOSE 5100
-CMD ["python", "engine.py"]
+CMD ["gunicorn", "--bind", "[::]:5100", "--timeout", "120", "--workers", "2", "engine:app"]

@@ -3,6 +3,6 @@ builder = "DOCKERFILE"
 dockerfilePath = "trading/Dockerfile"
 
 [deploy]
-startCommand = "python engine.py"
+startCommand = "gunicorn --bind '[::]:5100' --timeout 120 --workers 2 engine:app"
 healthcheckPath = "/health"
 healthcheckTimeout = 60
