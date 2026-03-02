@@ -70,6 +70,20 @@ export function useWebSocket() {
               s.fetchPortfolio();
               s.fetchStandingOrders();
               break;
+            case 'trade':
+              s.fetchTrades();
+              s.fetchPortfolio();
+              break;
+            case 'trade_closed':
+              s.fetchTrades();
+              s.fetchPortfolio();
+              break;
+            case 'scram_activated':
+              s.fetchSystem();
+              break;
+            case 'scram_cleared':
+              s.fetchSystem();
+              break;
           }
         } catch (err) {
           console.error('[WS] Message handling error:', err);
