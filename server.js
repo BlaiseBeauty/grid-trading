@@ -242,24 +242,34 @@ async function checkStopLossesFallback() {
     }
 
     if (action) {
-      const pnl = trade.side === 'buy'
-        ? (currentPrice - entry) * qty
-        : (entry - currentPrice) * qty;
-      const pnlPct = trade.side === 'buy'
-        ? ((currentPrice - entry) / entry) * 100
-        : ((entry - currentPrice) / entry) * 100;
+      // Use atomic close with SELECT FOR UPDATE to prevent race with position review
+      const result = await tradesDb.closeTradeAtomic(
+        trade.id,
+        async () => {
+          const pnl = trade.side === 'buy'
+            ? (currentPrice - entry) * qty
+            : (entry - currentPrice) * qty;
+          const pnlPct = trade.side === 'buy'
+            ? ((currentPrice - entry) / entry) * 100
+            : ((entry - currentPrice) / entry) * 100;
+          return {
+            exit_price: currentPrice,
+            pnl: Math.round(pnl * 10000) / 10000,
+            pnlPct: Math.round(pnlPct * 10000) / 10000,
+          };
+        },
+        {
+          outcome_reasoning: `Node.js fallback: ${action} @ ${currentPrice} (source: ${priceData.source})`,
+          close_reason: action,
+        }
+      );
 
-      await tradesDb.closeTrade(trade.id, {
-        exit_price: currentPrice,
-        pnl_realised: Math.round(pnl * 10000) / 10000,
-        pnl_pct: Math.round(pnlPct * 10000) / 10000,
-        outcome_class: null,
-        outcome_reasoning: `Node.js fallback: ${action} @ ${currentPrice} (source: ${priceData.source})`,
-        close_reason: action,
-      });
-
-      console.log(`[FALLBACK] ${action.upper ? action.toUpperCase() : action} — trade #${trade.id} ${trade.symbol} ${trade.side} closed @ ${currentPrice} (P&L: ${pnlPct.toFixed(2)}%)`);
-      closed.push({ trade_id: trade.id, action, exit_price: currentPrice, pnl_pct: Math.round(pnlPct * 100) / 100 });
+      if (result) {
+        console.log(`[FALLBACK] ${action} — trade #${trade.id} ${trade.symbol} ${trade.side} closed @ ${currentPrice} (P&L: ${result.pnl_pct}%)`);
+        closed.push({ trade_id: trade.id, action, exit_price: currentPrice, pnl_pct: result.pnl_pct });
+      } else {
+        console.log(`[FALLBACK] Trade #${trade.id} already closed — skipping`);
+      }
     }
   }
 
@@ -333,8 +343,11 @@ function setupCron() {
 
   // Check standing order triggers every 15 minutes
   cron.schedule('*/15 * * * *', async () => {
-    console.log('[CRON] Monitoring positions...');
+    console.log('[CRON] Monitoring standing orders...');
     try {
+      // Retry orders that failed due to transient errors (15-min cooldown)
+      const standingOrdersDb = require('./db/queries/standing-orders');
+      await standingOrdersDb.retryPending();
       await orchestrator.checkStandingOrders(broadcast);
     } catch (err) {
       console.error('[CRON] Standing order check failed:', err.message);

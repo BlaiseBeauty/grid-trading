@@ -1,12 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { createChart, AreaSeries } from 'lightweight-charts';
-import { api } from '../lib/api';
 
-export default function EquityCurve() {
+export default function EquityCurve({ data }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
-  const [hasData, setHasData] = useState(true);
 
+  // Create chart on mount
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -42,28 +41,6 @@ export default function EquityCurve() {
 
     chartRef.current = { chart, areaSeries };
 
-    async function loadData() {
-      try {
-        const snapshots = await api('/system/equity');
-        if (!snapshots?.length) {
-          setHasData(false);
-          return;
-        }
-        setHasData(true);
-        const data = snapshots.map(s => ({
-          time: Math.floor(new Date(s.created_at).getTime() / 1000),
-          value: parseFloat(s.total_value),
-        }));
-        areaSeries.setData(data);
-        chart.timeScale().fitContent();
-      } catch (err) {
-        console.error('Equity curve load failed:', err);
-        setHasData(false);
-      }
-    }
-
-    loadData();
-
     const resizeObserver = new ResizeObserver(entries => {
       const { width, height } = entries[0].contentRect;
       chart.applyOptions({ width, height });
@@ -76,13 +53,26 @@ export default function EquityCurve() {
     };
   }, []);
 
+  // Update chart when data prop changes
+  useEffect(() => {
+    if (!chartRef.current || !data?.length) return;
+    const chartData = data.map(s => ({
+      time: Math.floor(new Date(s.created_at).getTime() / 1000),
+      value: parseFloat(s.total_value),
+    }));
+    chartRef.current.areaSeries.setData(chartData);
+    chartRef.current.chart.timeScale().fitContent();
+  }, [data]);
+
+  const hasData = data?.length > 0;
+
   return (
     <div className="v2-equity-panel">
       <div className="v2-equity-header">
         <div className="v2-equity-title">Equity Curve</div>
       </div>
       {!hasData && (
-        <div className="v2-equity-empty">No equity data yet \u2014 run a cycle to start tracking</div>
+        <div className="v2-equity-empty">No equity data yet — run a cycle to start tracking</div>
       )}
       <div ref={containerRef} className="v2-equity-container" style={{ display: hasData ? 'block' : 'none' }} />
 

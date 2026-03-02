@@ -30,6 +30,29 @@ async function revertToActive(id) {
   );
 }
 
+async function markFailed(id, reason) {
+  return query(
+    `UPDATE standing_orders SET status = 'failed', failure_reason = $2, failed_at = NOW()
+     WHERE id = $1 AND status IN ('triggered', 'active')`,
+    [id, reason || 'execution_failed']
+  );
+}
+
+async function markPendingRetry(id, reason) {
+  return query(
+    `UPDATE standing_orders SET status = 'pending_retry', failure_reason = $2, failed_at = NOW()
+     WHERE id = $1 AND status = 'triggered'`,
+    [id, reason || 'transient_failure']
+  );
+}
+
+async function retryPending() {
+  return query(`
+    UPDATE standing_orders SET status = 'active', failure_reason = NULL, failed_at = NULL
+    WHERE status = 'pending_retry' AND failed_at < NOW() - INTERVAL '15 minutes'
+  `);
+}
+
 async function expireOld() {
   return query(`
     UPDATE standing_orders SET status = 'expired'
@@ -53,4 +76,4 @@ async function createFromSynthesizer({ agentName, agentDecisionId, symbol, side,
       confidence, expiresHours]);
 }
 
-module.exports = { fetchActive, claimOrder, linkTrade, revertToActive, expireOld, createFromSynthesizer };
+module.exports = { fetchActive, claimOrder, linkTrade, revertToActive, markFailed, markPendingRetry, retryPending, expireOld, createFromSynthesizer };

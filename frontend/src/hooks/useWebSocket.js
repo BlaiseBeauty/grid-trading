@@ -45,6 +45,7 @@ export function useWebSocket() {
               s.fetchSignals();
               s.fetchAgents();
               s.fetchSystem();
+              s.fetchEquity();
               break;
             case 'trades_executed':
               s.fetchTrades();

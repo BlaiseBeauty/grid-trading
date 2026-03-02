@@ -35,6 +35,7 @@ export default function Dashboard() {
   const fetchTrades = useDataStore(s => s.fetchTrades);
   const fetchSystem = useDataStore(s => s.fetchSystem);
   const fetchPrices = useDataStore(s => s.fetchPrices);
+  const fetchEquity = useDataStore(s => s.fetchEquity);
   const triggerCycle = useDataStore(s => s.triggerCycle);
   const refreshData = useDataStore(s => s.refreshData);
   const signals = useDataStore(s => s.signals);
@@ -44,9 +45,10 @@ export default function Dashboard() {
   const system = useDataStore(s => s.system);
   const prices = useDataStore(s => s.prices);
   const realisedPnl = useDataStore(s => s.realisedPnl);
-  const portfolioValue = useDataStore(s => s.portfolioValue);
+  const startingCapital = useDataStore(s => s.startingCapital);
   const tradeStats = useDataStore(s => s.tradeStats);
   const costs = useDataStore(s => s.costs);
+  const equity = useDataStore(s => s.equity);
   const cycleStatus = useDataStore(s => s.cycleStatus);
   const tradeFlash = useDataStore(s => s.tradeFlash);
   const setTradeFlash = useDataStore(s => s.setTradeFlash);
@@ -60,6 +62,7 @@ export default function Dashboard() {
     fetchSignals();
     fetchTrades();
     fetchSystem();
+    fetchEquity();
     fetchPrices();
     const priceInterval = setInterval(fetchPrices, 30_000);
     return () => clearInterval(priceInterval);
@@ -112,6 +115,7 @@ export default function Dashboard() {
     return sum + (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty);
   }, 0);
   const totalPnl = realisedPnl + liveUnrealisedPnl;
+  const livePortfolioValue = startingCapital + realisedPnl + liveUnrealisedPnl;
   const closedCount = parseInt(tradeStats?.total_closed || 0);
   const winRate = closedCount > 0 ? parseFloat(tradeStats?.win_rate || 0) : null;
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
@@ -135,7 +139,7 @@ export default function Dashboard() {
       <div className="v2-kpi-strip">
         <GlowCard className="v2-kpi v2-animate-in v2-stagger-1">
           <div className="v2-kpi-label">Portfolio Value</div>
-          <TickingNumber value={portfolioValue || 10000} format="money" decimals={2} colorize={false} />
+          <TickingNumber value={livePortfolioValue} format="money" decimals={2} colorize={false} />
         </GlowCard>
         <GlowCard className="v2-kpi v2-animate-in v2-stagger-2" glowColor={totalPnl >= 0 ? 'green' : 'red'}>
           <div className="v2-kpi-label">Total P&L</div>
@@ -213,7 +217,7 @@ export default function Dashboard() {
       <div className="v2-charts-row v2-animate-in v2-stagger-3">
         <Chart />
         <GlowCard className="v2-equity-wrap" padding="0">
-          <EquityCurve />
+          <EquityCurve data={equity} />
         </GlowCard>
       </div>
 
@@ -347,11 +351,11 @@ export default function Dashboard() {
               <div className="v2-health-row">
                 <span className="v2-health-label">Win Rate</span>
                 <ProgressRing
-                  value={(system.trade_stats?.total_closed || 0) > 0 ? (system.trade_stats?.win_rate || 0) : 0}
+                  value={winRate ?? 0}
                   size={40}
                   strokeWidth={3}
                   color={winRate != null && winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
-                  label={(system.trade_stats?.total_closed || 0) === 0 ? '--' : undefined}
+                  label={winRate === null ? '--' : undefined}
                 />
               </div>
               <div className="v2-health-row">

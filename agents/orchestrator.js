@@ -237,6 +237,19 @@ async function checkStandingOrders(broadcast) {
         continue;
       }
 
+      // Position deduplication: skip if symbol already has an open trade
+      const existingOpen = await dbQueryOne(
+        "SELECT id FROM trades WHERE symbol = $1 AND status = 'open' LIMIT 1",
+        [order.symbol]
+      );
+      if (existingOpen) {
+        console.log(`[MONITOR] Skipping standing order #${order.id} — open trade #${existingOpen.id} on ${order.symbol} already exists`);
+        // Mark as failed rather than reverting to active (prevents retry loop)
+        await standingOrdersDb.markFailed(order.id, 'duplicate_position')
+          .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
+        continue;
+      }
+
       // Parse execution params for TP/SL
       const exec = typeof order.execution_params === 'string' ? JSON.parse(order.execution_params) : (order.execution_params || {});
 
@@ -278,9 +291,17 @@ async function checkStandingOrders(broadcast) {
       triggered.push({ order_id: order.id, trade_id: tradeResult.trade_id, symbol: order.symbol });
     } catch (err) {
       console.error(`[MONITOR] Failed to execute standing order #${order.id} for ${order.symbol}:`, err.message);
-      // Revert to active so it can retry next check
-      await standingOrdersDb.revertToActive(order.id)
-        .catch(revertErr => logger.error('Failed to revert standing order status', { err: revertErr, error_type: 'standing_order', symbol: order.symbol }));
+      // Determine if failure is transient (network/timeout) or permanent
+      const isTransient = err.message.includes('timeout') || err.message.includes('ECONNREFUSED') || err.message.includes('ECONNRESET');
+      if (isTransient) {
+        // Transient failure: mark as pending_retry (auto-retries after 15 min cooldown)
+        await standingOrdersDb.markPendingRetry(order.id, err.message.slice(0, 100))
+          .catch(retryErr => logger.error('Failed to mark standing order pending_retry', { err: retryErr, error_type: 'standing_order', symbol: order.symbol }));
+      } else {
+        // Permanent failure: mark as failed (requires manual intervention)
+        await standingOrdersDb.markFailed(order.id, err.message.slice(0, 100))
+          .catch(failErr => logger.error('Failed to mark standing order as failed', { err: failErr, error_type: 'standing_order', symbol: order.symbol }));
+      }
     }
   }
 
@@ -638,6 +659,16 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
   const trades = [];
   for (const trade of riskResult.approved) {
     try {
+      // Position deduplication: skip if symbol already has an open trade
+      const existingOpen = await dbQueryOne(
+        "SELECT id FROM trades WHERE symbol = $1 AND status = 'open' LIMIT 1",
+        [trade.symbol]
+      );
+      if (existingOpen) {
+        console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — open trade #${existingOpen.id} already exists`);
+        continue;
+      }
+
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
       const result = await executeTrade({
         symbol: trade.symbol,
@@ -825,8 +856,46 @@ async function storePositionReview(review, cycleNum, agentDecisionId) {
 
 /**
  * Execute a single review decision (HOLD, CLOSE, TIGHTEN, PARTIAL_CLOSE).
+ * Enforces minimum 4-hour hold time unless close_reason is sl_hit or regime flipped against position.
  */
+const MIN_HOLD_HOURS = 4;
+
 async function executeReviewDecision(review, cycleNum) {
+  // Minimum hold time enforcement: skip CLOSE/TIGHTEN/PARTIAL_CLOSE if trade is too young
+  if (review.decision !== 'hold') {
+    const trade = await tradesDb.getById(review.trade_id);
+    if (trade && trade.opened_at) {
+      const hoursHeld = (Date.now() - new Date(trade.opened_at).getTime()) / (1000 * 60 * 60);
+
+      if (hoursHeld < MIN_HOLD_HOURS) {
+        // Allow early close ONLY for stop-loss hits
+        const isSlHit = review.close_reason === 'sl_hit' || review.reasoning?.toLowerCase().includes('stop loss');
+
+        // Allow early close if regime flipped directly against position direction
+        let regimeFlippedAgainst = false;
+        try {
+          const currentRegime = await dbQueryOne(
+            "SELECT regime FROM market_regime WHERE asset_class = 'crypto' ORDER BY created_at DESC LIMIT 1"
+          );
+          if (currentRegime?.regime) {
+            const r = currentRegime.regime;
+            regimeFlippedAgainst =
+              (trade.side === 'buy' && r === 'trending_down') ||
+              (trade.side === 'sell' && r === 'trending_up');
+          }
+        } catch { /* regime check failure — enforce hold */ }
+
+        if (!isSlHit && !regimeFlippedAgainst) {
+          console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): ${review.decision.toUpperCase()} blocked — held only ${hoursHeld.toFixed(1)}h (min ${MIN_HOLD_HOURS}h). Forcing HOLD.`);
+          review.decision = 'hold';
+          review.hold_reason = `min_hold_time (${hoursHeld.toFixed(1)}h < ${MIN_HOLD_HOURS}h)`;
+        } else {
+          console.log(`[ORCHESTRATOR] Position #${review.trade_id}: early ${review.decision} allowed (${isSlHit ? 'sl_hit' : 'regime_flipped'})`);
+        }
+      }
+    }
+  }
+
   switch (review.decision) {
     case 'hold':
       console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): HOLD`);
@@ -841,30 +910,28 @@ async function executeReviewDecision(review, cycleNum) {
       } catch (pyErr) {
         console.warn(`[ORCHESTRATOR] Python close failed for #${review.trade_id}, using DB fallback:`, pyErr.message);
         try {
-          // Fallback: close directly in DB (no slippage simulation)
-          const trade = await tradesDb.getById(review.trade_id);
-          if (trade && trade.status === 'open') {
-            // Get current price from latest market data
-            const priceRow = await marketDataDb.getLatestClose(trade.symbol);
-            const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(trade.entry_price);
-            const entryPrice = parseFloat(trade.entry_price);
-            const pnl = trade.side === 'buy'
-              ? (exitPrice - entryPrice) * parseFloat(trade.quantity)
-              : (entryPrice - exitPrice) * parseFloat(trade.quantity);
-            const pnlPct = trade.side === 'buy'
-              ? ((exitPrice - entryPrice) / entryPrice) * 100
-              : ((entryPrice - exitPrice) / entryPrice) * 100;
-
-            await tradesDb.closeTrade(review.trade_id, {
-              exit_price: exitPrice,
-              pnl_realised: pnl,
-              pnl_pct: pnlPct,
-              outcome_class: null,
-              outcome_reasoning: review.reasoning,
-              close_reason: 'position_review',
-            });
+          // Fallback: close directly in DB using atomic transaction (SELECT FOR UPDATE)
+          const closed = await tradesDb.closeTradeAtomic(
+            review.trade_id,
+            async (trade) => {
+              const priceRow = await marketDataDb.getLatestClose(trade.symbol);
+              const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(trade.entry_price);
+              const entryPrice = parseFloat(trade.entry_price);
+              const pnl = trade.side === 'buy'
+                ? (exitPrice - entryPrice) * parseFloat(trade.quantity)
+                : (entryPrice - exitPrice) * parseFloat(trade.quantity);
+              const pnlPct = trade.side === 'buy'
+                ? ((exitPrice - entryPrice) / entryPrice) * 100
+                : ((entryPrice - exitPrice) / entryPrice) * 100;
+              return { exit_price: exitPrice, pnl, pnlPct };
+            },
+            { outcome_reasoning: review.reasoning, close_reason: 'position_review' }
+          );
+          if (closed) {
             review.close_executed = true;
-            console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback — P&L: ${pnlPct.toFixed(2)}%`);
+            console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback (atomic) — P&L: ${closed.pnl_pct}%`);
+          } else {
+            console.log(`[ORCHESTRATOR] Trade #${review.trade_id} already closed — skipping`);
           }
         } catch (dbErr) {
           console.error(`[ORCHESTRATOR] DB fallback close also failed for #${review.trade_id}:`, dbErr.message);

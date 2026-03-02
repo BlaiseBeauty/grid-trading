@@ -5,9 +5,13 @@ export const useDataStore = create((set, get) => ({
   // Portfolio
   portfolio: [],
   portfolioValue: 0,
+  startingCapital: 10000,
   realisedPnl: 0,
   unrealisedPnl: 0,
   tradeStats: null,
+
+  // Equity curve
+  equity: [],
 
   // Agents
   agents: null,
@@ -81,6 +85,7 @@ export const useDataStore = create((set, get) => ({
       set({
         portfolio: holdings,
         portfolioValue: total_value || starting_capital || 10000,
+        startingCapital: parseFloat(starting_capital || 10000),
         realisedPnl: parseFloat(realised_pnl || 0),
         unrealisedPnl: parseFloat(unrealised_pnl || 0),
         tradeStats: stats,
@@ -115,7 +120,7 @@ export const useDataStore = create((set, get) => ({
     try {
       const [trades, openTrades] = await Promise.all([
         api('/trades?limit=50'),
-        api('/trades?status=open'),
+        api('/trades/open'),
       ]);
       set({ trades, openTrades });
     } catch (err) { console.error('Trades fetch:', err); }
@@ -160,6 +165,13 @@ export const useDataStore = create((set, get) => ({
       ]);
       set({ system, costs, lastCycle });
     } catch (err) { console.error('System fetch:', err); }
+  },
+
+  fetchEquity: async () => {
+    try {
+      const equity = await api('/system/equity');
+      set({ equity: equity || [] });
+    } catch (err) { console.error('Equity fetch:', err); }
   },
 
   fetchPrices: async () => {

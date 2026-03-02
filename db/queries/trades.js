@@ -1,4 +1,4 @@
-const { queryAll, queryOne, query } = require('../connection');
+const { queryAll, queryOne, query, transaction } = require('../connection');
 
 async function getAll({ limit = 50, offset = 0, status, symbol } = {}) {
   const conditions = [];
@@ -105,4 +105,34 @@ async function getStats() {
   `);
 }
 
-module.exports = { getAll, getById, getOpen, create, closeTrade, updateStops, getOpenWithSignals, getStats };
+/**
+ * Atomically close a trade using SELECT FOR UPDATE inside a transaction.
+ * Prevents race conditions where two processes close the same trade simultaneously.
+ * The calcPnl callback receives the locked trade row and must return { exit_price, pnl, pnlPct }.
+ */
+async function closeTradeAtomic(tradeId, calcPnl, { outcome_reasoning, close_reason } = {}) {
+  return transaction(async (client) => {
+    const { rows } = await client.query(
+      "SELECT * FROM trades WHERE id = $1 AND status = 'open' FOR UPDATE",
+      [tradeId]
+    );
+    const trade = rows[0];
+    if (!trade) return null; // Already closed or doesn't exist
+
+    const { exit_price, pnl, pnlPct } = await calcPnl(trade);
+
+    const { rows: updated } = await client.query(`
+      UPDATE trades SET
+        exit_price = $2, pnl_realised = $3, pnl_pct = $4,
+        outcome_class = NULL, outcome_reasoning = $5,
+        close_reason = COALESCE($6, close_reason),
+        status = 'closed', closed_at = NOW()
+      WHERE id = $1
+      RETURNING *
+    `, [tradeId, exit_price, pnl, pnlPct, outcome_reasoning || null, close_reason || null]);
+
+    return updated[0];
+  });
+}
+
+module.exports = { getAll, getById, getOpen, create, closeTrade, updateStops, getOpenWithSignals, getStats, closeTradeAtomic };
