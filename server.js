@@ -301,6 +301,29 @@ function setupCron() {
     catch (err) { console.error('[CRON] Candle refresh failed:', err.message); }
   });
 
+  // Python engine health check every 5 minutes
+  let pythonFailCount = 0;
+  cron.schedule('*/5 * * * *', async () => {
+    try {
+      const res = await fetch(`${PYTHON_ENGINE_URL}/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (pythonFailCount > 0) console.log('[HEALTH] Python engine recovered');
+      pythonFailCount = 0;
+    } catch (err) {
+      pythonFailCount++;
+      console.error(`[HEALTH] Python engine check failed (${pythonFailCount}/3): ${err.message}`);
+      if (pythonFailCount >= 3) {
+        console.error('[CRITICAL] Python engine unreachable — 3 consecutive failures');
+        broadcast('scram_warning', {
+          reason: 'Python engine unreachable',
+          failures: pythonFailCount,
+        });
+      }
+    }
+  });
+
   // Broadcast live prices every 10 seconds
   const { queryOne: queryOnePrice } = require('./db/connection');
 
