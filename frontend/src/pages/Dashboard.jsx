@@ -845,22 +845,6 @@ function CyclePipeline({ cycleStatus }) {
   const completed = cycleStatus.completed || [];
   const knowledgeAgents = cycleStatus.agents || [];
 
-  const stageStatus = PIPELINE_STAGES.map((stage, i) => {
-    if (stage === 'knowledge') {
-      const knowledgeDone = completed.filter(c => !STRATEGY_AGENTS.includes(c.agent_name)).length;
-      return knowledgeDone >= knowledgeAgents.length ? 'done' : knowledgeDone > 0 ? 'active' : 'pending';
-    }
-    if (stage === 'regime') {
-      return completed.some(c => c.agent_name === 'regime_classifier') ? 'done' : stageStatus?.[0] === 'done' ? 'active' : 'pending';
-    }
-    const agentName = stage === 'regime' ? 'regime_classifier' : stage;
-    if (completed.some(c => c.agent_name === agentName)) return 'done';
-    // Active if previous stage is done
-    const prevDone = i === 0 || stageStatus?.[i - 1] === 'done';
-    return prevDone ? 'active' : 'pending';
-  });
-
-  // Recompute properly since we can't self-reference in map
   const statuses = [];
   for (let i = 0; i < PIPELINE_STAGES.length; i++) {
     const stage = PIPELINE_STAGES[i];

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-route
 import { useAuthStore } from './stores/auth';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
+import KPIBar from './components/KPIBar';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Agents from './pages/Agents';
@@ -40,6 +41,7 @@ function Layout({ children }) {
         minHeight: '100vh',
         overflow: 'auto',
       }}>
+        <KPIBar />
         <div key={location.pathname} className="v2-page-transition">
           {children}
         </div>
