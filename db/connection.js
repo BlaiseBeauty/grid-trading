@@ -11,6 +11,10 @@ pool.on('error', (err) => {
   console.error('[DB] Unexpected pool error:', err.message);
 });
 
+// Log queries taking >500ms
+const { wrapPoolQuery } = require('./query-logger');
+wrapPoolQuery(pool);
+
 // Query helper
 async function query(text, params) {
   const result = await pool.query(text, params);
