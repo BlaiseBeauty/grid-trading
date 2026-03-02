@@ -54,8 +54,8 @@ body {
   font-family: 'Outfit', sans-serif;
   font-weight: 400;
   font-size: 14px;
-  color: var(--t1);
-  background: var(--void);
+  color: var(--v2-text-primary, var(--t1));
+  background: var(--v2-bg-primary, var(--void));
   -webkit-font-smoothing: antialiased;
 }
 

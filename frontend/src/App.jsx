@@ -34,8 +34,8 @@ function Layout({ children }) {
       <main style={{
         marginLeft: 'var(--sidebar-width)',
         flex: 1,
-        padding: 'var(--space-xl)',
-        background: 'var(--abyss)',
+        padding: 'var(--v2-space-xl)',
+        background: 'var(--v2-bg-primary)',
         minHeight: '100vh',
         overflow: 'auto',
       }}>
