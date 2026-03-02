@@ -277,6 +277,17 @@ function setupCron() {
     }
   });
 
+  // Hourly position review (independent of 4h cycle, runs at :30)
+  cron.schedule('30 * * * *', async () => {
+    console.log('[CRON] Running hourly position review...');
+    try {
+      const result = await orchestrator.reviewOpenPositions(0, broadcast);
+      console.log(`[CRON] Position review: ${result.reviews.length} reviewed`);
+    } catch (err) {
+      console.error('[CRON] Hourly position review failed:', err.message);
+    }
+  });
+
   // Fetch external data every 30 minutes
   const { fetchAll } = require('./agents/external-data-fetcher');
   cron.schedule('*/30 * * * *', async () => {
@@ -290,7 +301,7 @@ function setupCron() {
     catch (err) { console.error('[CRON] Candle refresh failed:', err.message); }
   });
 
-  // Broadcast live prices every 30 seconds
+  // Broadcast live prices every 10 seconds
   const { queryOne: queryOnePrice } = require('./db/connection');
 
   setInterval(async () => {
@@ -310,7 +321,7 @@ function setupCron() {
         console.error(`[PRICE] ${symbol} broadcast failed:`, err.message);
       }
     }
-  }, 30_000);
+  }, 10_000);
 }
 
 // ---------- Boot ----------
