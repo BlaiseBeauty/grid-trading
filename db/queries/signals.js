@@ -51,4 +51,12 @@ async function cleanExpired() {
   return query("DELETE FROM signals WHERE expires_at < NOW() - INTERVAL '7 days'");
 }
 
-module.exports = { getActive, getRecent, create, cleanExpired };
+async function linkToTrade(tradeId, signalId, strengthAtEntry) {
+  return query(`
+    INSERT INTO trade_signals (trade_id, signal_id, was_entry_signal, strength_at_entry)
+    VALUES ($1, $2, true, $3)
+    ON CONFLICT DO NOTHING
+  `, [tradeId, signalId, strengthAtEntry]);
+}
+
+module.exports = { getActive, getRecent, create, cleanExpired, linkToTrade };

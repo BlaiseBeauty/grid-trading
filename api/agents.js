@@ -49,7 +49,9 @@ async function routes(fastify) {
   });
 
   // POST /api/agents/cycle — manually trigger a full agent cycle
-  fastify.post('/agents/cycle', async (request, reply) => {
+  fastify.post('/agents/cycle', {
+    schema: { body: { type: 'object', properties: {} } },
+  }, async (request, reply) => {
     // Run async — don't block the response
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);

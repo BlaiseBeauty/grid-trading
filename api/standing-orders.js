@@ -23,12 +23,23 @@ async function routes(fastify) {
   });
 
   // POST /api/standing-orders — create manual standing order
-  fastify.post('/standing-orders', async (request, reply) => {
+  fastify.post('/standing-orders', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['symbol', 'side', 'conditions'],
+        properties: {
+          symbol:           { type: 'string', minLength: 1 },
+          side:             { type: 'string', enum: ['buy', 'sell'] },
+          conditions:       { type: 'object' },
+          execution_params: { type: 'object', default: {} },
+          confidence:       { type: 'number', minimum: 0, maximum: 100, default: 50 },
+          expires_hours:    { type: 'number', minimum: 1, maximum: 720, default: 24 },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const { symbol, side, conditions, execution_params, confidence, expires_hours } = request.body;
-
-    if (!symbol || !side || !conditions) {
-      return reply.code(400).send({ error: 'symbol, side, and conditions are required' });
-    }
 
     const expiresAt = new Date(Date.now() + (expires_hours || 24) * 3600 * 1000).toISOString();
 

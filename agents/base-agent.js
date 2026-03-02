@@ -13,6 +13,7 @@ const costsDb = require('../db/queries/costs');
 const learningsDb = require('../db/queries/learnings');
 const AGENT_PROMPTS = require('../config/agent-prompts');
 const { CONTEXT_BUILDERS } = require('./context-builders');
+const logger = require('../services/logger');
 
 const client = new Anthropic();
 
@@ -243,8 +244,8 @@ class BaseAgent {
       // Try parsing entire response as JSON
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return JSON.parse(trimmed);
-    } catch {
-      // JSON may be truncated (hit max_tokens). Try to salvage complete signals.
+    } catch (err) {
+      logger.debug('JSON parse failed, attempting truncation recovery', { err, agent_name: this.name, error_type: 'json_parse' });
     }
 
     // Truncated JSON recovery: extract individual signal objects from the array
@@ -266,7 +267,9 @@ class BaseAgent {
           if (depth === 0 && objStart >= 0) {
             try {
               signals.push(JSON.parse(text.substring(objStart, i + 1)));
-            } catch { /* skip malformed signal */ }
+            } catch (err) {
+              logger.debug('Skipped malformed signal object in recovery', { err, agent_name: this.name, error_type: 'json_recovery' });
+            }
             objStart = -1;
           }
         }
@@ -276,7 +279,9 @@ class BaseAgent {
         console.log(`[${this.name.toUpperCase()}] Recovered ${signals.length} signals from truncated JSON`);
         return { signals, overallConfidence: null };
       }
-    } catch { /* recovery failed */ }
+    } catch (err) {
+      logger.warn('Truncated JSON recovery failed', { err, agent_name: this.name, error_type: 'json_recovery' });
+    }
 
     return { signals: [], overallConfidence: null };
   }
@@ -298,7 +303,8 @@ class BaseAgent {
       return learnings.map(l =>
         `- [${l.confidence}] ${l.insight_text} (${l.category})`
       ).join('\n');
-    } catch {
+    } catch (err) {
+      logger.warn('Memory injection failed', { err, agent_name: this.name, error_type: 'memory_injection' });
       return null;
     }
   }

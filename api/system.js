@@ -132,7 +132,9 @@ async function routes(fastify) {
   });
 
   // POST /api/system/run-cycle — trigger a full agent cycle (fire-and-forget)
-  fastify.post('/system/run-cycle', async (request, reply) => {
+  fastify.post('/system/run-cycle', {
+    schema: { body: { type: 'object', properties: {} } },
+  }, async (request, reply) => {
     const orchestrator = require('../agents/orchestrator');
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);

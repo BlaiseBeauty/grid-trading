@@ -27,7 +27,38 @@ async function routes(fastify) {
     return trade || { error: 'Trade not found' };
   });
 
-  fastify.post('/trades', async (request, reply) => {
+  fastify.post('/trades', {
+    schema: {
+      body: {
+        type: 'object',
+        required: ['symbol', 'side', 'quantity', 'entry_price'],
+        properties: {
+          symbol:            { type: 'string', minLength: 1 },
+          asset_class:       { type: 'string' },
+          exchange:          { type: 'string' },
+          side:              { type: 'string', enum: ['buy', 'sell'] },
+          quantity:          { type: 'number', exclusiveMinimum: 0 },
+          entry_price:       { type: 'number', exclusiveMinimum: 0 },
+          tp_price:          { type: ['number', 'null'] },
+          sl_price:          { type: ['number', 'null'] },
+          template_id:       { type: ['integer', 'null'] },
+          execution_tier:    { type: 'string' },
+          confidence:        { type: ['number', 'null'] },
+          mode:              { type: 'string', enum: ['paper', 'live'] },
+          cycle_number:      { type: ['integer', 'null'] },
+          agent_decision_id: { type: ['integer', 'null'] },
+          reasoning:         { type: ['string', 'null'] },
+          bootstrap_phase:   { type: ['string', 'null'] },
+          entry_confidence:  { type: ['number', 'null'] },
+          kelly_optimal_pct: { type: ['number', 'null'] },
+          kelly_inputs:      { type: ['object', 'null'] },
+          complexity_score:  { type: ['number', 'null'] },
+          signal_domains:    {},
+          signal_timeframes: {},
+        },
+      },
+    },
+  }, async (request, reply) => {
     const trade = await tradesDb.create(request.body);
     fastify.broadcast('trade', trade);
     return reply.code(201).send(trade);

@@ -2,6 +2,7 @@ require('dotenv').config();
 const path = require('path');
 const fastify = require('fastify')({ logger: true });
 const { migrate } = require('./db/migrate');
+const logger = require('./services/logger');
 
 const PORT = process.env.PORT || 3100;
 
@@ -80,7 +81,9 @@ async function registerRoutes() {
             );
             const oldPrice = old24h ? parseFloat(old24h.close) : null;
             change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
-          } catch {}
+          } catch (err) {
+            logger.debug('24h price change query failed', { err, symbol, error_type: 'price_fallback' });
+          }
         }
         return { symbol: result.dashSym, price: result.price, change24h };
       })
@@ -162,7 +165,9 @@ async function fetchLivePrice(symbol) {
       const data = await res.json();
       if (data.price) return { dashSym, price: data.price, source: 'engine' };
     }
-  } catch {}
+  } catch (err) {
+    logger.debug('Python engine price unavailable', { err, symbol, error_type: 'price_fallback' });
+  }
 
   // 2. Try Binance
   try {
@@ -174,7 +179,9 @@ async function fetchLivePrice(symbol) {
         if (data.price) return { dashSym, price: parseFloat(data.price), source: 'binance' };
       }
     }
-  } catch {}
+  } catch (err) {
+    logger.debug('Binance price unavailable', { err, symbol, error_type: 'price_fallback' });
+  }
 
   // 3. Try CoinGecko
   try {
@@ -185,14 +192,18 @@ async function fetchLivePrice(symbol) {
         return { dashSym, price: cgData[cgId].usd, change24h: cgData[cgId].usd_24h_change, source: 'coingecko' };
       }
     }
-  } catch {}
+  } catch (err) {
+    logger.debug('CoinGecko price unavailable', { err, symbol, error_type: 'price_fallback' });
+  }
 
   // 4. Latest DB candle
   try {
     const { queryOne: qo } = require('./db/connection');
     const row = await qo(`SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`, [symbol]);
     if (row?.close) return { dashSym, price: parseFloat(row.close), source: 'db' };
-  } catch {}
+  } catch (err) {
+    logger.debug('DB candle fallback failed', { err, symbol, error_type: 'price_fallback' });
+  }
 
   return null;
 }

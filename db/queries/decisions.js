@@ -44,4 +44,9 @@ async function getCostSummary() {
   `);
 }
 
-module.exports = { getRecent, getById, create, getCostSummary };
+async function getLastCycleNumber() {
+  const row = await queryOne('SELECT MAX(cycle_number) as max_cycle FROM agent_decisions');
+  return parseInt(row?.max_cycle) || 0;
+}
+
+module.exports = { getRecent, getById, create, getCostSummary, getLastCycleNumber };

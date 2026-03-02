@@ -10,8 +10,14 @@ const decisionsDb = require('../db/queries/decisions');
 const costsDb = require('../db/queries/costs');
 const signalsDb = require('../db/queries/signals');
 const portfolioDb = require('../db/queries/portfolio');
-const { query: dbQuery, queryOne: dbQueryOne } = require('../db/connection');
+const standingOrdersDb = require('../db/queries/standing-orders');
+const indicatorCacheDb = require('../db/queries/indicator-cache');
+const equityDb = require('../db/queries/equity');
+const positionReviewsDb = require('../db/queries/position-reviews');
+const marketDataDb = require('../db/queries/market-data');
+const { queryOne: dbQueryOne } = require('../db/connection');
 const { notifications } = require('../services/notifications');
+const logger = require('../services/logger');
 const { symbols: trackedSymbols, timeframes } = require('../config/symbols');
 
 // Knowledge agents (8 total — all run in parallel)
@@ -170,14 +176,10 @@ function monitorPositions() {
  * Check active standing orders against current prices. Trigger + execute as paper trades.
  */
 async function checkStandingOrders(broadcast) {
-  const { queryAll: dbQueryAll } = require('../db/connection');
-
   // 1. Fetch active, non-expired standing orders
   let orders;
   try {
-    orders = await dbQueryAll(`
-      SELECT * FROM standing_orders WHERE status = 'active' AND expires_at > NOW()
-    `);
+    orders = await standingOrdersDb.fetchActive();
   } catch (err) {
     console.error('[MONITOR] Failed to fetch standing orders:', err.message);
     return [];
@@ -198,14 +200,13 @@ async function checkStandingOrders(broadcast) {
         const data = await res.json();
         currentPrice = data.price;
       }
-    } catch {}
+    } catch (err) {
+      logger.debug('Live price unavailable for standing order', { err, symbol: order.symbol, error_type: 'price_fallback' });
+    }
 
     if (!currentPrice) {
       try {
-        const row = await dbQueryOne(
-          `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
-          [order.symbol]
-        );
+        const row = await marketDataDb.getLatestClose(order.symbol);
         if (!row) continue;
         currentPrice = parseFloat(row.close);
       } catch (err) {
@@ -229,10 +230,7 @@ async function checkStandingOrders(broadcast) {
     // 4. Trigger: atomically claim the order to prevent duplicate execution
     try {
       // Atomic claim: only succeeds if status is still 'active' (prevents concurrent triggers)
-      const claimed = await dbQuery(
-        `UPDATE standing_orders SET status = 'triggered', triggered_at = NOW() WHERE id = $1 AND status = 'active' RETURNING id`,
-        [order.id]
-      );
+      const claimed = await standingOrdersDb.claimOrder(order.id);
       if (claimed.rowCount === 0) {
         console.log(`[MONITOR] Standing order #${order.id} already claimed by another process — skipping`);
         continue;
@@ -260,10 +258,7 @@ async function checkStandingOrders(broadcast) {
       });
 
       // Link trade back to standing order
-      await dbQuery(
-        `UPDATE standing_orders SET status = 'executed', executed_at = NOW(), trade_id = $2 WHERE id = $1`,
-        [order.id, tradeResult.trade_id]
-      );
+      await standingOrdersDb.linkTrade(order.id, tradeResult.trade_id);
 
       const triggerPrice = cond.price_below || cond.price_above || currentPrice;
       console.log(`[MONITOR] Standing order triggered: ${order.symbol} ${order.side} @ ${triggerPrice}`);
@@ -283,10 +278,8 @@ async function checkStandingOrders(broadcast) {
     } catch (err) {
       console.error(`[MONITOR] Failed to execute standing order #${order.id} for ${order.symbol}:`, err.message);
       // Revert to active so it can retry next check
-      await dbQuery(
-        `UPDATE standing_orders SET status = 'active' WHERE id = $1 AND status = 'triggered'`,
-        [order.id]
-      ).catch(() => {});
+      await standingOrdersDb.revertToActive(order.id)
+        .catch(revertErr => logger.error('Failed to revert standing order status', { err: revertErr, error_type: 'standing_order', symbol: order.symbol }));
     }
   }
 
@@ -353,8 +346,10 @@ const INDICATOR_DOMAINS = {
 async function cacheIndicators(indicators) {
   // Clean expired indicator cache entries
   try {
-    await dbQuery(`DELETE FROM external_data_cache WHERE source = 'indicators' AND fetched_at < NOW() - INTERVAL '1 second' * ttl_seconds`);
-  } catch { /* ignore cleanup errors */ }
+    await indicatorCacheDb.cleanExpired();
+  } catch (err) {
+    logger.debug('Indicator cache cleanup skipped', { err, error_type: 'cache_cleanup' });
+  }
 
   for (const [symbol, data] of Object.entries(indicators)) {
     if (!data) continue;
@@ -370,12 +365,7 @@ async function cacheIndicators(indicators) {
       if (Object.keys(domainData).length === 0) continue;
 
       try {
-        await dbQuery(`
-          INSERT INTO external_data_cache (source, metric, symbol, data, ttl_seconds)
-          VALUES ('indicators', $1, $2, $3, 14400)
-          ON CONFLICT (source, metric, COALESCE(symbol, ''))
-          DO UPDATE SET data = EXCLUDED.data, fetched_at = NOW()
-        `, [domain, symbol, JSON.stringify(domainData)]);
+        await indicatorCacheDb.upsertDomain(domain, symbol, domainData);
       } catch (err) {
         console.error(`[CACHE] Failed to cache ${domain} indicators for ${symbol}:`, err.message);
       }
@@ -383,12 +373,7 @@ async function cacheIndicators(indicators) {
 
     // Also cache a 'pattern' domain with all indicators (pattern agent needs everything)
     try {
-      await dbQuery(`
-        INSERT INTO external_data_cache (source, metric, symbol, data, ttl_seconds)
-        VALUES ('indicators', 'pattern', $1, $2, 14400)
-        ON CONFLICT (source, metric, COALESCE(symbol, ''))
-        DO UPDATE SET data = EXCLUDED.data, fetched_at = NOW()
-      `, [symbol, JSON.stringify(data)]);
+      await indicatorCacheDb.upsertDomain('pattern', symbol, data);
     } catch (err) {
       console.error(`[CACHE] Failed to cache pattern indicators for ${symbol}:`, err.message);
     }
@@ -521,26 +506,16 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
         try {
           const side = so.direction === 'long' ? 'buy' : 'sell';
           const expiresHours = so.expires_in_hours || 48;
-          await dbQuery(`
-            INSERT INTO standing_orders (
-              created_by_agent, agent_decision_id, symbol, asset_class, side,
-              conditions, execution_params, confidence,
-              risk_validated_at, expires_at
-            ) VALUES (
-              $1, $2, $3, 'crypto', $4,
-              $5, $6, $7,
-              NOW(), NOW() + make_interval(hours => $8)
-            )
-          `, [
-            'strategySynthesizer',
-            synthDecision?.id || null,
-            so.symbol,
+          await standingOrdersDb.createFromSynthesizer({
+            agentName: 'strategySynthesizer',
+            agentDecisionId: synthDecision?.id || null,
+            symbol: so.symbol,
             side,
-            JSON.stringify(so.trigger_conditions),
-            JSON.stringify(so.exit_plan),
-            so.confidence,
+            conditions: so.trigger_conditions,
+            executionParams: so.exit_plan,
+            confidence: so.confidence,
             expiresHours,
-          ]);
+          });
           const triggerPrice = so.trigger_conditions?.price_below || so.trigger_conditions?.price_above || so.entry_price || '—';
           console.log(`[ORCHESTRATOR] Standing order saved: ${so.symbol} ${side} @ ${triggerPrice}`);
           soStored++;
@@ -619,7 +594,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
       console.log(`[ORCHESTRATOR] Trade executed: #${result.trade_id} ${trade.symbol} fill=${result.fill_price}`);
 
       // Notify
-      notifications.tradeExecuted({ ...trade, ...result }).catch(() => {});
+      notifications.tradeExecuted({ ...trade, ...result }).catch(err => logger.debug('Trade notification failed', { err, error_type: 'notification' }));
 
       // Link contributing signals to this trade
       if (result.trade_id) {
@@ -661,11 +636,7 @@ async function linkSignalsToTrade(tradeId, trade) {
       );
 
     if (isSupporting) {
-      await dbQuery(`
-        INSERT INTO trade_signals (trade_id, signal_id, was_entry_signal, strength_at_entry)
-        VALUES ($1, $2, true, $3)
-        ON CONFLICT DO NOTHING
-      `, [tradeId, signal.id, signal.current_strength || signal.strength]);
+      await signalsDb.linkToTrade(tradeId, signal.id, signal.current_strength || signal.strength);
       linked++;
     }
   }
@@ -682,7 +653,8 @@ async function calculateQuantity(trade) {
   try {
     const pv = await portfolioDb.getPortfolioValue();
     portfolioValue = pv.total_value;
-  } catch {
+  } catch (err) {
+    logger.warn('Portfolio value unavailable, using starting capital', { err, error_type: 'portfolio' });
     portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
   }
   if (!trade.entry_price || trade.entry_price <= 0) {
@@ -782,24 +754,7 @@ function closeTradePython(tradeId) {
  */
 async function storePositionReview(review, cycleNum, agentDecisionId) {
   try {
-    await dbQuery(`
-      INSERT INTO position_reviews (
-        trade_id, cycle_number, agent_decision_id, decision, reasoning,
-        current_price, unrealised_pnl, unrealised_pnl_pct, hours_held,
-        old_tp, old_sl, new_tp, new_sl,
-        close_executed, partial_close_pct, regime_at_review, signals_summary
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
-    `, [
-      review.trade_id, cycleNum, agentDecisionId || null,
-      review.decision, review.reasoning,
-      review.current_price || null, review.unrealised_pnl || null,
-      review.unrealised_pnl_pct || null, review.hours_held || null,
-      review.old_tp || null, review.old_sl || null,
-      review.new_tp || null, review.new_sl || null,
-      review.close_executed || false, review.close_pct || null,
-      review.regime_at_review || null,
-      review.signals_summary ? JSON.stringify(review.signals_summary) : null,
-    ]);
+    await positionReviewsDb.insert(review, cycleNum, agentDecisionId);
   } catch (err) {
     console.error(`[ORCHESTRATOR] Failed to store position review for trade #${review.trade_id}:`, err.message);
   }
@@ -827,10 +782,7 @@ async function executeReviewDecision(review, cycleNum) {
           const trade = await tradesDb.getById(review.trade_id);
           if (trade && trade.status === 'open') {
             // Get current price from latest market data
-            const priceRow = await dbQueryOne(
-              `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
-              [trade.symbol]
-            );
+            const priceRow = await marketDataDb.getLatestClose(trade.symbol);
             const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(trade.entry_price);
             const entryPrice = parseFloat(trade.entry_price);
             const pnl = trade.side === 'buy'
@@ -949,9 +901,10 @@ async function runCycle({ broadcast } = {}) {
   // Resume cycle number from DB if this is the first cycle after restart
   if (cycleNumber === 0) {
     try {
-      const last = await dbQueryOne('SELECT MAX(cycle_number) as max_cycle FROM agent_decisions');
-      cycleNumber = parseInt(last?.max_cycle) || 0;
-    } catch { /* start from 0 if table is empty */ }
+      cycleNumber = await decisionsDb.getLastCycleNumber();
+    } catch (err) {
+      logger.debug('No previous cycle found, starting from 0', { err, error_type: 'cycle_resume' });
+    }
   }
   cycleNumber++;
   const cycleStart = Date.now();
@@ -967,12 +920,11 @@ async function runCycle({ broadcast } = {}) {
 
   // Step 0: Expire old standing orders
   try {
-    const expired = await dbQuery(`
-      UPDATE standing_orders SET status = 'expired'
-      WHERE status = 'active' AND expires_at < NOW()
-    `);
+    const expired = await standingOrdersDb.expireOld();
     if (expired.rowCount > 0) console.log(`[ORCHESTRATOR] Expired ${expired.rowCount} standing orders`);
-  } catch { /* ignore */ }
+  } catch (err) {
+    logger.debug('Standing order expiry skipped', { err, cycle_id: cycleNumber, error_type: 'standing_order' });
+  }
 
   // Step 1: Refresh market data
   await refreshMarketData();
@@ -1034,10 +986,11 @@ async function runCycle({ broadcast } = {}) {
   try {
     const pv = await portfolioDb.getPortfolioValue();
     const openCount = strategy.trades?.length || 0;
-    await dbQuery(`
-      INSERT INTO equity_snapshots (cycle_number, total_value, realised_pnl, unrealised_pnl, open_positions)
-      VALUES ($1, $2, $3, $4, $5)
-    `, [cycleNumber, pv.total_value, pv.realised_pnl, pv.unrealised_pnl, openCount]);
+    await equityDb.insert({
+      cycleNumber, totalValue: pv.total_value,
+      realisedPnl: pv.realised_pnl, unrealisedPnl: pv.unrealised_pnl,
+      openPositions: openCount,
+    });
   } catch (err) {
     console.error('[ORCHESTRATOR] Equity snapshot failed:', err.message);
   }
@@ -1080,7 +1033,7 @@ async function runCycle({ broadcast } = {}) {
   notifications.cycleComplete({
     cycleNumber, elapsed: `${elapsed}s`,
     strategy: { proposals: strategy.proposals.length, approved: strategy.approved.length, trades: strategy.trades.length, standing_orders: strategy.standing_orders?.length || 0 },
-  }).catch(() => {});
+  }).catch(err => logger.debug('Cycle complete notification failed', { err, cycle_id: cycleNumber, error_type: 'notification' }));
 
   return { cycleNumber, knowledge, strategy, analysis };
   } finally {
