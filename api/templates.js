@@ -22,7 +22,7 @@ async function routes(fastify) {
     const template = await queryOne(`
       SELECT st.*, tp.total_trades, tp.wins, tp.losses,
         tp.win_rate, tp.avg_pnl_pct, tp.profit_factor,
-        tp.sharpe_ratio, tp.max_drawdown_pct, tp.best_trade_pnl,
+        tp.sharpe as sharpe_ratio, tp.max_drawdown as max_drawdown_pct, tp.best_trade_pnl,
         tp.worst_trade_pnl, tp.avg_hold_duration_hours
       FROM strategy_templates st
       LEFT JOIN template_performance tp ON st.id = tp.template_id
