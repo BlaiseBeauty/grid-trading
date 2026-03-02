@@ -164,3 +164,9 @@ input:focus, select:focus { border-color: var(--cyan); }
   .mobile-header { display: none; }
   .sidebar-overlay { display: none !important; }
 }
+
+/* ── PWA Standalone Safe Areas ── */
+@media (display-mode: standalone) {
+  body { padding-top: env(safe-area-inset-top, 0px); }
+  .mobile-header { padding-top: env(safe-area-inset-top, 0px); }
+}
