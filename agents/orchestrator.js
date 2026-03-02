@@ -53,6 +53,8 @@ const patternDiscovery = new PatternDiscoveryAgent();
 
 const tradesDb = require('../db/queries/trades');
 
+const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
+
 let cycleNumber = 0;
 let cycleRunning = false;
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
@@ -64,7 +66,7 @@ function fetchIndicators(symbol, timeframe = '4h') {
   const urlSymbol = symbol.replace('/', '-');
   return new Promise((resolve, reject) => {
     const url = `${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/indicators/${urlSymbol}?timeframe=${timeframe}`;
-    http.get(url, (res) => {
+    const req = http.get(url, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -74,7 +76,9 @@ function fetchIndicators(symbol, timeframe = '4h') {
           else resolve(parsed.indicators || parsed);
         } catch (e) { reject(e); }
       });
-    }).on('error', reject);
+    });
+    req.on('error', reject);
+    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
   });
 }
 
@@ -100,6 +104,7 @@ function fetchOHLCV(symbol, timeframe = '4h', limit = 200) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
     req.write(postData);
     req.end();
   });
@@ -127,6 +132,7 @@ function executeTrade(tradeData) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
     req.write(postData);
     req.end();
   });
@@ -154,6 +160,7 @@ function monitorPositions() {
       });
     });
     req.on('error', reject);
+    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
     req.write(postData);
     req.end();
   });
@@ -760,6 +767,7 @@ function closeTradePython(tradeId) {
       });
     });
     req.on('error', reject);
+    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
     req.write(postData);
     req.end();
   });
