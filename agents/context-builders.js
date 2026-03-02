@@ -499,6 +499,11 @@ async function buildSynthesizerContext(trigger) {
     signalCategories: [...new Set(signals.map(s => s.signal_category))]
   });
 
+  // Exploration context (passed from orchestrator via base-agent spread)
+  const hoursSinceLastTrade = trigger.hoursSinceLastTrade ?? null;
+  const forcedExploration = trigger.forcedExploration || false;
+  const paperMode = process.env.LIVE_TRADING_ENABLED !== 'true';
+
   return formatUserMessage({
     section1_market_data: {
       active_signals: signals,
@@ -516,7 +521,10 @@ async function buildSynthesizerContext(trigger) {
       upcoming_events: events,
       calibration_data: calibration,
       scram_state: scram,
-      bootstrap_phase: bootstrap
+      bootstrap_phase: bootstrap,
+      paper_mode: paperMode,
+      hours_since_last_trade: hoursSinceLastTrade,
+      forced_exploration: forcedExploration
     },
     section3_memory: memory,
     section4_task: `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`

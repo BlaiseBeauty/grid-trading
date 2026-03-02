@@ -17,7 +17,7 @@ class SynthesizerAgent extends BaseAgent {
   /**
    * Override run — Synthesizer needs signals + templates + regime as input.
    */
-  async run({ cycleNumber, regime, broadcast }) {
+  async run({ cycleNumber, regime, broadcast, hoursSinceLastTrade, forcedExploration }) {
     // Gather active signals grouped by symbol
     const allSignals = await this.gatherSignals();
     const activeTemplates = await templatesDb.getActive();
@@ -31,6 +31,9 @@ class SynthesizerAgent extends BaseAgent {
       cycleNumber,
       // Pass extra context via a custom property
       _synthContext: { allSignals, activeTemplates, antiPatterns, currentRegime },
+      // Exploration context for paper mode
+      hoursSinceLastTrade: hoursSinceLastTrade ?? null,
+      forcedExploration: forcedExploration || false,
     });
   }
 

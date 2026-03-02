@@ -64,6 +64,7 @@ const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
 let cycleNumber = 0;
 let cycleRunning = false;
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
+const ANALYSIS_INFANT_EVERY_N = 1;  // Run every cycle during INFANT phase for maximum learning
 
 /**
  * Fetch indicators from Python engine for a symbol.
@@ -483,6 +484,23 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'regime_classifier', layer: 'strategy', error: err.message });
   }
 
+  // Step 1.5: Last trade check for forced exploration
+  let hoursSinceLastTrade = null;
+  let forcedExploration = false;
+  try {
+    const lastTrade = await dbQueryOne('SELECT opened_at FROM trades ORDER BY opened_at DESC LIMIT 1');
+    if (lastTrade?.opened_at) {
+      hoursSinceLastTrade = Math.round((Date.now() - new Date(lastTrade.opened_at).getTime()) / 3600000 * 10) / 10;
+    }
+    const isPaperMode = process.env.LIVE_TRADING_ENABLED !== 'true';
+    if (isPaperMode && (hoursSinceLastTrade === null || hoursSinceLastTrade > 6)) {
+      forcedExploration = true;
+      console.log(`[ORCHESTRATOR] Forced exploration mode active — ${hoursSinceLastTrade !== null ? `no trades in ${hoursSinceLastTrade}h` : 'no trades ever'}`);
+    }
+  } catch (err) {
+    console.warn('[ORCHESTRATOR] Last trade check failed:', err.message);
+  }
+
   // Step 2: Synthesizer — match signals to templates, produce trade proposals
   console.log('[ORCHESTRATOR] → Synthesizer');
   let proposals = [];
@@ -494,6 +512,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
       cycleNumber: cycleNum,
       regime,
       broadcast,
+      hoursSinceLastTrade,
+      forcedExploration,
     });
     proposals = synthDecision?.output_json?.proposals || [];
     console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals`);
@@ -972,9 +992,18 @@ async function runCycle({ broadcast } = {}) {
     }
   }
 
-  // Step 5: Run analysis layer (periodic — every N cycles)
+  // Step 5: Run analysis layer (periodic — every N cycles, every cycle during INFANT)
   let analysis = [];
-  if (cycleNumber % ANALYSIS_EVERY_N_CYCLES === 0) {
+  let analysisFrequency = ANALYSIS_EVERY_N_CYCLES;
+  try {
+    const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
+    const phase = bootstrapRow?.phase || 'infant';
+    if (phase === 'infant' || phase === 'learning') {
+      analysisFrequency = ANALYSIS_INFANT_EVERY_N;
+    }
+  } catch { /* default to normal frequency */ }
+
+  if (cycleNumber % analysisFrequency === 0) {
     try {
       analysis = await runAnalysisLayer(cycleNumber, broadcast);
     } catch (err) {
