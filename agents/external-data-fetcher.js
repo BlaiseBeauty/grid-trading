@@ -4,8 +4,8 @@
 // ============================================================================
 
 const { query } = require('../db/connection');
+const { fetchGlassnode } = require('../data-sources/glassnode');
 
-const GLASSNODE_API_KEY  = process.env.GLASSNODE_API_KEY  || null;
 const COINGLASS_API_KEY  = process.env.COINGLASS_API_KEY  || null;
 
 async function upsertCache(source, metric, data, symbol = null, ttlSeconds = 3600) {
@@ -105,39 +105,6 @@ async function fetchCoinGlass() {
     }
   } catch (err) {
     console.error('[FETCHER] CoinGlass liquidation error:', err.message);
-  }
-}
-
-async function fetchGlassnode() {
-  if (!GLASSNODE_API_KEY) {
-    console.warn('[FETCHER] GLASSNODE_API_KEY not set — skipping');
-    return;
-  }
-
-  const base      = 'https://api.glassnode.com/v1/metrics';
-  const endpoints = [
-    { metric: 'mvrv_zscore',    path: 'market/mvrv_z_score'      },
-    { metric: 'nupl',           path: 'indicators/nupl'           },
-    { metric: 'realised_price', path: 'market/price_realized_usd' },
-    { metric: 'reserve_risk',   path: 'indicators/reserve_risk'   },
-    { metric: 'puell_multiple', path: 'indicators/puell_multiple' },
-  ];
-
-  for (const { metric, path } of endpoints) {
-    try {
-      const url = `${base}/${path}?a=BTC&i=24h&limit=1&api_key=${GLASSNODE_API_KEY}`;
-      const res  = await fetch(url);
-      if (res.status === 429) { console.warn(`[FETCHER] Glassnode rate limited on ${metric}`); continue; }
-      if (!res.ok) { console.warn(`[FETCHER] Glassnode ${metric}: HTTP ${res.status}`); continue; }
-      const json   = await res.json();
-      const latest = Array.isArray(json) ? json[json.length - 1] : json;
-      if (latest) {
-        await upsertCache('glassnode', metric, { value: latest.v, timestamp: latest.t, asset: 'BTC' }, null, 86400);
-        console.log(`[FETCHER] Glassnode ${metric}: ${latest.v?.toFixed(2)}`);
-      }
-    } catch (err) {
-      console.error(`[FETCHER] Glassnode ${metric} error:`, err.message);
-    }
   }
 }
 

@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { useAuthStore } from '../stores/auth';
 import { useDataStore } from '../stores/data';
+import { StatusPulse } from './ui';
 
 const NAV = [
   { path: '/', label: 'Command Centre', icon: '⬡' },
@@ -16,46 +17,47 @@ export default function Sidebar({ open, onClose }) {
   const system = useDataStore(s => s.system);
 
   return (
-    <aside className={`sidebar ${open ? 'open' : ''}`}>
-      <div className="sidebar-brand">
-        <span className="brand-text">GRID</span>
+    <aside className={`v2-sidebar ${open ? 'open' : ''}`}>
+      <div className="v2-sidebar-brand">
+        <span className="v2-brand-text">GRID</span>
         {system?.bootstrap_phase && (
-          <span className={`badge badge-${system.bootstrap_phase}`}>
+          <span className={`v2-phase-badge v2-phase-${system.bootstrap_phase}`}>
             {system.bootstrap_phase}
           </span>
         )}
       </div>
 
-      <nav className="sidebar-nav">
+      <nav className="v2-sidebar-nav">
         {NAV.map(({ path, label, icon }) => (
           <NavLink
             key={path}
             to={path}
             end={path === '/'}
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+            className={({ isActive }) => `v2-nav-item ${isActive ? 'active' : ''}`}
             onClick={onClose}
           >
-            <span className="nav-icon">{icon}</span>
-            <span className="nav-label">{label}</span>
+            <span className="v2-nav-icon">{icon}</span>
+            <span className="v2-nav-label">{label}</span>
           </NavLink>
         ))}
       </nav>
 
-      <div className="sidebar-footer">
+      <div className="v2-sidebar-footer">
         {system?.scram_level && (
-          <div className={`scram-indicator badge-${system.scram_level}`}>
-            SCRAM: {system.scram_level.toUpperCase()}
+          <div className="v2-scram-indicator">
+            <StatusPulse status="error" size={6} />
+            <span className="v2-scram-text">SCRAM: {system.scram_level.toUpperCase()}</span>
           </div>
         )}
-        <button className="logout-btn" onClick={logout}>Logout</button>
+        <button className="v2-logout-btn" onClick={logout}>Logout</button>
       </div>
 
       <style>{`
-        .sidebar {
+        .v2-sidebar {
           width: var(--sidebar-width);
           height: 100vh;
-          background: var(--abyss);
-          border-right: 1px solid var(--border-1);
+          background: var(--v2-bg-primary);
+          border-right: 1px solid var(--v2-border);
           display: flex;
           flex-direction: column;
           position: fixed;
@@ -63,70 +65,96 @@ export default function Sidebar({ open, onClose }) {
           top: 0;
           z-index: 10;
         }
-        .sidebar-brand {
-          padding: var(--space-xl) var(--space-lg);
-          border-bottom: 1px solid var(--border-0);
+        .v2-sidebar-brand {
+          padding: var(--v2-space-xl) var(--v2-space-lg);
+          border-bottom: 1px solid var(--v2-border);
           display: flex;
           align-items: center;
-          gap: var(--space-sm);
+          gap: var(--v2-space-sm);
         }
-        .brand-text {
+        .v2-brand-text {
           font-family: 'Syne', sans-serif;
           font-weight: 800;
           font-size: 24px;
           letter-spacing: 8px;
-          color: var(--cyan);
+          color: var(--v2-accent-cyan);
+          text-shadow: 0 0 20px rgba(0,229,255,0.3);
         }
-        .sidebar-nav {
+        .v2-phase-badge {
+          font-family: var(--v2-font-data);
+          font-size: 9px;
+          font-weight: 500;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          padding: 2px 6px;
+          border-radius: 3px;
+          border: 1px solid var(--v2-border);
+          color: var(--v2-text-secondary);
+        }
+        .v2-phase-infant { color: var(--v2-accent-amber); border-color: rgba(255,171,0,0.3); }
+        .v2-phase-learning { color: var(--v2-accent-cyan); border-color: rgba(0,229,255,0.3); }
+        .v2-phase-maturing { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); }
+        .v2-phase-graduated { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); }
+        .v2-sidebar-nav {
           flex: 1;
-          padding: var(--space-lg) 0;
+          padding: var(--v2-space-lg) 0;
           display: flex;
           flex-direction: column;
           gap: 2px;
         }
-        .nav-item {
+        .v2-nav-item {
           display: flex;
           align-items: center;
-          gap: var(--space-md);
-          padding: var(--space-md) var(--space-lg);
-          color: var(--t3);
-          font-family: 'Instrument Sans', sans-serif;
+          gap: var(--v2-space-md);
+          padding: var(--v2-space-md) var(--v2-space-lg);
+          color: var(--v2-text-secondary);
+          font-family: var(--v2-font-body);
           font-weight: 500;
           font-size: 13px;
           text-decoration: none;
-          transition: all var(--transition-fast);
+          transition: all var(--v2-duration-fast) var(--v2-ease-out);
           border-left: 2px solid transparent;
         }
-        .nav-item:hover { color: var(--t1); background: var(--surface); }
-        .nav-item.active {
-          color: var(--cyan);
+        .v2-nav-item:hover {
+          color: var(--v2-text-primary);
+          background: var(--v2-bg-secondary);
+        }
+        .v2-nav-item.active {
+          color: var(--v2-accent-cyan);
           background: rgba(0,229,255,0.05);
-          border-left-color: var(--cyan);
+          border-left-color: var(--v2-accent-cyan);
         }
-        .nav-icon { font-size: 16px; width: 20px; text-align: center; }
-        .sidebar-footer {
-          padding: var(--space-lg);
-          border-top: 1px solid var(--border-0);
+        .v2-nav-icon { font-size: 16px; width: 20px; text-align: center; }
+        .v2-sidebar-footer {
+          padding: var(--v2-space-lg);
+          border-top: 1px solid var(--v2-border);
         }
-        .scram-indicator {
-          font-family: 'IBM Plex Mono', monospace;
+        .v2-scram-indicator {
+          display: flex;
+          align-items: center;
+          gap: var(--v2-space-sm);
+          padding: var(--v2-space-sm) var(--v2-space-md);
+          margin-bottom: var(--v2-space-sm);
+          border-radius: var(--v2-radius-sm);
+          background: rgba(255,23,68,0.08);
+          border: 1px solid rgba(255,23,68,0.2);
+        }
+        .v2-scram-text {
+          font-family: var(--v2-font-data);
           font-size: 10px;
           font-weight: 600;
-          text-transform: uppercase;
+          color: var(--v2-accent-red);
           letter-spacing: 1px;
-          padding: var(--space-sm);
-          margin-bottom: var(--space-sm);
-          border-radius: var(--radius-sm);
-          text-align: center;
         }
-        .logout-btn {
+        .v2-logout-btn {
           width: 100%;
-          padding: var(--space-sm);
-          color: var(--t3);
-          font-size: 12px;
-          transition: color var(--transition-fast);
+          padding: var(--v2-space-sm);
+          color: var(--v2-text-secondary);
+          font-family: var(--v2-font-data);
+          font-size: 11px;
+          transition: color var(--v2-duration-fast);
         }
-        .logout-btn:hover { color: var(--t1); }
+        .v2-logout-btn:hover { color: var(--v2-text-primary); }
       `}</style>
     </aside>
   );

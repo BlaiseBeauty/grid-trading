@@ -12,9 +12,9 @@ export default function EquityCurve() {
 
     const chart = createChart(containerRef.current, {
       layout: {
-        background: { color: '#0d0f15' },
-        textColor: '#6e7590',
-        fontFamily: "'IBM Plex Mono', monospace",
+        background: { color: 'transparent' },
+        textColor: 'var(--v2-text-muted)',
+        fontFamily: "var(--v2-font-data)",
         fontSize: 11,
       },
       grid: {
@@ -22,11 +22,11 @@ export default function EquityCurve() {
         horzLines: { color: 'rgba(255,255,255,0.03)' },
       },
       timeScale: {
-        borderColor: 'rgba(255,255,255,0.06)',
+        borderColor: 'var(--v2-border)',
         timeVisible: true,
       },
       rightPriceScale: {
-        borderColor: 'rgba(255,255,255,0.06)',
+        borderColor: 'var(--v2-border)',
       },
       crosshair: { mode: 0 },
       handleScale: { mouseWheel: true },
@@ -77,23 +77,42 @@ export default function EquityCurve() {
   }, []);
 
   return (
-    <div className="panel equity-panel">
-      <div className="equity-header">
-        <div className="panel-title">Equity Curve</div>
+    <div className="v2-equity-panel">
+      <div className="v2-equity-header">
+        <div className="v2-equity-title">Equity Curve</div>
       </div>
-      {!hasData ? (
-        <div className="empty-state">No equity data yet — run a cycle to start tracking</div>
-      ) : null}
-      <div ref={containerRef} className="equity-container" style={{ display: hasData ? 'block' : 'none' }} />
+      {!hasData && (
+        <div className="v2-equity-empty">No equity data yet \u2014 run a cycle to start tracking</div>
+      )}
+      <div ref={containerRef} className="v2-equity-container" style={{ display: hasData ? 'block' : 'none' }} />
 
       <style>{`
-        .equity-panel { padding: 0; overflow: hidden; }
-        .equity-header {
-          padding: var(--space-md) var(--panel-padding);
-          border-bottom: 1px solid var(--border-0);
+        .v2-equity-panel {
+          background: var(--v2-glass-bg);
+          backdrop-filter: var(--v2-glass-blur);
+          border: 1px solid var(--v2-border);
+          border-radius: var(--v2-radius-md);
+          overflow: hidden;
         }
-        .equity-header .panel-title { margin-bottom: 0; }
-        .equity-container { width: 100%; height: 220px; }
+        .v2-equity-header {
+          padding: var(--v2-space-md) var(--v2-space-lg);
+          border-bottom: 1px solid var(--v2-border);
+        }
+        .v2-equity-title {
+          font-family: var(--v2-font-data);
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 1.5px;
+          color: var(--v2-text-muted);
+        }
+        .v2-equity-empty {
+          color: var(--v2-text-muted);
+          font-size: 13px;
+          padding: var(--v2-space-xl);
+          text-align: center;
+        }
+        .v2-equity-container { width: 100%; height: 220px; }
       `}</style>
     </div>
   );

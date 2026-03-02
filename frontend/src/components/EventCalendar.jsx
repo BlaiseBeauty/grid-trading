@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { StatusPulse } from './ui';
 
 const IMPACT_COLORS = {
-  low: 'neutral', medium: 'warn', high: 'loss', critical: 'loss',
+  low: 'idle', medium: 'warning', high: 'error', critical: 'error',
+};
+
+const IMPACT_ACCENT = {
+  low: 'var(--v2-text-muted)',
+  medium: 'var(--v2-accent-amber)',
+  high: 'var(--v2-accent-red)',
+  critical: 'var(--v2-accent-red)',
 };
 
 export default function EventCalendar() {
@@ -46,21 +54,21 @@ export default function EventCalendar() {
   const now = new Date();
 
   return (
-    <div className="panel event-calendar">
-      <div className="ec-header">
-        <span className="panel-title">
+    <div className="v2-event-calendar">
+      <div className="v2-ec-header">
+        <span className="v2-ec-title">
           Events
           {blackout?.in_blackout && (
-            <span className="badge badge-loss" style={{ marginLeft: 8 }}>BLACKOUT</span>
+            <span className="v2-ec-blackout-badge">BLACKOUT</span>
           )}
         </span>
-        <button className="ec-add" onClick={() => setShowForm(!showForm)}>
-          {showForm ? '×' : '+'}
+        <button className="v2-ec-add" onClick={() => setShowForm(!showForm)}>
+          {showForm ? '\u00d7' : '+'}
         </button>
       </div>
 
       {showForm && (
-        <div className="ec-form">
+        <div className="v2-ec-form">
           <select value={form.event_type} onChange={e => setForm(f => ({ ...f, event_type: e.target.value }))}>
             <option value="economic">Economic</option>
             <option value="fed">Fed/FOMC</option>
@@ -78,14 +86,14 @@ export default function EventCalendar() {
             <option value="high">High</option>
             <option value="critical">Critical</option>
           </select>
-          <button className="ec-submit" onClick={createEvent}>Add</button>
+          <button className="v2-ec-submit" onClick={createEvent}>Add</button>
         </div>
       )}
 
       {events.length === 0 ? (
-        <div className="empty-state" style={{ padding: '12px' }}>No upcoming events</div>
+        <div className="v2-ec-empty">No upcoming events</div>
       ) : (
-        <div className="ec-list">
+        <div className="v2-ec-list">
           {events.slice(0, 8).map((e, i) => {
             const eventDate = new Date(e.event_date);
             const isBlackout = e.blackout_start && e.blackout_end &&
@@ -93,20 +101,21 @@ export default function EventCalendar() {
             const isPast = eventDate < now;
 
             return (
-              <div key={i} className={`ec-row ${isBlackout ? 'ec-blackout' : ''} ${isPast ? 'ec-past' : ''}`}>
-                <div className="ec-date-col">
-                  <span className="ec-day">{eventDate.getDate()}</span>
-                  <span className="ec-month">{eventDate.toLocaleString('default', { month: 'short' })}</span>
+              <div key={i} className={`v2-ec-row ${isBlackout ? 'v2-ec-row--blackout' : ''} ${isPast ? 'v2-ec-row--past' : ''}`}>
+                <div className="v2-ec-date">
+                  <span className="v2-ec-day">{eventDate.getDate()}</span>
+                  <span className="v2-ec-month">{eventDate.toLocaleString('default', { month: 'short' })}</span>
                 </div>
-                <div className="ec-info">
-                  <span className="ec-name">{e.event_name}</span>
-                  <span className="ec-meta">
-                    <span className={`badge badge-${IMPACT_COLORS[e.impact_estimate]}`}>{e.impact_estimate}</span>
-                    <span className="ec-type">{e.event_type}</span>
-                    <span className="ec-time">{eventDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <div className="v2-ec-info">
+                  <span className="v2-ec-name">{e.event_name}</span>
+                  <span className="v2-ec-meta">
+                    <StatusPulse status={IMPACT_COLORS[e.impact_estimate] || 'idle'} size={5} />
+                    <span className="v2-ec-impact" style={{ color: IMPACT_ACCENT[e.impact_estimate] }}>{e.impact_estimate}</span>
+                    <span className="v2-ec-type">{e.event_type}</span>
+                    <span className="v2-ec-time">{eventDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                   </span>
                 </div>
-                <button className="ec-delete" onClick={() => deleteEvent(e.id)}>×</button>
+                <button className="v2-ec-delete" onClick={() => deleteEvent(e.id)}>{'\u00d7'}</button>
               </div>
             );
           })}
@@ -114,48 +123,94 @@ export default function EventCalendar() {
       )}
 
       <style>{`
-        .ec-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-sm); }
-        .ec-header .panel-title { margin-bottom: 0; }
-        .ec-add {
-          font-size: 18px; color: var(--t3); width: 24px; height: 24px;
+        .v2-event-calendar { }
+        .v2-ec-header {
+          display: flex; justify-content: space-between; align-items: center;
+          margin-bottom: var(--v2-space-md);
+        }
+        .v2-ec-title {
+          font-family: var(--v2-font-data); font-size: 11px; font-weight: 600;
+          text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted);
+          display: flex; align-items: center; gap: var(--v2-space-sm);
+        }
+        .v2-ec-blackout-badge {
+          font-size: 9px; font-weight: 700; padding: 2px 6px;
+          background: rgba(255,23,68,0.15); color: var(--v2-accent-red);
+          border: 1px solid rgba(255,23,68,0.3); border-radius: 3px;
+        }
+        .v2-ec-add {
+          font-size: 18px; color: var(--v2-text-muted);
+          width: 24px; height: 24px;
           display: flex; align-items: center; justify-content: center;
-          cursor: pointer; transition: color var(--transition-fast);
+          cursor: pointer; transition: color var(--v2-duration-fast);
+          background: none; border: none;
         }
-        .ec-add:hover { color: var(--cyan); }
-        .ec-form {
-          display: flex; gap: var(--space-xs); flex-wrap: wrap; align-items: center;
-          padding: var(--space-sm) 0; border-bottom: 1px solid var(--border-0);
-          margin-bottom: var(--space-sm);
+        .v2-ec-add:hover { color: var(--v2-accent-cyan); }
+        .v2-ec-form {
+          display: flex; gap: var(--v2-space-xs); flex-wrap: wrap; align-items: center;
+          padding: var(--v2-space-sm) 0; border-bottom: 1px solid var(--v2-border);
+          margin-bottom: var(--v2-space-sm);
         }
-        .ec-form input, .ec-form select { font-size: 11px; padding: 4px 6px; max-width: 140px; }
-        .ec-submit {
-          font-family: 'IBM Plex Mono', monospace; font-size: 10px; font-weight: 600;
-          color: var(--cyan); cursor: pointer; padding: 4px 8px;
-          border: 1px solid var(--cyan); border-radius: var(--radius-sm);
+        .v2-ec-form input, .v2-ec-form select {
+          font-family: var(--v2-font-data); font-size: 11px;
+          padding: 4px 6px; max-width: 140px;
+          background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border);
+          color: var(--v2-text-primary); border-radius: 4px;
         }
-        .ec-row {
-          display: flex; align-items: center; gap: var(--space-sm);
-          padding: var(--space-xs) 0; border-bottom: 1px solid var(--border-0);
+        .v2-ec-submit {
+          font-family: var(--v2-font-data); font-size: 10px; font-weight: 600;
+          color: var(--v2-accent-cyan); cursor: pointer; padding: 4px 8px;
+          border: 1px solid var(--v2-accent-cyan); border-radius: 4px;
+          background: rgba(0,229,255,0.05);
+          transition: background var(--v2-duration-fast);
         }
-        .ec-row.ec-blackout { background: rgba(255,45,85,0.05); border-left: 2px solid var(--red); padding-left: var(--space-sm); }
-        .ec-row.ec-past { opacity: 0.5; }
-        .ec-date-col {
-          display: flex; flex-direction: column; align-items: center;
-          min-width: 36px;
+        .v2-ec-submit:hover { background: rgba(0,229,255,0.1); }
+        .v2-ec-list { display: flex; flex-direction: column; }
+        .v2-ec-row {
+          display: flex; align-items: center; gap: var(--v2-space-sm);
+          padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border);
         }
-        .ec-day { font-family: 'IBM Plex Mono', monospace; font-size: 16px; font-weight: 500; line-height: 1; }
-        .ec-month { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--t4); text-transform: uppercase; }
-        .ec-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-        .ec-name { font-size: 12px; color: var(--t1); }
-        .ec-meta { display: flex; align-items: center; gap: var(--space-xs); }
-        .ec-type { font-size: 9px; color: var(--t4); text-transform: uppercase; }
-        .ec-time { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--t3); }
-        .ec-delete {
-          font-size: 14px; color: var(--t4); cursor: pointer;
-          transition: color var(--transition-fast); opacity: 0;
+        .v2-ec-row--blackout {
+          background: rgba(255,23,68,0.04);
+          border-left: 2px solid var(--v2-accent-red);
+          padding-left: var(--v2-space-sm);
         }
-        .ec-row:hover .ec-delete { opacity: 1; }
-        .ec-delete:hover { color: var(--red); }
+        .v2-ec-row--past { opacity: 0.4; }
+        .v2-ec-date {
+          display: flex; flex-direction: column; align-items: center; min-width: 36px;
+        }
+        .v2-ec-day {
+          font-family: var(--v2-font-data); font-size: 16px; font-weight: 500;
+          line-height: 1; color: var(--v2-text-primary);
+        }
+        .v2-ec-month {
+          font-family: var(--v2-font-data); font-size: 9px;
+          color: var(--v2-text-muted); text-transform: uppercase;
+        }
+        .v2-ec-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+        .v2-ec-name { font-size: 12px; color: var(--v2-text-primary); }
+        .v2-ec-meta { display: flex; align-items: center; gap: var(--v2-space-xs); }
+        .v2-ec-impact {
+          font-family: var(--v2-font-data); font-size: 9px; font-weight: 600;
+          text-transform: uppercase;
+        }
+        .v2-ec-type {
+          font-size: 9px; color: var(--v2-text-muted); text-transform: uppercase;
+        }
+        .v2-ec-time {
+          font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-secondary);
+        }
+        .v2-ec-empty {
+          color: var(--v2-text-muted); font-size: 13px; padding: var(--v2-space-md);
+          text-align: center;
+        }
+        .v2-ec-delete {
+          font-size: 14px; color: var(--v2-text-muted); cursor: pointer;
+          transition: color var(--v2-duration-fast); opacity: 0;
+          background: none; border: none;
+        }
+        .v2-ec-row:hover .v2-ec-delete { opacity: 1; }
+        .v2-ec-delete:hover { color: var(--v2-accent-red); }
       `}</style>
     </div>
   );

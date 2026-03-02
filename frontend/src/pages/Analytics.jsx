@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createChart, AreaSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
 import { formatMoney, formatPct } from '../lib/format';
+import { GlowCard, TickingNumber, ProgressRing } from '../components/ui';
 
 export default function Analytics() {
   const [summary, setSummary] = useState(null);
@@ -10,6 +11,7 @@ export default function Analytics() {
   const [byAgent, setByAgent] = useState([]);
   const [signalAccuracy, setSignalAccuracy] = useState([]);
   const [costData, setCostData] = useState([]);
+  const [maxDrawdown, setMaxDrawdown] = useState(null);
   const equityRef = useRef(null);
   const drawdownRef = useRef(null);
 
@@ -24,12 +26,11 @@ export default function Analytics() {
     api(`/analytics/pnl?period=${pnlPeriod}`).then(setPnlData).catch(console.error);
   }, [pnlPeriod]);
 
-  // Equity + Drawdown charts
   useEffect(() => {
     if (!equityRef.current || !drawdownRef.current) return;
 
     const chartOpts = {
-      layout: { background: { color: '#0d0f15' }, textColor: '#6e7590', fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 },
+      layout: { background: { color: 'transparent' }, textColor: '#55575e', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 },
       grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
       timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true },
       rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
@@ -39,15 +40,15 @@ export default function Analytics() {
     };
 
     const eqChart = createChart(equityRef.current, chartOpts);
-    const eqSeries = eqChart.addSeries(AreaSeries,{
-      topColor: 'rgba(0, 229, 255, 0.3)', bottomColor: 'rgba(0, 229, 255, 0.02)',
+    const eqSeries = eqChart.addSeries(AreaSeries, {
+      topColor: 'rgba(0, 229, 255, 0.25)', bottomColor: 'rgba(0, 229, 255, 0.01)',
       lineColor: '#00e5ff', lineWidth: 2,
     });
 
     const ddChart = createChart(drawdownRef.current, chartOpts);
-    const ddSeries = ddChart.addSeries(AreaSeries,{
-      topColor: 'rgba(255, 45, 85, 0.02)', bottomColor: 'rgba(255, 45, 85, 0.2)',
-      lineColor: '#ff2d55', lineWidth: 2, invertFilledArea: true,
+    const ddSeries = ddChart.addSeries(AreaSeries, {
+      topColor: 'rgba(255, 23, 68, 0.01)', bottomColor: 'rgba(255, 23, 68, 0.2)',
+      lineColor: '#ff1744', lineWidth: 2, invertFilledArea: true,
     });
 
     Promise.all([
@@ -67,6 +68,8 @@ export default function Analytics() {
           value: s.drawdown,
         })));
         ddChart.timeScale().fitContent();
+        const maxDD = Math.min(...drawdown.map(d => d.drawdown));
+        setMaxDrawdown(maxDD);
       }
     });
 
@@ -78,226 +81,241 @@ export default function Analytics() {
     return () => { eqObs.disconnect(); ddObs.disconnect(); eqChart.remove(); ddChart.remove(); };
   }, []);
 
-  return (
-    <div className="analytics-page">
-      <h1 className="page-title">ANALYTICS</h1>
+  const winRate = parseFloat(summary?.win_rate || 0);
+  const totalPnl = parseFloat(summary?.total_pnl || 0);
+  const totalCost = parseFloat(summary?.total_cost || 0);
+  const totalTrades = summary?.total_trades || 0;
+  const costPerTrade = totalTrades > 0 ? totalCost / totalTrades : 0;
+  // Cumulative cost for sparkline
+  const cumCosts = costData.slice(-14).reduce((acc, c) => {
+    const prev = acc.length ? acc[acc.length - 1] : 0;
+    acc.push(prev + parseFloat(c.daily_cost || 0));
+    return acc;
+  }, []);
 
-      {/* Summary KPIs */}
+  return (
+    <div className="v2-analytics">
+      <h1 className="v2-title v2-animate-in">ANALYTICS</h1>
+
+      {/* KPI Strip */}
       {summary && (
-        <div className="analytics-kpis">
-          <KPI label="Total Trades" value={summary.total_trades} />
-          <KPI label="Win Rate" value={formatPct(parseFloat(summary.win_rate || 0), 1)} />
-          <KPI label="Total P&L" value={formatMoney(parseFloat(summary.total_pnl || 0))} />
-          <KPI label="Avg Return" value={formatPct(parseFloat(summary.avg_return || 0), 2)} />
-          <KPI label="Best Trade" value={formatMoney(parseFloat(summary.best_trade || 0))} />
-          <KPI label="Worst Trade" value={formatMoney(parseFloat(summary.worst_trade || 0))} />
-          <KPI label="Avg Hold" value={`${parseFloat(summary.avg_hold_hours || 0).toFixed(1)}h`} />
-          <KPI label="Win Streak" value={summary.max_win_streak || 0} />
-          <KPI label="Loss Streak" value={summary.max_loss_streak || 0} />
-          <KPI label="AI Cost" value={`$${parseFloat(summary.total_cost || 0).toFixed(2)}`} />
+        <div className="v2-kpi-strip">
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-1">
+            <div className="v2-kpi-label">Total Trades</div>
+            <span className="v2-kpi-big">{summary.total_trades}</span>
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-kpi--ring v2-animate-in v2-stagger-2">
+            <div className="v2-kpi-label">Win Rate</div>
+            <ProgressRing
+              value={winRate}
+              size={52}
+              strokeWidth={3}
+              color={winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
+            />
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-3" glowColor={totalPnl >= 0 ? 'green' : 'red'}>
+            <div className="v2-kpi-label">Total P&L</div>
+            <TickingNumber value={totalPnl} format="money" decimals={2} />
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-4">
+            <div className="v2-kpi-label">Avg Return</div>
+            <TickingNumber value={parseFloat(summary.avg_return || 0)} format="pct" decimals={2} />
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-5" glowColor="green">
+            <div className="v2-kpi-label">Best Trade</div>
+            <span className="v2-kpi-big v2-profit">{formatMoney(parseFloat(summary.best_trade || 0))}</span>
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-6" glowColor="red">
+            <div className="v2-kpi-label">Worst Trade</div>
+            <span className="v2-kpi-big v2-loss">{formatMoney(parseFloat(summary.worst_trade || 0))}</span>
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-7">
+            <div className="v2-kpi-label">Max Drawdown</div>
+            <span className="v2-kpi-big v2-loss">{maxDrawdown != null ? `${maxDrawdown.toFixed(2)}%` : '\u2014'}</span>
+          </GlowCard>
+          <GlowCard className="v2-kpi v2-animate-in v2-stagger-8" glowColor="magenta">
+            <div className="v2-kpi-label">AI Cost</div>
+            <TickingNumber value={totalCost} format="money" decimals={2} colorize={false} />
+          </GlowCard>
         </div>
       )}
 
-      {/* Equity Curve */}
-      <div className="panel chart-panel">
-        <div className="chart-section-header"><span className="panel-title">Equity Curve</span></div>
-        <div ref={equityRef} className="analytics-chart" />
-      </div>
+      {/* Charts */}
+      <GlowCard className="v2-chart-card v2-animate-in v2-stagger-3">
+        <div className="v2-section-title">Equity Curve</div>
+        <div ref={equityRef} className="v2-chart-area" />
+      </GlowCard>
 
-      {/* Drawdown */}
-      <div className="panel chart-panel">
-        <div className="chart-section-header"><span className="panel-title">Drawdown</span></div>
-        <div ref={drawdownRef} className="analytics-chart" />
-      </div>
+      <GlowCard className="v2-chart-card v2-animate-in v2-stagger-4">
+        <div className="v2-section-title">Drawdown</div>
+        <div ref={drawdownRef} className="v2-chart-area" />
+      </GlowCard>
 
-      <div className="analytics-grid">
+      <div className="v2-grid-2">
         {/* P&L Breakdown */}
-        <div className="panel">
-          <div className="panel-title-row">
-            <span className="panel-title">P&L Breakdown</span>
-            <div className="period-selector">
+        <GlowCard className="v2-animate-in v2-stagger-5">
+          <div className="v2-panel-row">
+            <span className="v2-section-title" style={{ marginBottom: 0 }}>P&L Breakdown</span>
+            <div className="v2-period-pills">
               {['daily', 'weekly', 'monthly'].map(p => (
-                <button key={p} className={`chart-btn ${pnlPeriod === p ? 'active' : ''}`} onClick={() => setPnlPeriod(p)}>
-                  {p}
+                <button key={p} className={`v2-pill-sm ${pnlPeriod === p ? 'active' : ''}`} onClick={() => setPnlPeriod(p)}>
+                  {p[0].toUpperCase()}
                 </button>
               ))}
             </div>
           </div>
           {pnlData.length === 0 ? (
-            <div className="empty-state">No closed trades yet</div>
+            <div className="v2-empty">No closed trades yet</div>
           ) : (
-            <div className="pnl-table">
-              <div className="pnl-header">
-                <span className="pnl-col pnl-period">Period</span>
-                <span className="pnl-col pnl-trades">Trades</span>
-                <span className="pnl-col pnl-wr">W/L</span>
-                <span className="pnl-col pnl-total">P&L</span>
-                <span className="pnl-col pnl-avg">Avg %</span>
+            <div className="v2-table">
+              <div className="v2-tbl-header">
+                <span className="v2-tbl-col" style={{ flex: 2 }}>Period</span>
+                <span className="v2-tbl-col">Trades</span>
+                <span className="v2-tbl-col">W/L</span>
+                <span className="v2-tbl-col" style={{ flex: 2 }}>P&L</span>
+                <span className="v2-tbl-col">Avg %</span>
               </div>
               {pnlData.slice(0, 20).map((row, i) => {
                 const pnl = parseFloat(row.total_pnl);
                 return (
-                  <div key={i} className="pnl-row">
-                    <span className="pnl-col pnl-period">{new Date(row.period).toLocaleDateString()}</span>
-                    <span className="pnl-col pnl-trades num">{row.trade_count}</span>
-                    <span className="pnl-col pnl-wr">
-                      <span className="profit">{row.wins}</span>/<span className="loss">{row.losses}</span>
-                    </span>
-                    <span className={`pnl-col pnl-total ${pnl >= 0 ? 'profit' : 'loss'}`}>
-                      {formatMoney(pnl)}
-                    </span>
-                    <span className={`pnl-col pnl-avg num ${parseFloat(row.avg_return_pct) >= 0 ? 'profit' : 'loss'}`}>
-                      {formatPct(parseFloat(row.avg_return_pct), 2)}
-                    </span>
+                  <div key={i} className="v2-tbl-row">
+                    <span className="v2-tbl-col v2-mono" style={{ flex: 2 }}>{new Date(row.period).toLocaleDateString()}</span>
+                    <span className="v2-tbl-col v2-mono">{row.trade_count}</span>
+                    <span className="v2-tbl-col"><span className="v2-profit">{row.wins}</span>/<span className="v2-loss">{row.losses}</span></span>
+                    <span className={`v2-tbl-col v2-mono ${pnl >= 0 ? 'v2-profit' : 'v2-loss'}`} style={{ flex: 2 }}>{formatMoney(pnl)}</span>
+                    <span className={`v2-tbl-col v2-mono ${parseFloat(row.avg_return_pct) >= 0 ? 'v2-profit' : 'v2-loss'}`}>{formatPct(parseFloat(row.avg_return_pct), 2)}</span>
                   </div>
                 );
               })}
             </div>
           )}
-        </div>
+        </GlowCard>
 
         {/* Performance by Agent */}
-        <div className="panel">
-          <div className="panel-title">Performance by Agent</div>
+        <GlowCard className="v2-animate-in v2-stagger-6">
+          <div className="v2-section-title">Performance by Agent</div>
           {byAgent.length === 0 ? (
-            <div className="empty-state">No signal-linked trades yet</div>
-          ) : (
-            <div className="agent-perf-table">
-              {byAgent.map((a, i) => (
-                <div key={i} className="agent-perf-row">
-                  <span className="agent-perf-name">{a.agent_name}</span>
-                  <span className="num agent-perf-trades">{a.trade_count}</span>
-                  <span className={`num ${parseFloat(a.win_rate) >= 50 ? 'profit' : 'loss'}`}>
-                    {a.win_rate}%
-                  </span>
-                  <span className={`num ${parseFloat(a.total_pnl) >= 0 ? 'profit' : 'loss'}`}>
-                    {formatMoney(parseFloat(a.total_pnl))}
-                  </span>
-                </div>
-              ))}
+            <div className="v2-empty">No signal-linked trades yet</div>
+          ) : byAgent.map((a, i) => (
+            <div key={i} className="v2-agent-row">
+              <span className="v2-agent-name">{a.agent_name}</span>
+              <span className="v2-mono v2-muted">{a.trade_count}</span>
+              <ProgressRing value={parseFloat(a.win_rate || 0)} size={28} strokeWidth={2.5}
+                color={parseFloat(a.win_rate) >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-red)'} />
+              <span className={`v2-mono ${parseFloat(a.total_pnl) >= 0 ? 'v2-profit' : 'v2-loss'}`}>
+                {formatMoney(parseFloat(a.total_pnl))}
+              </span>
             </div>
-          )}
-        </div>
+          ))}
+        </GlowCard>
 
         {/* Signal Accuracy */}
-        <div className="panel">
-          <div className="panel-title">Signal Accuracy</div>
+        <GlowCard className="v2-animate-in v2-stagger-7">
+          <div className="v2-section-title">Signal Accuracy</div>
           {signalAccuracy.length === 0 ? (
-            <div className="empty-state">Need more trades to calculate accuracy</div>
-          ) : (
-            <div className="accuracy-table">
-              {signalAccuracy.map((s, i) => (
-                <div key={i} className="accuracy-row">
-                  <span className="accuracy-category">{s.signal_category}</span>
-                  <span className="accuracy-type">{s.signal_type}</span>
-                  <span className="num accuracy-count">{s.total_signals}</span>
-                  <div className="accuracy-bar-container">
-                    <div className="accuracy-bar" style={{
-                      width: `${s.accuracy_pct || 0}%`,
-                      background: parseFloat(s.accuracy_pct) >= 50 ? 'var(--green)' : 'var(--red)',
-                    }} />
-                  </div>
-                  <span className={`num ${parseFloat(s.accuracy_pct) >= 50 ? 'profit' : 'loss'}`}>
-                    {s.accuracy_pct}%
-                  </span>
-                </div>
-              ))}
+            <div className="v2-empty">Need more trades to calculate accuracy</div>
+          ) : signalAccuracy.map((s, i) => (
+            <div key={i} className="v2-acc-row">
+              <span className="v2-acc-cat">{s.signal_category}</span>
+              <span className="v2-acc-type">{s.signal_type}</span>
+              <span className="v2-mono v2-muted" style={{ minWidth: 25 }}>{s.total_signals}</span>
+              <div className="v2-acc-bar-track">
+                <div className="v2-acc-bar-fill" style={{
+                  width: `${s.accuracy_pct || 0}%`,
+                  background: parseFloat(s.accuracy_pct) >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-red)',
+                }} />
+              </div>
+              <span className={`v2-mono ${parseFloat(s.accuracy_pct) >= 50 ? 'v2-profit' : 'v2-loss'}`}>
+                {s.accuracy_pct}%
+              </span>
             </div>
-          )}
-        </div>
+          ))}
+        </GlowCard>
 
-        {/* Cost Trend */}
-        <div className="panel">
-          <div className="panel-title">AI Cost Trend</div>
-          {costData.length === 0 ? (
-            <div className="empty-state">No cost data yet</div>
-          ) : (
-            <div className="cost-table">
-              {costData.slice(-14).reverse().map((c, i) => (
-                <div key={i} className="cost-row">
-                  <span className="cost-date">{new Date(c.date).toLocaleDateString()}</span>
-                  <span className="num cost-calls">{c.call_count} calls</span>
-                  <span className="num cost-tokens">{(parseInt(c.total_tokens || 0) / 1000).toFixed(0)}k tok</span>
-                  <span className="num" style={{ color: 'var(--ai)' }}>${parseFloat(c.daily_cost).toFixed(2)}</span>
-                </div>
-              ))}
+        {/* AI Cost Analysis */}
+        <GlowCard className="v2-animate-in v2-stagger-8" glowColor="magenta">
+          <div className="v2-section-title">AI Cost Analysis</div>
+          <div className="v2-cost-kpi-row">
+            <div className="v2-cost-kpi">
+              <span className="v2-cost-kpi-label">Cost/Trade</span>
+              <span className="v2-cost-kpi-val">${costPerTrade.toFixed(3)}</span>
             </div>
-          )}
-        </div>
+            <div className="v2-cost-kpi">
+              <span className="v2-cost-kpi-label">Total Cost</span>
+              <span className="v2-cost-kpi-val">${totalCost.toFixed(2)}</span>
+            </div>
+          </div>
+          {costData.length === 0 ? (
+            <div className="v2-empty">No cost data yet</div>
+          ) : costData.slice(-14).reverse().map((c, i) => (
+            <div key={i} className="v2-cost-row">
+              <span className="v2-cost-date">{new Date(c.date).toLocaleDateString()}</span>
+              <span className="v2-mono v2-muted">{c.call_count} calls</span>
+              <span className="v2-mono v2-muted">{(parseInt(c.total_tokens || 0) / 1000).toFixed(0)}k</span>
+              <span className="v2-mono v2-cost-amt">${parseFloat(c.daily_cost).toFixed(2)}</span>
+            </div>
+          ))}
+        </GlowCard>
       </div>
 
       <style>{`
-        .analytics-page { display: flex; flex-direction: column; gap: var(--space-lg); }
-        .page-title {
-          font-family: 'Syne', sans-serif; font-weight: 800; font-size: 18px;
-          letter-spacing: 6px; color: var(--t2);
-        }
-        .analytics-kpis {
-          display: flex; gap: var(--panel-gap); overflow-x: auto;
-          padding-bottom: var(--space-xs); flex-wrap: wrap;
-        }
-        .kpi { background: var(--surface); border: 1px solid var(--border-1); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); min-width: 120px; }
-        .kpi-lbl { font-family: 'IBM Plex Mono', monospace; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--t4); margin-bottom: 2px; }
-        .kpi-val { font-family: 'IBM Plex Mono', monospace; font-size: 16px; font-weight: 300; font-variant-numeric: tabular-nums; }
-        .chart-panel { padding: 0; overflow: hidden; }
-        .chart-section-header { padding: var(--space-md) var(--panel-padding); border-bottom: 1px solid var(--border-0); }
-        .chart-section-header .panel-title { margin-bottom: 0; }
-        .analytics-chart { width: 100%; height: 280px; }
-        .analytics-grid {
-          display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
-          gap: var(--panel-gap);
-        }
-        .panel-title-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-md); }
-        .panel-title-row .panel-title { margin-bottom: 0; }
-        .period-selector { display: flex; gap: 1px; }
-        .chart-btn {
-          padding: 3px 8px; font-family: 'IBM Plex Mono', monospace; font-size: 9px;
-          font-weight: 500; color: var(--t3); background: var(--elevated);
-          border: 1px solid var(--border-0); transition: all var(--transition-fast); cursor: pointer;
-        }
-        .chart-btn:first-child { border-radius: var(--radius-sm) 0 0 var(--radius-sm); }
-        .chart-btn:last-child { border-radius: 0 var(--radius-sm) var(--radius-sm) 0; }
-        .chart-btn.active { color: var(--cyan); background: rgba(0,229,255,0.08); border-color: rgba(0,229,255,0.2); }
-        .empty-state { color: var(--t4); font-size: 13px; padding: var(--space-xl); text-align: center; }
-        .pnl-header, .pnl-row {
-          display: grid; grid-template-columns: 100px 60px 60px 100px 70px;
-          gap: var(--space-sm); align-items: center; padding: var(--space-xs) 0;
-        }
-        .pnl-header { font-family: 'IBM Plex Mono', monospace; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--t4); border-bottom: 1px solid var(--border-1); }
-        .pnl-row { font-size: 12px; border-bottom: 1px solid var(--border-0); }
-        .pnl-period { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
-        .agent-perf-row {
-          display: flex; align-items: center; gap: var(--space-md);
-          padding: var(--space-sm) 0; border-bottom: 1px solid var(--border-0); font-size: 12px;
-        }
-        .agent-perf-name { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--ai); text-transform: uppercase; min-width: 80px; }
-        .agent-perf-trades { color: var(--t3); min-width: 30px; }
-        .accuracy-row {
-          display: flex; align-items: center; gap: var(--space-sm);
-          padding: var(--space-xs) 0; border-bottom: 1px solid var(--border-0); font-size: 12px;
-        }
-        .accuracy-category { font-family: 'IBM Plex Mono', monospace; font-size: 9px; color: var(--ai); text-transform: uppercase; min-width: 60px; }
-        .accuracy-type { color: var(--t2); flex: 1; font-size: 11px; }
-        .accuracy-count { color: var(--t4); min-width: 25px; font-size: 10px; }
-        .accuracy-bar-container { width: 60px; height: 4px; background: var(--border-0); border-radius: 2px; overflow: hidden; }
-        .accuracy-bar { height: 100%; border-radius: 2px; transition: width 0.3s; }
-        .cost-row {
-          display: flex; align-items: center; gap: var(--space-md);
-          padding: var(--space-xs) 0; border-bottom: 1px solid var(--border-0); font-size: 12px;
-        }
-        .cost-date { font-family: 'IBM Plex Mono', monospace; font-size: 11px; min-width: 80px; }
-        .cost-calls { color: var(--t3); min-width: 60px; }
-        .cost-tokens { color: var(--t4); min-width: 60px; }
-      `}</style>
-    </div>
-  );
-}
+        .v2-analytics { display: flex; flex-direction: column; gap: var(--v2-space-sm); }
+        .v2-title { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 16px; letter-spacing: 6px; color: var(--v2-text-primary); padding: var(--v2-space-xs) 0; }
 
-function KPI({ label, value }) {
-  return (
-    <div className="kpi">
-      <div className="kpi-lbl">{label}</div>
-      <div className="kpi-val">{value}</div>
+        .v2-kpi-strip { display: flex; gap: var(--v2-space-sm); overflow-x: auto; scrollbar-width: none; }
+        .v2-kpi-strip::-webkit-scrollbar { display: none; }
+        .v2-kpi { min-width: 130px; flex: 1; }
+        .v2-kpi .v2-ticking-number { font-size: 18px; font-weight: 400; }
+        .v2-kpi-label { font-family: var(--v2-font-data); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--v2-text-muted); margin-bottom: var(--v2-space-xs); }
+        .v2-kpi--ring { display: flex; flex-direction: column; align-items: flex-start; }
+        .v2-kpi-big { font-family: var(--v2-font-data); font-size: 18px; font-weight: 400; color: var(--v2-text-primary); font-variant-numeric: tabular-nums; }
+        .v2-profit { color: var(--v2-accent-green); }
+        .v2-loss { color: var(--v2-accent-red); }
+        .v2-muted { color: var(--v2-text-muted); }
+        .v2-mono { font-family: var(--v2-font-data); font-variant-numeric: tabular-nums; }
+
+        .v2-chart-card { overflow: hidden; }
+        .v2-chart-area { width: 100%; height: 280px; }
+        .v2-section-title { font-family: var(--v2-font-data); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted); margin-bottom: var(--v2-space-md); }
+
+        .v2-grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: var(--v2-space-sm); }
+
+        .v2-panel-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--v2-space-md); }
+        .v2-period-pills { display: flex; gap: 2px; }
+        .v2-pill-sm { padding: 3px 8px; font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; color: var(--v2-text-muted); background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border); border-radius: var(--v2-radius-sm); cursor: pointer; transition: all var(--v2-duration-fast); }
+        .v2-pill-sm.active { color: var(--v2-accent-cyan); background: rgba(0,229,255,0.08); border-color: rgba(0,229,255,0.2); }
+
+        .v2-table { overflow-x: auto; }
+        .v2-tbl-header, .v2-tbl-row { display: flex; gap: var(--v2-space-sm); align-items: center; padding: var(--v2-space-xs) 0; }
+        .v2-tbl-header { font-family: var(--v2-font-data); font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--v2-text-muted); border-bottom: 1px solid var(--v2-border); }
+        .v2-tbl-row { font-size: 12px; border-bottom: 1px solid var(--v2-border); }
+        .v2-tbl-col { flex: 1; min-width: 0; }
+
+        .v2-agent-row { display: flex; align-items: center; gap: var(--v2-space-md); padding: var(--v2-space-sm) 0; border-bottom: 1px solid var(--v2-border); font-size: 12px; }
+        .v2-agent-name { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-accent-magenta); text-transform: uppercase; min-width: 80px; flex: 1; }
+
+        .v2-acc-row { display: flex; align-items: center; gap: var(--v2-space-sm); padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border); font-size: 12px; }
+        .v2-acc-cat { font-family: var(--v2-font-data); font-size: 9px; color: var(--v2-accent-magenta); text-transform: uppercase; min-width: 60px; }
+        .v2-acc-type { color: var(--v2-text-secondary); flex: 1; font-size: 11px; }
+        .v2-acc-bar-track { width: 60px; height: 4px; background: var(--v2-border); border-radius: 2px; overflow: hidden; }
+        .v2-acc-bar-fill { height: 100%; border-radius: 2px; transition: width var(--v2-duration-normal); }
+
+        .v2-cost-kpi-row { display: flex; gap: var(--v2-space-md); margin-bottom: var(--v2-space-md); }
+        .v2-cost-kpi { display: flex; flex-direction: column; gap: 2px; }
+        .v2-cost-kpi-label { font-family: var(--v2-font-data); font-size: 9px; color: var(--v2-text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+        .v2-cost-kpi-val { font-family: var(--v2-font-data); font-size: 16px; font-weight: 400; color: var(--v2-accent-magenta); font-variant-numeric: tabular-nums; }
+        .v2-cost-row { display: flex; align-items: center; gap: var(--v2-space-md); padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border); font-size: 12px; }
+        .v2-cost-date { font-family: var(--v2-font-data); font-size: 11px; min-width: 80px; color: var(--v2-text-primary); }
+        .v2-cost-amt { color: var(--v2-accent-magenta); }
+
+        .v2-empty { color: var(--v2-text-muted); font-family: var(--v2-font-body); font-size: 13px; padding: var(--v2-space-xl) 0; text-align: center; }
+
+        @media (max-width: 768px) {
+          .v2-kpi-strip { flex-wrap: nowrap; }
+          .v2-kpi { min-width: 120px; }
+          .v2-grid-2 { grid-template-columns: 1fr; }
+        }
+      `}</style>
     </div>
   );
 }
