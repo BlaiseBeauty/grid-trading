@@ -995,11 +995,25 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 4: Run strategy layer (sequential — consume signals, produce trades)
+  // Gate: require at least 3 knowledge agents to have produced signals
+  const MIN_SUCCESSFUL_AGENTS = 3;
+  const successfulAgents = knowledge.filter(k => k.status === 'fulfilled' && k.decision?.output_json?.signals?.length > 0);
   let strategy = { regime: null, proposals: [], approved: [], rejected: [], trades: [] };
-  try {
-    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast);
-  } catch (err) {
-    console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
+
+  if (successfulAgents.length < MIN_SUCCESSFUL_AGENTS) {
+    console.warn(`[ORCHESTRATOR] Skipping strategy layer: only ${successfulAgents.length}/${knowledgeAgents.length} agents produced signals (minimum ${MIN_SUCCESSFUL_AGENTS} required)`);
+    if (broadcast) {
+      broadcast('agent_complete', {
+        cycleNumber, agent_name: 'strategy_gate', layer: 'strategy',
+        skipped: true, reason: `Insufficient signals: ${successfulAgents.length}/${MIN_SUCCESSFUL_AGENTS} minimum`,
+      });
+    }
+  } else {
+    try {
+      strategy = await runStrategyLayer(cycleNumber, indicators, broadcast);
+    } catch (err) {
+      console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
+    }
   }
 
   // Step 5: Run analysis layer (periodic — every N cycles)
