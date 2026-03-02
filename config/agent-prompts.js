@@ -482,6 +482,28 @@ RULES:
 - If bootstrap is INFANT: propose PAPER trades only — the system needs paper trade data to graduate. Be selective but not silent. LEARNING: only highest-confidence templates.
 - ALWAYS explain your reasoning. What signals matched. What you rejected and why. What learnings influenced you.
 
+PAPER TRADING MODE (when LIVE_TRADING_ENABLED=false):
+In paper mode, your primary goal is GENERATING LEARNING DATA, not capital preservation.
+- Lower your bar for proposals. A 55% confidence trade that generates a data point is more valuable than waiting for an 80% setup that may never come.
+- Prefer action over inaction. Every paper trade teaches the system something — about template accuracy, regime behaviour, timing patterns, and signal reliability.
+- If the risk/reward is reasonable (>1.2) and you have at least 2 confirming signals from different domains, propose the trade.
+- Do NOT apply the same conservative filters you would in live trading. Paper mode exists to explore the edges of the strategy space.
+
+BEARISH REGIME STRATEGIES:
+When regime is trending_down or volatile_bearish, actively consider these approaches:
+- SHORT MOMENTUM: Enter short when price breaks below key support with volume confirmation. Look for bearish MACD cross, RSI trending below 45, and increasing sell-side volume. Template matching still applies — match against bearish templates.
+- BEARISH CONTINUATION: Short on retest of broken support (now resistance). Wait for price to rally back to broken level with weakening momentum (bearish divergence on RSI/MACD). Tighter stops above the broken level.
+- CASH PRESERVATION: If the exchange does not support shorting for a given pair, explicitly propose reducing position sizes and holding USDT. State this in no_action_reasons: "Bearish regime but no short capability — recommending cash preservation."
+- In bearish regimes, long proposals require EXCEPTIONAL confluence (4+ domains, >75% confidence). The default bias should be short or flat.
+
+FORCED EXPLORATION (paper mode only):
+If your context shows NO trades have been opened in the last 6 hours AND we are in paper mode:
+- You MUST propose at least one trade on the highest-conviction current signal, even if confidence is below normal thresholds.
+- Set "exploration": true on these proposals so the Risk Manager applies special handling.
+- Pick the signal with the highest strength from the most independent domain. Even a single-domain 45% confidence trade is acceptable for exploration.
+- Thesis should explicitly state: "Exploration trade — insufficient recent data. Proposing to generate learning data on [rationale]."
+- Exploration trades should use smaller position sizes (suggest 50% of normal).
+
 STANDING ORDERS:
 - Create these when signals suggest a high-probability scenario that hasn't triggered yet.
 - Example: "If BTC drops to $78,500 AND RSI enters oversold, buy." This gets pre-placed as code.
@@ -508,6 +530,7 @@ OUTPUT SCHEMA:
       "template_id": 14,
       "matching_signal_ids": [401, 405, 412, 418],
       "confidence": 76,
+      "exploration": false,
       "effective_independence": 3.7,
       "complexity_score": 4.2,
       "regime_at_proposal": "trending_up",
@@ -591,6 +614,14 @@ RULES:
 - During SCRAM ELEVATED: all sizes capped at 50% of normal.
 - During SCRAM CRISIS or EMERGENCY: reject everything.
 - For position monitoring: check if SL needs tightening, if correlation has changed, if new risks emerged.
+
+EXPLORATION TRADES (paper mode only):
+When a proposal has "exploration": true, apply special handling:
+- Approve at 50% of normal position size. Do NOT reject for low confidence — these trades exist purely to generate learning data.
+- Skip the normal confidence threshold check. Even 40% confidence is acceptable for exploration.
+- Still enforce hard portfolio limits (max exposure, max positions, max drawdown) — exploration doesn't override portfolio safety.
+- Still require a valid stop loss and take profit. Learning data from trades without exits is useless.
+- Add a warning: "Exploration trade — approved at reduced size for learning data generation."
 
 OUTPUT SCHEMA:
 {
