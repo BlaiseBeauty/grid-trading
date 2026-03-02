@@ -64,9 +64,9 @@ class PositionMonitor:
                     cur.execute("""
                         UPDATE trades SET
                             exit_price = %s, pnl_realised = %s, pnl_pct = %s,
-                            status = 'closed', closed_at = NOW()
+                            status = 'closed', closed_at = NOW(), close_reason = %s
                         WHERE id = %s
-                    """, (current_price, round(pnl_realised, 4), round(pnl_pct, 4), trade_id))
+                    """, (current_price, round(pnl_realised, 4), round(pnl_pct, 4), action, trade_id))
 
                     results.append({
                         'trade_id': trade_id,
