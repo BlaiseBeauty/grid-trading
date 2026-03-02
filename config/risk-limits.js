@@ -19,7 +19,7 @@ const LIVE_LIMITS = {
   // Quality gates
   MIN_RISK_REWARD_RATIO: 1.5,
   MIN_CONFIDENCE_TO_TRADE: 55,      // Calibrated confidence threshold
-  MIN_SIGNAL_COMPLEXITY: 3,         // Minimum signals from different domains
+  MIN_SIGNAL_COMPLEXITY: 2,         // Minimum signals from different domains
 
   // Event blackout
   EVENT_BLACKOUT_HOURS: 2,          // No new positions 2h before high-impact events

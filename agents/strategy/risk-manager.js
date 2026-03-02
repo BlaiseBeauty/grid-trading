@@ -91,6 +91,7 @@ class RiskManagerAgent extends BaseAgent {
 
     for (const proposal of proposals || []) {
       const reasons = [];
+      const isExploration = proposal.exploration === true;
 
       // Max open positions
       if (state.openPositions >= limits.MAX_OPEN_POSITIONS) {
@@ -102,14 +103,16 @@ class RiskManagerAgent extends BaseAgent {
         reasons.push(`daily_loss_limit (${state.dailyLossPct.toFixed(1)}% >= ${limits.MAX_DAILY_LOSS_PCT}%)`);
       }
 
-      // Min confidence
-      if (proposal.confidence < limits.MIN_CONFIDENCE_TO_TRADE) {
-        reasons.push(`low_confidence (${proposal.confidence} < ${limits.MIN_CONFIDENCE_TO_TRADE})`);
+      // Min confidence — exploration proposals get a lower threshold (40%)
+      const confidenceThreshold = isExploration ? 40 : limits.MIN_CONFIDENCE_TO_TRADE;
+      if (proposal.confidence < confidenceThreshold) {
+        reasons.push(`low_confidence (${proposal.confidence} < ${confidenceThreshold}${isExploration ? ' exploration' : ''})`);
       }
 
-      // Min complexity score
-      if ((proposal.complexity_score || 0) < riskLimitsConfig.MIN_SIGNAL_COMPLEXITY) {
-        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${riskLimitsConfig.MIN_SIGNAL_COMPLEXITY})`);
+      // Min complexity score — exploration proposals need only 1 domain
+      const complexityThreshold = isExploration ? 1 : riskLimitsConfig.MIN_SIGNAL_COMPLEXITY;
+      if ((proposal.complexity_score || 0) < complexityThreshold) {
+        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${complexityThreshold}${isExploration ? ' exploration' : ''})`);
       }
 
       // Position size limit
@@ -139,6 +142,15 @@ class RiskManagerAgent extends BaseAgent {
       } else {
         passed.push(proposal);
       }
+    }
+
+    if (codeRejected.length > 0) {
+      for (const rej of codeRejected) {
+        console.log(`[RISK_MANAGER] Code-rejected: ${rej.symbol} ${rej.direction} conf=${rej.confidence} — ${rej.rejection_detail}`);
+      }
+    }
+    if (passed.length > 0) {
+      console.log(`[RISK_MANAGER] Pre-flight passed: ${passed.map(p => `${p.symbol} ${p.direction} conf=${p.confidence} expl=${!!p.exploration}`).join(', ')}`);
     }
 
     return { passed, codeRejected };
