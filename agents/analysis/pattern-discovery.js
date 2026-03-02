@@ -142,7 +142,7 @@ class PatternDiscoveryAgent extends BaseAgent {
       queryAll(`
         SELECT
           mr.regime,
-          mr.sub_regime,
+          mr.confidence as regime_confidence,
           COUNT(t.id) as trade_count,
           ROUND(100.0 * COUNT(*) FILTER (WHERE t.pnl_realised > 0) /
             NULLIF(COUNT(*), 0), 1) as win_rate,
@@ -152,7 +152,7 @@ class PatternDiscoveryAgent extends BaseAgent {
           AND mr.created_at <= t.opened_at
           AND mr.created_at > t.opened_at - INTERVAL '4 hours'
         WHERE t.status = 'closed'
-        GROUP BY mr.regime, mr.sub_regime
+        GROUP BY mr.regime, mr.confidence
         HAVING COUNT(t.id) >= 2
         ORDER BY trade_count DESC
       `),

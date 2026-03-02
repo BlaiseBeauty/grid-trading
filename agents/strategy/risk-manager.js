@@ -42,8 +42,26 @@ class RiskManagerAgent extends BaseAgent {
       _riskContext: { proposals: passed, systemState, codeRejected },
     });
 
-    // Parse Claude's risk assessment
-    const assessment = result?.output_json || { approved: [], rejected: [] };
+    // Parse Claude's risk assessment — handle both single-proposal and multi-proposal formats
+    let assessment = result?.output_json || { approved: [], rejected: [] };
+
+    // If AI returned single-proposal format {decision, original_proposal, modifications},
+    // normalize to multi-proposal format {approved: [], rejected: []}
+    if (assessment.decision && !assessment.approved) {
+      const proposal = passed[0]; // single proposal that was evaluated
+      if (assessment.decision === 'approve' || assessment.decision === 'modify') {
+        const modifications = assessment.modifications || {};
+        assessment = {
+          approved: [{ ...proposal, ...modifications, approved_size_pct: modifications.position_size_pct || proposal.position_size_suggestion_pct }],
+          rejected: [],
+        };
+      } else {
+        assessment = {
+          approved: [],
+          rejected: [{ ...proposal, reason: assessment.risk_assessment?.reason || 'risk_manager_rejected', detail: assessment.warnings?.join('; ') }],
+        };
+      }
+    }
 
     // Store Claude-rejected opportunities
     for (const rej of (assessment.rejected || [])) {

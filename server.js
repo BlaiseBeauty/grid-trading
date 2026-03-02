@@ -302,24 +302,23 @@ function setupCron() {
     }
   });
 
-  // Monitor open positions + check standing orders every 15 minutes
-  cron.schedule('*/15 * * * *', async () => {
-    console.log('[CRON] Monitoring positions...');
-    let closed = [];
+  // Stop loss / take profit enforcement — every minute
+  let slCheckRunning = false;
+  cron.schedule('* * * * *', async () => {
+    if (slCheckRunning) return; // skip if previous check still running
+    slCheckRunning = true;
     try {
       const result = await orchestrator.monitorPositions();
-      // Python returns { checked, results } — filter for actual closures
-      closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit');
+      const closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit');
       if (closed.length > 0) {
         console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
         broadcast('positions_closed', { closed });
       }
     } catch (err) {
       console.error('[CRON] Python position monitor failed:', err.message);
-      // Node.js fallback: check stop losses directly when Python is unreachable
       console.log('[CRON] Running Node.js stop-loss fallback...');
       try {
-        closed = await checkStopLossesFallback();
+        const closed = await checkStopLossesFallback();
         if (closed.length > 0) {
           console.log(`[CRON] ${closed.length} position(s) closed by Node.js fallback`);
           broadcast('positions_closed', { closed });
@@ -327,9 +326,14 @@ function setupCron() {
       } catch (fallbackErr) {
         console.error('[CRON] Node.js stop-loss fallback also failed:', fallbackErr.message);
       }
+    } finally {
+      slCheckRunning = false;
     }
+  });
 
-    // Check standing order triggers
+  // Check standing order triggers every 15 minutes
+  cron.schedule('*/15 * * * *', async () => {
+    console.log('[CRON] Monitoring positions...');
     try {
       await orchestrator.checkStandingOrders(broadcast);
     } catch (err) {
