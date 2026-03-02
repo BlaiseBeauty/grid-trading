@@ -30,20 +30,23 @@ function getSignalForSymbol(signals, symbol) {
 
 // ── Position Card ──
 function MobilePositionCard({ trade, prices, expanded, onToggle }) {
-  const currentPrice = prices[trade.symbol]?.price;
-  const entry = parseFloat(trade.entry_price);
+  const priceKey = trade.symbol.replace('/', '-');
+  const currentPrice = prices[priceKey]?.price;
+  const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
   const qty = parseFloat(trade.quantity || 0);
   const side = trade.side || 'buy';
   const pnlRaw = currentPrice && entry
     ? (side === 'buy' ? (currentPrice - entry) : (entry - currentPrice)) * qty
     : null;
-  const pnlPct = entry ? ((pnlRaw || 0) / (entry * qty)) * 100 : 0;
+  const pnlPct = entry && qty ? ((pnlRaw || 0) / (entry * qty)) * 100 : 0;
+  const sl = parseFloat(trade.sl_price) || 0;
+  const tp = parseFloat(trade.tp_price) || 0;
 
   return (
     <div className="mob-position-card" onClick={onToggle}>
       <div className="mob-position-header">
         <div className="mob-position-left">
-          <span className="mob-position-symbol">{trade.symbol?.replace('-USDT', '')}</span>
+          <span className="mob-position-symbol">{priceKey.replace('-USDT', '')}</span>
           <span className={`mob-side-badge mob-side-${side}`}>
             {side === 'buy' ? 'LONG' : 'SHORT'}
           </span>
@@ -76,12 +79,12 @@ function MobilePositionCard({ trade, prices, expanded, onToggle }) {
             <span className="mob-detail-label">Opened</span>
             <span>{timeAgo(trade.opened_at || trade.created_at)}</span>
           </div>
-          {trade.stop_loss && trade.take_profit && (
+          {sl > 0 && tp > 0 && (
             <div style={{ marginTop: 8 }}>
               <RangeBar
                 current={currentPrice || entry}
-                low={parseFloat(trade.stop_loss)}
-                high={parseFloat(trade.take_profit)}
+                low={Math.min(sl, tp)}
+                high={Math.max(sl, tp)}
                 side={side}
               />
             </div>
@@ -118,6 +121,8 @@ export default function MobileDashboard() {
     fetchSignals();
     fetchSystem();
     fetchPrices();
+    const priceInterval = setInterval(fetchPrices, 30_000);
+    return () => clearInterval(priceInterval);
   }, []);
 
   // Pull-to-refresh handlers
