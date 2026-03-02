@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { useDataStore } from '../stores/data';
 import { timeAgo } from '../lib/format';
 import { StatusPulse } from './ui';
@@ -44,8 +45,21 @@ export default function AgentFeed() {
 
   const items = meaningfulWsItems.length > 0 ? wsItems : decisionItems;
 
+  const feedRef = useRef(null);
+  const prevLengthRef = useRef(items.length);
+  const newItemCount = items.length > prevLengthRef.current
+    ? items.length - prevLengthRef.current
+    : 0;
+
+  useEffect(() => {
+    if (newItemCount > 0 && feedRef.current) {
+      feedRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    prevLengthRef.current = items.length;
+  }, [items.length]);
+
   return (
-    <div className="v2-agent-feed">
+    <div ref={feedRef} className="v2-agent-feed">
       <div className="v2-feed-title">Agent Activity</div>
 
       {/* Live cycle progress */}
@@ -102,7 +116,7 @@ export default function AgentFeed() {
           <div className="v2-feed-empty">No activity yet. Trigger a cycle to start.</div>
         )}
         {items.map((item, i) => (
-          <div key={i} className="v2-feed-item">
+          <div key={i} className={`v2-feed-item ${i < newItemCount ? 'v2-slide-in' : ''}`}>
             <div className="v2-feed-left">
               {item.type === 'system' ? (
                 <span className="v2-feed-agent v2-feed-agent--system">SYSTEM</span>

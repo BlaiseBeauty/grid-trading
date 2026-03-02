@@ -63,7 +63,7 @@ export default function Trades() {
         <div className="v2-kpi-strip">
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-1">
             <div className="v2-kpi-label">Total Trades</div>
-            <span className="v2-kpi-big-num">{tradeStats.total_closed || 0}</span>
+            <TickingNumber value={tradeStats.total_closed || 0} format="number" decimals={0} colorize={false} />
           </GlowCard>
           <GlowCard className="v2-kpi v2-kpi--ring v2-animate-in v2-stagger-2">
             <div className="v2-kpi-label">Win Rate</div>
@@ -85,7 +85,7 @@ export default function Trades() {
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-5" glowColor="cyan">
             <div className="v2-kpi-label">Open</div>
             <div className="v2-kpi-positions">
-              <span className="v2-kpi-big-num">{tradeStats.total_open || 0}</span>
+              <TickingNumber value={tradeStats.total_open || 0} format="number" decimals={0} colorize={false} />
               <div className="v2-kpi-dots">
                 {(openTrades || []).slice(0, 6).map((_, i) => (
                   <StatusPulse key={i} status="active" size={5} />

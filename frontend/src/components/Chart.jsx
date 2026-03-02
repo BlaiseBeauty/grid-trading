@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { createChart, CandlestickSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
 import { useDataStore } from '../stores/data';
-import { StatusPulse } from './ui';
+import { StatusPulse, TickingNumber } from './ui';
 
 const SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
 
@@ -112,15 +112,12 @@ function MiniChart({ symbol }) {
           {price && <StatusPulse status="active" size={5} />}
         </div>
         <div className="v2-ticker-right">
-          <span className="v2-ticker-price">
-            {currentPrice != null
-              ? `$${Number(currentPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-              : '\u2014'}
-          </span>
+          {currentPrice != null
+            ? <TickingNumber value={currentPrice} format="money" decimals={2} colorize={false} className="v2-ticker-price" />
+            : <span className="v2-ticker-price">{'\u2014'}</span>
+          }
           {hasChange && (
-            <span className={`v2-ticker-change ${isPositive ? 'v2-profit' : 'v2-loss'}`}>
-              {isPositive ? '+' : ''}{change24h.toFixed(2)}%
-            </span>
+            <TickingNumber value={change24h} format="pct" decimals={2} className="v2-ticker-change" />
           )}
         </div>
       </div>

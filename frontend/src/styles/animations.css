@@ -127,3 +127,31 @@
 .v2-stagger-6 { animation-delay: 300ms; }
 .v2-stagger-7 { animation-delay: 350ms; }
 .v2-stagger-8 { animation-delay: 400ms; }
+
+/* ── Border Pulse (position P&L direction) ── */
+@keyframes v2-border-pulse-green {
+  0% { border-color: rgba(0, 230, 118, 0.6); box-shadow: 0 0 12px rgba(0, 230, 118, 0.2); }
+  100% { border-color: var(--v2-border); box-shadow: none; }
+}
+
+@keyframes v2-border-pulse-red {
+  0% { border-color: rgba(255, 23, 68, 0.6); box-shadow: 0 0 12px rgba(255, 23, 68, 0.2); }
+  100% { border-color: var(--v2-border); box-shadow: none; }
+}
+
+/* ── Trade Execution Flash ── */
+@keyframes v2-border-flash-cyan {
+  0% { border-color: rgba(0, 229, 255, 0.8); box-shadow: 0 0 20px rgba(0, 229, 255, 0.3); }
+  100% { border-color: var(--v2-border); box-shadow: none; }
+}
+
+/* ── Page Enter Transition ── */
+@keyframes v2-page-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.v2-border-pulse-green { animation: v2-border-pulse-green 600ms var(--v2-ease-out); }
+.v2-border-pulse-red { animation: v2-border-pulse-red 600ms var(--v2-ease-out); }
+.v2-trade-flash { animation: v2-border-flash-cyan 800ms var(--v2-ease-out); }
+.v2-page-transition { animation: v2-page-enter 200ms var(--v2-ease-out) both; }

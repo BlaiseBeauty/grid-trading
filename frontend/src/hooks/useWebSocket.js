@@ -49,6 +49,7 @@ export function useWebSocket() {
             case 'trades_executed':
               s.fetchTrades();
               s.fetchPortfolio();
+              s.setTradeFlash(true);
               break;
             case 'positions_closed':
               s.fetchTrades();
@@ -71,10 +72,12 @@ export function useWebSocket() {
               s.fetchTrades();
               s.fetchPortfolio();
               s.fetchStandingOrders();
+              s.setTradeFlash(true);
               break;
             case 'trade':
               s.fetchTrades();
               s.fetchPortfolio();
+              s.setTradeFlash(true);
               break;
             case 'trade_closed':
               s.fetchTrades();

@@ -48,11 +48,11 @@ export default function Settings() {
   const currentPhase = health?.bootstrap_phase || 'infant';
   const currentIdx = phases.indexOf(currentPhase);
 
-  // Service health checks
+  // Service health checks — Node is always up if this page rendered; others from health-detail
   const services = [
     { name: 'Node.js', status: 'active', detail: `Port ${config.port || 3100}` },
-    { name: 'Python Engine', status: health?.python_engine ? 'active' : 'error', detail: config.python_engine_url },
-    { name: 'PostgreSQL', status: health?.database ? 'active' : 'error', detail: 'Connected' },
+    { name: 'Python Engine', status: !health ? 'idle' : health.python_engine ? 'active' : 'error', detail: config.python_engine_url },
+    { name: 'PostgreSQL', status: !health ? 'idle' : health.database ? 'active' : 'error', detail: health?.database ? 'Connected' : 'Unreachable' },
   ];
 
   return (

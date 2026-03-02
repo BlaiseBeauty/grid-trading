@@ -17,7 +17,9 @@ async function routes(fastify) {
 
   // GET /api/system/health-detail — authenticated system health (used by dashboard)
   fastify.get('/system/health-detail', async () => {
-    const [bootstrap, scramEvents, tradeStats, costTotal] = await Promise.all([
+    const pythonUrl = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
+
+    const [bootstrap, scramEvents, tradeStats, costTotal, dbHealth, pythonHealth] = await Promise.all([
       queryOne('SELECT * FROM bootstrap_status ORDER BY id DESC LIMIT 1'),
       queryAll("SELECT * FROM scram_events WHERE cleared_at IS NULL"),
       queryOne(`
@@ -30,6 +32,10 @@ async function routes(fastify) {
         FROM trades
       `),
       queryOne('SELECT COALESCE(SUM(cost_usd), 0) as total_cost FROM system_costs'),
+      queryOne('SELECT 1 as ok').then(() => true).catch(() => false),
+      fetch(`${pythonUrl}/health`, { signal: AbortSignal.timeout(5000) })
+        .then(r => r.ok)
+        .catch(() => false),
     ]);
 
     return {
@@ -47,6 +53,8 @@ async function routes(fastify) {
       live_trading: process.env.LIVE_TRADING_ENABLED === 'true',
       micro_trading: process.env.MICRO_TRADING_ENABLED === 'true',
       standing_orders: process.env.STANDING_ORDERS_ENABLED === 'true',
+      python_engine: pythonHealth,
+      database: dbHealth,
     };
   });
 

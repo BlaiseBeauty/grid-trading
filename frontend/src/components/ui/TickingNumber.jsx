@@ -17,7 +17,7 @@ export default function TickingNumber({
   value = 0,
   format = 'number',
   decimals = 2,
-  duration = 400,
+  duration = 300,
   flash = true,
   prefix,
   className = '',

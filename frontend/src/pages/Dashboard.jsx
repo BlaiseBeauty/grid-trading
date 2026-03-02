@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useDataStore } from '../stores/data';
 import {
   TickingNumber, GlowCard, StatusPulse, SignalBadge,
@@ -47,6 +47,9 @@ export default function Dashboard() {
   const portfolioValue = useDataStore(s => s.portfolioValue);
   const tradeStats = useDataStore(s => s.tradeStats);
   const costs = useDataStore(s => s.costs);
+  const cycleStatus = useDataStore(s => s.cycleStatus);
+  const tradeFlash = useDataStore(s => s.tradeFlash);
+  const setTradeFlash = useDataStore(s => s.setTradeFlash);
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [nextCycle] = useState(getNextCycleTime);
   const [priceHistory, setPriceHistory] = useState({});
@@ -77,6 +80,29 @@ export default function Dashboard() {
     });
   }, [prices]);
 
+  // Clear trade flash after animation
+  useEffect(() => {
+    if (tradeFlash) {
+      const timer = setTimeout(() => setTradeFlash(false), 800);
+      return () => clearTimeout(timer);
+    }
+  }, [tradeFlash]);
+
+  // Track previous trade IDs for slide-in animation
+  const prevTradeIdsRef = useRef(null);
+  if (prevTradeIdsRef.current === null) {
+    prevTradeIdsRef.current = new Set((openTrades || []).map(t => t.id));
+  }
+  const newTradeIds = new Set(
+    (openTrades || []).filter(t => !prevTradeIdsRef.current.has(t.id)).map(t => t.id)
+  );
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      prevTradeIdsRef.current = new Set((openTrades || []).map(t => t.id));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [openTrades]);
+
   // Compute live P&L
   const liveUnrealisedPnl = (openTrades || []).reduce((sum, t) => {
     const entry = parseFloat(t.actual_fill_price || t.entry_price);
@@ -90,7 +116,7 @@ export default function Dashboard() {
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
 
   return (
-    <div className="v2-dashboard">
+    <div className={`v2-dashboard ${cycleStatus?.running ? 'v2-cycle-active' : ''}`}>
       {/* ── Header ── */}
       <div className="v2-header v2-animate-in">
         <h1 className="v2-title">COMMAND CENTRE</h1>
@@ -121,7 +147,7 @@ export default function Dashboard() {
         <GlowCard className="v2-kpi v2-animate-in v2-stagger-4">
           <div className="v2-kpi-label">Open Positions</div>
           <div className="v2-kpi-positions">
-            <span className="v2-kpi-big-num">{openTrades?.length || 0}</span>
+            <TickingNumber value={openTrades?.length || 0} format="number" decimals={0} colorize={false} className="v2-kpi-big-num" />
             <div className="v2-kpi-dots">
               {(openTrades || []).slice(0, 8).map((t, i) => (
                 <StatusPulse key={i} status="active" size={5} />
@@ -138,6 +164,11 @@ export default function Dashboard() {
           <CountdownTimer targetTime={nextCycle} />
         </GlowCard>
       </div>
+
+      {/* ── Cycle Pipeline ── */}
+      {cycleStatus?.running && (
+        <CyclePipeline cycleStatus={cycleStatus} />
+      )}
 
       {/* ── Market Row ── */}
       <div className="v2-market-row">
@@ -188,7 +219,7 @@ export default function Dashboard() {
       {/* ── Main Grid ── */}
       <div className="v2-grid">
         {/* Positions */}
-        <GlowCard className="v2-section v2-animate-in v2-stagger-4">
+        <GlowCard className={`v2-section v2-animate-in v2-stagger-4 ${tradeFlash ? 'v2-trade-flash' : ''}`}>
           <div className="v2-section-title">Open Positions <span className="v2-count">{openTrades?.length || 0}</span></div>
           {(!openTrades || openTrades.length === 0) ? (
             <div className="v2-empty">
@@ -196,51 +227,15 @@ export default function Dashboard() {
             </div>
           ) : (
             <div className="v2-positions">
-              {openTrades.map((t, i) => {
-                const entry = parseFloat(t.actual_fill_price || t.entry_price);
-                const qty = parseFloat(t.quantity);
-                const curPrice = prices[t.symbol.replace('/', '-')]?.price;
-                const pnl = curPrice ? (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty) : null;
-                const pnlPct = pnl != null ? (pnl / (entry * qty)) * 100 : null;
-                const sl = parseFloat(t.sl_price) || 0;
-                const tp = parseFloat(t.tp_price) || 0;
-
-                return (
-                  <div key={t.id || i} className="v2-position" onClick={() => setSelectedTrade(t)}>
-                    <div className="v2-pos-header">
-                      <span className="v2-pos-symbol">{t.symbol}</span>
-                      <SignalBadge direction={t.side === 'buy' ? 'long' : 'short'} />
-                      <span className="v2-pos-time">{timeAgo(t.opened_at || t.created_at)}</span>
-                    </div>
-                    <div className="v2-pos-prices">
-                      <div className="v2-pos-col">
-                        <span className="v2-pos-label">Entry</span>
-                        <span className="v2-pos-entry">${entry.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
-                      </div>
-                      <div className="v2-pos-col">
-                        <span className="v2-pos-label">Current</span>
-                        {curPrice ? <TickingNumber value={curPrice} format="money" colorize={false} /> : <span className="v2-muted">--</span>}
-                      </div>
-                      <div className="v2-pos-col">
-                        <span className="v2-pos-label">P&L</span>
-                        {pnl != null ? <TickingNumber value={pnl} format="money" /> : <span className="v2-muted">--</span>}
-                      </div>
-                      <div className="v2-pos-col">
-                        <span className="v2-pos-label">Return</span>
-                        {pnlPct != null ? <TickingNumber value={pnlPct} format="pct" /> : <span className="v2-muted">--</span>}
-                      </div>
-                    </div>
-                    {sl > 0 && tp > 0 && curPrice && (
-                      <RangeBar
-                        current={curPrice}
-                        low={Math.min(sl, tp)}
-                        high={Math.max(sl, tp)}
-                        side={t.side}
-                      />
-                    )}
-                  </div>
-                );
-              })}
+              {openTrades.map((t, i) => (
+                <PositionCard
+                  key={t.id || i}
+                  trade={t}
+                  prices={prices}
+                  isNew={newTradeIds.has(t.id)}
+                  onClick={() => setSelectedTrade(t)}
+                />
+              ))}
             </div>
           )}
         </GlowCard>
@@ -288,19 +283,19 @@ export default function Dashboard() {
                 <div className="v2-cycle-strategy">
                   <div className="v2-cycle-stat">
                     <span className="v2-cycle-stat-label">Proposals</span>
-                    <span className="v2-cycle-stat-value">{lastCycle.strategy.proposals}</span>
+                    <TickingNumber value={lastCycle.strategy.proposals || 0} format="number" decimals={0} colorize={false} className="v2-cycle-stat-value" />
                   </div>
                   <div className="v2-cycle-stat">
                     <span className="v2-cycle-stat-label">Approved</span>
-                    <span className="v2-cycle-stat-value" style={{ color: 'var(--v2-accent-green)' }}>{lastCycle.strategy.approved}</span>
+                    <TickingNumber value={lastCycle.strategy.approved || 0} format="number" decimals={0} className="v2-cycle-stat-value" />
                   </div>
                   <div className="v2-cycle-stat">
                     <span className="v2-cycle-stat-label">Rejected</span>
-                    <span className="v2-cycle-stat-value" style={{ color: 'var(--v2-accent-red)' }}>{lastCycle.strategy.rejected}</span>
+                    <TickingNumber value={lastCycle.strategy.rejected || 0} format="number" decimals={0} className="v2-cycle-stat-value" />
                   </div>
                   <div className="v2-cycle-stat">
                     <span className="v2-cycle-stat-label">Executed</span>
-                    <span className="v2-cycle-stat-value">{lastCycle.strategy.trades}</span>
+                    <TickingNumber value={lastCycle.strategy.trades || 0} format="number" decimals={0} colorize={false} className="v2-cycle-stat-value" />
                   </div>
                 </div>
               )}
@@ -346,7 +341,7 @@ export default function Dashboard() {
               </div>
               <div className="v2-health-row">
                 <span className="v2-health-label">Total Trades</span>
-                <span className="v2-health-value">{system.trade_stats?.total_trades || 0}</span>
+                <TickingNumber value={system.trade_stats?.total_trades || 0} format="number" decimals={0} colorize={false} />
               </div>
               <div className="v2-health-row">
                 <span className="v2-health-label">Win Rate</span>
@@ -390,6 +385,13 @@ export default function Dashboard() {
           display: flex;
           flex-direction: column;
           gap: var(--v2-space-sm);
+          transition: border-color var(--v2-duration-normal);
+        }
+        .v2-dashboard.v2-cycle-active {
+          border: 1px solid rgba(0, 229, 255, 0.15);
+          border-radius: var(--v2-radius-lg);
+          padding: var(--v2-space-md);
+          animation: v2-pulse-glow 2s ease-in-out infinite;
         }
 
         /* ── Header ── */
@@ -771,6 +773,57 @@ export default function Dashboard() {
           color: var(--v2-text-primary);
         }
 
+        /* ── Cycle Pipeline ── */
+        .v2-pipeline {
+          padding: var(--v2-space-sm) 0;
+        }
+        .v2-pipeline-stages {
+          display: flex;
+          justify-content: space-between;
+          margin-bottom: var(--v2-space-xs);
+        }
+        .v2-pipeline-stage {
+          display: flex;
+          align-items: center;
+          gap: var(--v2-space-xs);
+        }
+        .v2-pipeline-dot {
+          width: 6px; height: 6px;
+          border-radius: 50%;
+          background: var(--v2-text-muted);
+          transition: all var(--v2-duration-normal);
+        }
+        .v2-pipeline-stage.v2-pipe-done .v2-pipeline-dot {
+          background: var(--v2-accent-cyan);
+          box-shadow: 0 0 6px rgba(0,229,255,0.4);
+        }
+        .v2-pipeline-stage.v2-pipe-active .v2-pipeline-dot {
+          background: var(--v2-accent-cyan);
+          animation: v2-status-pulse 1.5s ease-in-out infinite;
+        }
+        .v2-pipeline-label {
+          font-family: var(--v2-font-data);
+          font-size: 9px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          color: var(--v2-text-muted);
+        }
+        .v2-pipeline-stage.v2-pipe-done .v2-pipeline-label { color: var(--v2-accent-cyan); }
+        .v2-pipeline-stage.v2-pipe-active .v2-pipeline-label { color: var(--v2-text-secondary); }
+        .v2-pipeline-track {
+          height: 2px;
+          background: var(--v2-border);
+          border-radius: 1px;
+          overflow: hidden;
+        }
+        .v2-pipeline-fill {
+          height: 100%;
+          background: var(--v2-accent-cyan);
+          border-radius: 1px;
+          transition: width 0.5s var(--v2-ease-out);
+          box-shadow: 0 0 8px rgba(0,229,255,0.3);
+        }
+
         /* ── Responsive ── */
         @media (max-width: 768px) {
           .v2-kpi-strip { flex-wrap: nowrap; }
@@ -781,6 +834,133 @@ export default function Dashboard() {
           .v2-cycle-strategy { grid-template-columns: repeat(2, 1fr); }
         }
       `}</style>
+    </div>
+  );
+}
+
+const PIPELINE_STAGES = ['knowledge', 'regime', 'synthesizer', 'risk_manager', 'execution'];
+const STRATEGY_AGENTS = ['regime_classifier', 'synthesizer', 'risk_manager'];
+
+function CyclePipeline({ cycleStatus }) {
+  const completed = cycleStatus.completed || [];
+  const knowledgeAgents = cycleStatus.agents || [];
+
+  const stageStatus = PIPELINE_STAGES.map((stage, i) => {
+    if (stage === 'knowledge') {
+      const knowledgeDone = completed.filter(c => !STRATEGY_AGENTS.includes(c.agent_name)).length;
+      return knowledgeDone >= knowledgeAgents.length ? 'done' : knowledgeDone > 0 ? 'active' : 'pending';
+    }
+    if (stage === 'regime') {
+      return completed.some(c => c.agent_name === 'regime_classifier') ? 'done' : stageStatus?.[0] === 'done' ? 'active' : 'pending';
+    }
+    const agentName = stage === 'regime' ? 'regime_classifier' : stage;
+    if (completed.some(c => c.agent_name === agentName)) return 'done';
+    // Active if previous stage is done
+    const prevDone = i === 0 || stageStatus?.[i - 1] === 'done';
+    return prevDone ? 'active' : 'pending';
+  });
+
+  // Recompute properly since we can't self-reference in map
+  const statuses = [];
+  for (let i = 0; i < PIPELINE_STAGES.length; i++) {
+    const stage = PIPELINE_STAGES[i];
+    if (stage === 'knowledge') {
+      const knowledgeDone = completed.filter(c => !STRATEGY_AGENTS.includes(c.agent_name)).length;
+      statuses.push(knowledgeDone >= knowledgeAgents.length ? 'done' : knowledgeDone > 0 ? 'active' : 'pending');
+    } else if (stage === 'execution') {
+      statuses.push(completed.some(c => c.agent_name === 'risk_manager') ? 'done' : statuses[i - 1] === 'done' ? 'active' : 'pending');
+    } else {
+      const agentName = stage === 'regime' ? 'regime_classifier' : stage;
+      if (completed.some(c => c.agent_name === agentName)) {
+        statuses.push('done');
+      } else {
+        statuses.push(statuses[i - 1] === 'done' ? 'active' : 'pending');
+      }
+    }
+  }
+
+  const doneCount = statuses.filter(s => s === 'done').length;
+  const progress = (doneCount / PIPELINE_STAGES.length) * 100;
+
+  const labels = { knowledge: 'knowledge', regime: 'regime', synthesizer: 'synth', risk_manager: 'risk', execution: 'exec' };
+
+  return (
+    <div className="v2-pipeline v2-animate-in">
+      <div className="v2-pipeline-stages">
+        {PIPELINE_STAGES.map((stage, i) => (
+          <div key={stage} className={`v2-pipeline-stage v2-pipe-${statuses[i]}`}>
+            <div className="v2-pipeline-dot" />
+            <span className="v2-pipeline-label">{labels[stage]}</span>
+          </div>
+        ))}
+      </div>
+      <div className="v2-pipeline-track">
+        <div className="v2-pipeline-fill" style={{ width: `${progress}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function PositionCard({ trade, prices, isNew, onClick }) {
+  const pnlRef = useRef(null);
+  const [pulse, setPulse] = useState(null);
+
+  const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
+  const qty = parseFloat(trade.quantity);
+  const curPrice = prices[trade.symbol.replace('/', '-')]?.price;
+  const pnl = curPrice ? (trade.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty) : null;
+  const pnlPct = pnl != null ? (pnl / (entry * qty)) * 100 : null;
+  const sl = parseFloat(trade.sl_price) || 0;
+  const tp = parseFloat(trade.tp_price) || 0;
+
+  useEffect(() => {
+    if (pnlRef.current !== null && pnl !== null && pnl !== pnlRef.current) {
+      setPulse(pnl > pnlRef.current ? 'green' : 'red');
+      const timer = setTimeout(() => setPulse(null), 600);
+      return () => clearTimeout(timer);
+    }
+    if (pnl !== null) pnlRef.current = pnl;
+  }, [pnl]);
+
+  const pulseClass = pulse === 'green' ? 'v2-border-pulse-green'
+    : pulse === 'red' ? 'v2-border-pulse-red' : '';
+
+  return (
+    <div
+      className={`v2-position ${pulseClass} ${isNew ? 'v2-slide-in' : ''}`}
+      onClick={onClick}
+    >
+      <div className="v2-pos-header">
+        <span className="v2-pos-symbol">{trade.symbol}</span>
+        <SignalBadge direction={trade.side === 'buy' ? 'long' : 'short'} />
+        <span className="v2-pos-time">{timeAgo(trade.opened_at || trade.created_at)}</span>
+      </div>
+      <div className="v2-pos-prices">
+        <div className="v2-pos-col">
+          <span className="v2-pos-label">Entry</span>
+          <span className="v2-pos-entry">${entry.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+        </div>
+        <div className="v2-pos-col">
+          <span className="v2-pos-label">Current</span>
+          {curPrice ? <TickingNumber value={curPrice} format="money" colorize={false} /> : <span className="v2-muted">--</span>}
+        </div>
+        <div className="v2-pos-col">
+          <span className="v2-pos-label">P&L</span>
+          {pnl != null ? <TickingNumber value={pnl} format="money" /> : <span className="v2-muted">--</span>}
+        </div>
+        <div className="v2-pos-col">
+          <span className="v2-pos-label">Return</span>
+          {pnlPct != null ? <TickingNumber value={pnlPct} format="pct" /> : <span className="v2-muted">--</span>}
+        </div>
+      </div>
+      {sl > 0 && tp > 0 && curPrice && (
+        <RangeBar
+          current={curPrice}
+          low={Math.min(sl, tp)}
+          high={Math.max(sl, tp)}
+          side={trade.side}
+        />
+      )}
     </div>
   );
 }

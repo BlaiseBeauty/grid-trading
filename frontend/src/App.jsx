@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './stores/auth';
 import { useWebSocket } from './hooks/useWebSocket';
 import Sidebar from './components/Sidebar';
@@ -13,6 +13,7 @@ import Settings from './pages/Settings';
 
 function Layout({ children }) {
   useWebSocket();
+  const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
@@ -39,7 +40,9 @@ function Layout({ children }) {
         minHeight: '100vh',
         overflow: 'auto',
       }}>
-        {children}
+        <div key={location.pathname} className="v2-page-transition">
+          {children}
+        </div>
       </main>
     </div>
   );

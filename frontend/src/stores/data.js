@@ -43,6 +43,10 @@ export const useDataStore = create((set, get) => ({
   lastCycle: null,
   cycleStatus: null, // { running, cycleNumber, agents, completed[] }
 
+  // Trade execution flash
+  tradeFlash: false,
+  setTradeFlash: (val) => set({ tradeFlash: val }),
+
   // Loading states
   loading: {},
 
