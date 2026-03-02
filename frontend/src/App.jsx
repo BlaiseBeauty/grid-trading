@@ -2,10 +2,11 @@ import { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './stores/auth';
 import { useWebSocket } from './hooks/useWebSocket';
+import useIsMobile from './hooks/useIsMobile';
 import Sidebar from './components/Sidebar';
-import KPIBar from './components/KPIBar';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import MobileDashboard from './pages/MobileDashboard';
 import Agents from './pages/Agents';
 import Trades from './pages/Trades';
 import StrategyLab from './pages/StrategyLab';
@@ -16,6 +17,15 @@ function Layout({ children }) {
   useWebSocket();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <div style={{ minHeight: '100vh', background: 'var(--v2-bg-primary)' }}>
+        {children}
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
@@ -41,7 +51,6 @@ function Layout({ children }) {
         minHeight: '100vh',
         overflow: 'auto',
       }}>
-        <KPIBar />
         <div key={location.pathname} className="v2-page-transition">
           {children}
         </div>
@@ -52,6 +61,7 @@ function Layout({ children }) {
 
 export default function App() {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
+  const isMobile = useIsMobile();
 
   if (!isAuthenticated) return <Login />;
 
@@ -59,7 +69,7 @@ export default function App() {
     <BrowserRouter>
       <Layout>
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          <Route path="/" element={isMobile ? <MobileDashboard /> : <Dashboard />} />
           <Route path="/agents" element={<Agents />} />
           <Route path="/trades" element={<Trades />} />
           <Route path="/strategy" element={<StrategyLab />} />
