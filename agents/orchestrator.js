@@ -226,13 +226,17 @@ async function checkStandingOrders(broadcast) {
 
     if (!shouldTrigger) continue;
 
-    // 4. Trigger: update status, create trade, broadcast
+    // 4. Trigger: atomically claim the order to prevent duplicate execution
     try {
-      // Mark as triggered
-      await dbQuery(
-        `UPDATE standing_orders SET status = 'triggered', triggered_at = NOW() WHERE id = $1`,
+      // Atomic claim: only succeeds if status is still 'active' (prevents concurrent triggers)
+      const claimed = await dbQuery(
+        `UPDATE standing_orders SET status = 'triggered', triggered_at = NOW() WHERE id = $1 AND status = 'active' RETURNING id`,
         [order.id]
       );
+      if (claimed.rowCount === 0) {
+        console.log(`[MONITOR] Standing order #${order.id} already claimed by another process — skipping`);
+        continue;
+      }
 
       // Parse execution params for TP/SL
       const exec = typeof order.execution_params === 'string' ? JSON.parse(order.execution_params) : (order.execution_params || {});
