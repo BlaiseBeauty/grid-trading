@@ -61,6 +61,10 @@ export function useWebSocket() {
                 s.updatePrice(msg.data.symbol, msg.data.price, msg.data.change24h);
               }
               break;
+            case 'position_review':
+              s.fetchTrades();
+              s.fetchPortfolio();
+              break;
             case 'standing_order_triggered':
               s.fetchTrades();
               s.fetchPortfolio();

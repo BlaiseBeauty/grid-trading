@@ -6,6 +6,7 @@ import os
 import random
 import psycopg2
 from datetime import datetime, timezone
+from data import MarketData
 
 
 class PaperTrader:
@@ -89,4 +90,71 @@ class PaperTrader:
             'slippage_bps': round(slippage_bps, 2),
             'fee': round(fee, 4),
             'mode': 'paper',
+        }
+
+    def close(self, trade_id):
+        """Close an open trade with realistic exit slippage."""
+        conn = self._get_db()
+        cur = conn.cursor()
+
+        # Fetch the open trade
+        cur.execute("SELECT * FROM trades WHERE id = %s AND status = 'open'", (trade_id,))
+        cols = [desc[0] for desc in cur.description]
+        row = cur.fetchone()
+        if not row:
+            cur.close()
+            conn.close()
+            raise ValueError(f"Trade {trade_id} not found or not open")
+
+        trade = dict(zip(cols, row))
+
+        # Get current market price
+        md = MarketData()
+        current_price = md.get_current_price(trade['symbol'])
+
+        # Simulate exit slippage (selling gets worse price, buying gets worse price)
+        slippage_pct = random.gauss(self.SLIPPAGE_BPS / 10000, self.SLIPPAGE_BPS / 20000)
+        slippage_pct = max(0, slippage_pct)
+
+        if trade['side'] == 'buy':
+            # Closing a long = selling, price slips down
+            exit_price = current_price * (1 - slippage_pct)
+        else:
+            # Closing a short = buying, price slips up
+            exit_price = current_price * (1 + slippage_pct)
+
+        # Calculate P&L
+        entry_price = float(trade['entry_price'])
+        quantity = float(trade['quantity'])
+
+        if trade['side'] == 'buy':
+            pnl = (exit_price - entry_price) * quantity
+        else:
+            pnl = (entry_price - exit_price) * quantity
+
+        pnl_pct = ((exit_price - entry_price) / entry_price * 100) if trade['side'] == 'buy' \
+            else ((entry_price - exit_price) / entry_price * 100)
+
+        # Update trade in DB
+        cur.execute("""
+            UPDATE trades SET
+                exit_price = %s, pnl_realised = %s, pnl_pct = %s,
+                status = 'closed', closed_at = NOW(), close_reason = 'position_review'
+            WHERE id = %s
+            RETURNING id
+        """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), trade_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            'trade_id': trade_id,
+            'symbol': trade['symbol'],
+            'side': trade['side'],
+            'entry_price': entry_price,
+            'exit_price': round(exit_price, 8),
+            'pnl': round(pnl, 4),
+            'pnl_pct': round(pnl_pct, 4),
+            'close_reason': 'position_review',
         }

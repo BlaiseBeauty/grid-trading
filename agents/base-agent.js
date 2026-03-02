@@ -34,6 +34,7 @@ const AGENT_NAME_TO_PROMPT_KEY = {
   'sentiment': 'sentimentAgent',
   'synthesizer': 'strategySynthesizer',
   'risk_manager': 'riskManager',
+  'position_reviewer': 'positionReviewer',
   'regime_classifier': 'regimeClassifier',
   'performance_analyst': 'performanceAnalyst',
   'pattern_discovery': 'patternDiscovery',

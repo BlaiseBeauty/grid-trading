@@ -95,6 +95,22 @@ def execute_trade():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/close-trade', methods=['POST'])
+def close_trade():
+    """Close an open trade via position review."""
+    try:
+        data = request.json
+        trade_id = data.get('trade_id')
+        if not trade_id:
+            return jsonify({'error': 'trade_id required'}), 400
+        result = paper_trader.close(trade_id)
+        return jsonify(result)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/monitor-positions', methods=['POST'])
 def monitor_positions():
     """Check TP/SL on open positions."""

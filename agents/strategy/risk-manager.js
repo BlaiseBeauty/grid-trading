@@ -194,6 +194,41 @@ class RiskManagerAgent extends BaseAgent {
     }
   }
 
+  /**
+   * Review open positions — swap promptKey to positionReviewer, run via base-agent.
+   */
+  async reviewPositions({ cycleNumber, broadcast }) {
+    const systemState = await this.getSystemState();
+
+    if (systemState.openPositions === 0) {
+      console.log('[RISK_MANAGER] No open positions to review');
+      return { reviews: [], decision: null };
+    }
+
+    const originalPromptKey = this.promptKey;
+    try {
+      this.promptKey = 'positionReviewer';
+
+      // Use BaseAgent.run() which resolves positionReviewer prompt + context builder
+      const result = await super.run({
+        symbols: systemState.openTrades.map(t => t.symbol),
+        indicators: {},
+        marketData: {},
+        cycleNumber,
+      });
+
+      const parsed = result?.output_json || {};
+      return {
+        reviews: parsed.reviews || [],
+        portfolio_notes: parsed.portfolio_notes,
+        meta: parsed.meta,
+        decision: result,
+      };
+    } finally {
+      this.promptKey = originalPromptKey;
+    }
+  }
+
   parseOutput(text) {
     try {
       const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);

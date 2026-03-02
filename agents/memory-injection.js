@@ -18,6 +18,7 @@ const TOKEN_BUDGETS = {
   sentimentAgent: 500,
   strategySynthesizer: 2000,
   riskManager: 800,
+  positionReviewer: 800,
   regimeClassifier: 0,
   performanceAnalyst: 0,
   patternDiscovery: 0,

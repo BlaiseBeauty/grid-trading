@@ -49,15 +49,47 @@ async function create(trade) {
     complexity_score, JSON.stringify(signal_domains), JSON.stringify(signal_timeframes)]);
 }
 
-async function closeTrade(id, { exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning }) {
+async function closeTrade(id, { exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning, close_reason }) {
   return queryOne(`
     UPDATE trades SET
       exit_price = $2, pnl_realised = $3, pnl_pct = $4,
       outcome_class = $5, outcome_reasoning = $6,
+      close_reason = COALESCE($7, close_reason),
       status = 'closed', closed_at = NOW()
     WHERE id = $1
     RETURNING *
-  `, [id, exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning]);
+  `, [id, exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning, close_reason || null]);
+}
+
+async function updateStops(id, { tp_price, sl_price }) {
+  return queryOne(`
+    UPDATE trades SET
+      tp_price = COALESCE($2, tp_price),
+      sl_price = COALESCE($3, sl_price)
+    WHERE id = $1 AND status = 'open'
+    RETURNING *
+  `, [id, tp_price || null, sl_price || null]);
+}
+
+async function getOpenWithSignals() {
+  return queryAll(`
+    SELECT t.*,
+           EXTRACT(EPOCH FROM (NOW() - t.opened_at)) / 3600 AS hours_held,
+           json_agg(json_build_object(
+             'signal_id', s.id,
+             'signal_type', s.signal_type,
+             'signal_category', s.signal_category,
+             'direction', s.direction,
+             'strength', s.strength,
+             'expires_at', s.expires_at
+           )) FILTER (WHERE s.id IS NOT NULL) AS entry_signals
+    FROM trades t
+    LEFT JOIN trade_signals ts ON ts.trade_id = t.id
+    LEFT JOIN signals s ON s.id = ts.signal_id
+    WHERE t.status = 'open'
+    GROUP BY t.id
+    ORDER BY t.opened_at DESC
+  `);
 }
 
 async function getStats() {
@@ -73,4 +105,4 @@ async function getStats() {
   `);
 }
 
-module.exports = { getAll, getById, getOpen, create, closeTrade, getStats };
+module.exports = { getAll, getById, getOpen, create, closeTrade, updateStops, getOpenWithSignals, getStats };

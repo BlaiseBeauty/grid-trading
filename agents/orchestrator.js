@@ -51,6 +51,8 @@ const riskManager = new RiskManagerAgent();
 const performanceAnalyst = new PerformanceAnalystAgent();
 const patternDiscovery = new PatternDiscoveryAgent();
 
+const tradesDb = require('../db/queries/trades');
+
 let cycleNumber = 0;
 let cycleRunning = false;
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
@@ -489,6 +491,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
   console.log('[ORCHESTRATOR] → Synthesizer');
   let proposals = [];
   let synthDecision = null;
+  let standingOrders = [];
   try {
     const synthStart = Date.now();
     synthDecision = await synthesizer.run({
@@ -500,7 +503,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals`);
 
     // Persist standing orders to DB
-    const standingOrders = synthDecision?.output_json?.standing_orders || [];
+    standingOrders = synthDecision?.output_json?.standing_orders || [];
     if (standingOrders.length > 0) {
       let soStored = 0;
       for (const so of standingOrders) {
@@ -733,7 +736,196 @@ async function runAnalysisLayer(cycleNum, broadcast) {
 }
 
 /**
- * Full agent cycle: refresh data → Knowledge → Strategy → Analysis (periodic)
+ * Close a trade via Python engine's /close-trade endpoint.
+ */
+function closeTradePython(tradeId) {
+  return new Promise((resolve, reject) => {
+    const postData = JSON.stringify({ trade_id: tradeId });
+    const url = new URL(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/close-trade`);
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error));
+          else resolve(parsed);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.write(postData);
+    req.end();
+  });
+}
+
+/**
+ * Store a position review record in the position_reviews table.
+ */
+async function storePositionReview(review, cycleNum, agentDecisionId) {
+  try {
+    await dbQuery(`
+      INSERT INTO position_reviews (
+        trade_id, cycle_number, agent_decision_id, decision, reasoning,
+        current_price, unrealised_pnl, unrealised_pnl_pct, hours_held,
+        old_tp, old_sl, new_tp, new_sl,
+        close_executed, partial_close_pct, regime_at_review, signals_summary
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    `, [
+      review.trade_id, cycleNum, agentDecisionId || null,
+      review.decision, review.reasoning,
+      review.current_price || null, review.unrealised_pnl || null,
+      review.unrealised_pnl_pct || null, review.hours_held || null,
+      review.old_tp || null, review.old_sl || null,
+      review.new_tp || null, review.new_sl || null,
+      review.close_executed || false, review.close_pct || null,
+      review.regime_at_review || null,
+      review.signals_summary ? JSON.stringify(review.signals_summary) : null,
+    ]);
+  } catch (err) {
+    console.error(`[ORCHESTRATOR] Failed to store position review for trade #${review.trade_id}:`, err.message);
+  }
+}
+
+/**
+ * Execute a single review decision (HOLD, CLOSE, TIGHTEN, PARTIAL_CLOSE).
+ */
+async function executeReviewDecision(review, cycleNum) {
+  switch (review.decision) {
+    case 'hold':
+      console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): HOLD`);
+      break;
+
+    case 'close':
+      console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): CLOSE`);
+      try {
+        const result = await closeTradePython(review.trade_id);
+        review.close_executed = true;
+        console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via Python — P&L: ${result.pnl_pct}%`);
+      } catch (pyErr) {
+        console.warn(`[ORCHESTRATOR] Python close failed for #${review.trade_id}, using DB fallback:`, pyErr.message);
+        try {
+          // Fallback: close directly in DB (no slippage simulation)
+          const trade = await tradesDb.getById(review.trade_id);
+          if (trade && trade.status === 'open') {
+            // Get current price from latest market data
+            const priceRow = await dbQueryOne(
+              `SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`,
+              [trade.symbol]
+            );
+            const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(trade.entry_price);
+            const entryPrice = parseFloat(trade.entry_price);
+            const pnl = trade.side === 'buy'
+              ? (exitPrice - entryPrice) * parseFloat(trade.quantity)
+              : (entryPrice - exitPrice) * parseFloat(trade.quantity);
+            const pnlPct = trade.side === 'buy'
+              ? ((exitPrice - entryPrice) / entryPrice) * 100
+              : ((entryPrice - exitPrice) / entryPrice) * 100;
+
+            await tradesDb.closeTrade(review.trade_id, {
+              exit_price: exitPrice,
+              pnl_realised: pnl,
+              pnl_pct: pnlPct,
+              outcome_class: null,
+              outcome_reasoning: review.reasoning,
+              close_reason: 'position_review',
+            });
+            review.close_executed = true;
+            console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback — P&L: ${pnlPct.toFixed(2)}%`);
+          }
+        } catch (dbErr) {
+          console.error(`[ORCHESTRATOR] DB fallback close also failed for #${review.trade_id}:`, dbErr.message);
+        }
+      }
+      break;
+
+    case 'tighten':
+      console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): TIGHTEN TP=${review.new_tp} SL=${review.new_sl}`);
+      try {
+        // Get old stops for audit trail
+        const trade = await tradesDb.getById(review.trade_id);
+        if (trade) {
+          review.old_tp = trade.tp_price;
+          review.old_sl = trade.sl_price;
+        }
+        await tradesDb.updateStops(review.trade_id, {
+          tp_price: review.new_tp,
+          sl_price: review.new_sl,
+        });
+        console.log(`[ORCHESTRATOR] Updated stops for trade #${review.trade_id}`);
+      } catch (err) {
+        console.error(`[ORCHESTRATOR] Failed to tighten stops for #${review.trade_id}:`, err.message);
+      }
+      break;
+
+    case 'partial_close':
+      console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): PARTIAL_CLOSE ${review.close_pct}% (logged for future implementation)`);
+      break;
+
+    default:
+      console.warn(`[ORCHESTRATOR] Unknown review decision "${review.decision}" for trade #${review.trade_id}`);
+  }
+}
+
+/**
+ * Review all open positions — Step 3.5 of the cycle.
+ */
+async function reviewOpenPositions(cycleNum, broadcast) {
+  // Quick check: any open positions?
+  const countResult = await dbQueryOne("SELECT COUNT(*) as cnt FROM trades WHERE status = 'open'");
+  const openCount = parseInt(countResult?.cnt) || 0;
+
+  if (openCount === 0) {
+    console.log('[ORCHESTRATOR] No open positions — skipping position review');
+    return { reviews: [], actions: [] };
+  }
+
+  console.log(`[ORCHESTRATOR] → Position Review (${openCount} open positions)`);
+  const reviewStart = Date.now();
+
+  const result = await riskManager.reviewPositions({ cycleNumber: cycleNum, broadcast });
+  const reviews = result.reviews || [];
+
+  // Execute each decision and store review
+  const summary = { hold: 0, close: 0, tighten: 0, partial_close: 0 };
+  for (const review of reviews) {
+    await executeReviewDecision(review, cycleNum);
+    await storePositionReview(review, cycleNum, result.decision?.id);
+    summary[review.decision] = (summary[review.decision] || 0) + 1;
+  }
+
+  const elapsed = Date.now() - reviewStart;
+  console.log(`[ORCHESTRATOR] Position review: ${reviews.length} reviewed — ${summary.hold} hold, ${summary.close} close, ${summary.tighten} tighten, ${summary.partial_close} partial_close (${elapsed}ms)`);
+
+  if (broadcast) {
+    broadcast('agent_complete', {
+      cycleNumber: cycleNum,
+      agent_name: 'position_reviewer',
+      layer: 'strategy',
+      reviews_count: reviews.length,
+      summary,
+      cost_usd: result.decision?.cost_usd || 0,
+      duration_ms: elapsed,
+    });
+    broadcast('position_review', {
+      cycleNumber: cycleNum,
+      reviews,
+      summary,
+      portfolio_notes: result.portfolio_notes,
+    });
+  }
+
+  return { reviews, actions: summary };
+}
+
+/**
+ * Full agent cycle: refresh data → Knowledge → Position Review → Strategy → Analysis (periodic)
  */
 async function runCycle({ broadcast } = {}) {
   if (cycleRunning) {
@@ -786,6 +978,14 @@ async function runCycle({ broadcast } = {}) {
   // Step 3: Run knowledge agents (parallel — emit signals)
   const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast);
 
+  // Step 3.5: Active Position Management
+  let positionReview = { reviews: [], actions: [] };
+  try {
+    positionReview = await reviewOpenPositions(cycleNumber, broadcast);
+  } catch (err) {
+    console.error('[ORCHESTRATOR] Position review failed:', err.message);
+  }
+
   // Step 4: Run strategy layer (sequential — consume signals, produce trades)
   let strategy = { regime: null, proposals: [], approved: [], rejected: [], trades: [] };
   try {
@@ -833,6 +1033,10 @@ async function runCycle({ broadcast } = {}) {
         status: k.status,
         signals: k.decision?.output_json?.signals?.length || 0,
       })),
+      positionReview: {
+        reviewed: positionReview.reviews?.length || 0,
+        actions: positionReview.actions || {},
+      },
       strategy: {
         regime: strategy.regime,
         proposals: strategy.proposals.length,
@@ -864,6 +1068,7 @@ module.exports = {
   runKnowledgeLayer,
   runStrategyLayer,
   runAnalysisLayer,
+  reviewOpenPositions,
   monitorPositions,
   checkStandingOrders,
   runCycle,

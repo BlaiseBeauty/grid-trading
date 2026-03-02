@@ -747,6 +747,107 @@ async function buildRegimeContext(trigger) {
 
 
 // ============================================================================
+// POSITION REVIEWER CONTEXT BUILDER
+// ============================================================================
+
+async function buildPositionReviewerContext(trigger) {
+  // Open trades with linked entry signals
+  const openTrades = await queryAll(`
+    SELECT t.*,
+           EXTRACT(EPOCH FROM (NOW() - t.opened_at)) / 3600 AS hours_held,
+           json_agg(json_build_object(
+             'signal_id', s.id,
+             'signal_type', s.signal_type,
+             'signal_category', s.signal_category,
+             'direction', s.direction,
+             'strength', s.strength,
+             'expires_at', s.expires_at,
+             'expired', s.expires_at < NOW()
+           )) FILTER (WHERE s.id IS NOT NULL) AS entry_signals
+    FROM trades t
+    LEFT JOIN trade_signals ts ON ts.trade_id = t.id
+    LEFT JOIN signals s ON s.id = ts.signal_id
+    WHERE t.status = 'open'
+    GROUP BY t.id
+    ORDER BY t.opened_at DESC
+  `);
+
+  // Skip if no open positions
+  if (!openTrades || openTrades.length === 0) return null;
+
+  const heldSymbols = [...new Set(openTrades.map(t => t.symbol))];
+
+  // Current active signals per held symbol (fresh from this cycle)
+  const activeSignals = {};
+  for (const symbol of heldSymbols) {
+    activeSignals[symbol] = await getActiveSignals(symbol, '6 hours', 20);
+  }
+
+  const regime = await getCurrentRegime();
+  const portfolio = await getPortfolioState();
+  const scram = await getScramState();
+  const bootstrap = await getBootstrapPhase();
+  const events = await getUpcomingEvents(24);
+
+  // Correlation matrix between held symbols
+  let correlations = [];
+  if (heldSymbols.length > 1) {
+    correlations = await queryAll(`
+      SELECT symbol_a, symbol_b, correlation
+      FROM correlation_matrix
+      WHERE symbol_a = ANY($1) AND symbol_b = ANY($1)
+      AND calculated_at > NOW() - INTERVAL '7 days'
+    `, [heldSymbols]);
+  }
+
+  // Previous position reviews (last 24h for continuity)
+  let previousReviews = [];
+  try {
+    previousReviews = await queryAll(`
+      SELECT trade_id, decision, reasoning, created_at
+      FROM position_reviews
+      WHERE created_at > NOW() - INTERVAL '24 hours'
+      ORDER BY created_at DESC
+      LIMIT 20
+    `);
+  } catch { /* table may not exist yet */ }
+
+  // Risk limits config
+  let riskLimits = {};
+  try { riskLimits = require('../config/risk-limits'); } catch { /* may not exist */ }
+
+  // Memory injection (800 token budget)
+  const memory = await getRelevantMemory('positionReviewer', {
+    symbols: heldSymbols,
+    assetClasses: ['crypto'],
+    regime: regime.regime,
+    signalCategories: ['risk']
+  });
+
+  return formatUserMessage({
+    section1_market_data: {
+      open_positions: openTrades,
+      active_signals_per_symbol: activeSignals,
+    },
+    section2_context: {
+      regime: regime.regime,
+      regime_confidence: regime.confidence,
+      transition_probabilities: regime.transition_probabilities,
+      portfolio,
+      correlations,
+      scram_state: scram,
+      bootstrap_phase: bootstrap,
+      upcoming_events: events,
+      previous_reviews: previousReviews,
+      risk_limits: riskLimits,
+    },
+    section3_memory: memory,
+    section4_task: `Review all ${openTrades.length} open position(s). For each, decide: HOLD, CLOSE, TIGHTEN, or PARTIAL_CLOSE. Output JSON with reviews array.`
+  });
+}
+
+
+// ============================================================================
 // ANALYSIS AGENT CONTEXT BUILDERS
 // ============================================================================
 
@@ -966,6 +1067,7 @@ const CONTEXT_BUILDERS = {
   sentimentAgent: buildSentimentContext,
   strategySynthesizer: buildSynthesizerContext,
   riskManager: buildRiskManagerContext,
+  positionReviewer: buildPositionReviewerContext,
   regimeClassifier: buildRegimeContext,
   performanceAnalyst: buildPerformanceAnalystContext,
   patternDiscovery: buildPatternDiscoveryContext,
