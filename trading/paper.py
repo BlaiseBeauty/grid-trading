@@ -43,42 +43,44 @@ class PaperTrader:
 
         # Store trade in DB
         conn = self._get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO trades (
-                symbol, asset_class, exchange, side, quantity, entry_price,
-                tp_price, sl_price, template_id, execution_tier, confidence,
-                mode, cycle_number, agent_decision_id, reasoning, bootstrap_phase,
-                entry_confidence, expected_fill_price, actual_fill_price,
-                slippage_bps, status
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                'paper', %s, %s, %s, %s, %s, %s, %s, %s, 'open'
-            ) RETURNING id
-        """, (
-            symbol,
-            trade_data.get('asset_class', 'crypto'),
-            trade_data.get('exchange', 'binance'),
-            side, quantity, entry_price,
-            trade_data.get('tp_price'),
-            trade_data.get('sl_price'),
-            trade_data.get('template_id'),
-            trade_data.get('execution_tier', 'ai_driven'),
-            trade_data.get('confidence'),
-            trade_data.get('cycle_number'),
-            trade_data.get('agent_decision_id'),
-            trade_data.get('reasoning'),
-            trade_data.get('bootstrap_phase', 'infant'),
-            trade_data.get('confidence'),
-            entry_price,
-            actual_price,
-            slippage_bps,
-        ))
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO trades (
+                    symbol, asset_class, exchange, side, quantity, entry_price,
+                    tp_price, sl_price, template_id, execution_tier, confidence,
+                    mode, cycle_number, agent_decision_id, reasoning, bootstrap_phase,
+                    entry_confidence, expected_fill_price, actual_fill_price,
+                    slippage_bps, status
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    'paper', %s, %s, %s, %s, %s, %s, %s, %s, 'open'
+                ) RETURNING id
+            """, (
+                symbol,
+                trade_data.get('asset_class', 'crypto'),
+                trade_data.get('exchange', 'binance'),
+                side, quantity, entry_price,
+                trade_data.get('tp_price'),
+                trade_data.get('sl_price'),
+                trade_data.get('template_id'),
+                trade_data.get('execution_tier', 'ai_driven'),
+                trade_data.get('confidence'),
+                trade_data.get('cycle_number'),
+                trade_data.get('agent_decision_id'),
+                trade_data.get('reasoning'),
+                trade_data.get('bootstrap_phase', 'infant'),
+                trade_data.get('confidence'),
+                entry_price,
+                actual_price,
+                slippage_bps,
+            ))
 
-        trade_id = cur.fetchone()[0]
-        conn.commit()
-        cur.close()
-        conn.close()
+            trade_id = cur.fetchone()[0]
+            conn.commit()
+            cur.close()
+        finally:
+            conn.close()
 
         return {
             'trade_id': trade_id,
@@ -95,58 +97,59 @@ class PaperTrader:
     def close(self, trade_id):
         """Close an open trade with realistic exit slippage."""
         conn = self._get_db()
-        cur = conn.cursor()
+        try:
+            cur = conn.cursor()
 
-        # Fetch the open trade
-        cur.execute("SELECT * FROM trades WHERE id = %s AND status = 'open'", (trade_id,))
-        cols = [desc[0] for desc in cur.description]
-        row = cur.fetchone()
-        if not row:
+            # Fetch the open trade
+            cur.execute("SELECT * FROM trades WHERE id = %s AND status = 'open'", (trade_id,))
+            cols = [desc[0] for desc in cur.description]
+            row = cur.fetchone()
+            if not row:
+                cur.close()
+                raise ValueError(f"Trade {trade_id} not found or not open")
+
+            trade = dict(zip(cols, row))
+
+            # Get current market price
+            md = MarketData()
+            current_price = md.get_current_price(trade['symbol'])
+
+            # Simulate exit slippage (selling gets worse price, buying gets worse price)
+            slippage_pct = random.gauss(self.SLIPPAGE_BPS / 10000, self.SLIPPAGE_BPS / 20000)
+            slippage_pct = max(0, slippage_pct)
+
+            if trade['side'] == 'buy':
+                # Closing a long = selling, price slips down
+                exit_price = current_price * (1 - slippage_pct)
+            else:
+                # Closing a short = buying, price slips up
+                exit_price = current_price * (1 + slippage_pct)
+
+            # Calculate P&L
+            entry_price = float(trade['entry_price'])
+            quantity = float(trade['quantity'])
+
+            if trade['side'] == 'buy':
+                pnl = (exit_price - entry_price) * quantity
+            else:
+                pnl = (entry_price - exit_price) * quantity
+
+            pnl_pct = ((exit_price - entry_price) / entry_price * 100) if trade['side'] == 'buy' \
+                else ((entry_price - exit_price) / entry_price * 100)
+
+            # Update trade in DB
+            cur.execute("""
+                UPDATE trades SET
+                    exit_price = %s, pnl_realised = %s, pnl_pct = %s,
+                    status = 'closed', closed_at = NOW(), close_reason = 'position_review'
+                WHERE id = %s
+                RETURNING id
+            """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), trade_id))
+
+            conn.commit()
             cur.close()
+        finally:
             conn.close()
-            raise ValueError(f"Trade {trade_id} not found or not open")
-
-        trade = dict(zip(cols, row))
-
-        # Get current market price
-        md = MarketData()
-        current_price = md.get_current_price(trade['symbol'])
-
-        # Simulate exit slippage (selling gets worse price, buying gets worse price)
-        slippage_pct = random.gauss(self.SLIPPAGE_BPS / 10000, self.SLIPPAGE_BPS / 20000)
-        slippage_pct = max(0, slippage_pct)
-
-        if trade['side'] == 'buy':
-            # Closing a long = selling, price slips down
-            exit_price = current_price * (1 - slippage_pct)
-        else:
-            # Closing a short = buying, price slips up
-            exit_price = current_price * (1 + slippage_pct)
-
-        # Calculate P&L
-        entry_price = float(trade['entry_price'])
-        quantity = float(trade['quantity'])
-
-        if trade['side'] == 'buy':
-            pnl = (exit_price - entry_price) * quantity
-        else:
-            pnl = (entry_price - exit_price) * quantity
-
-        pnl_pct = ((exit_price - entry_price) / entry_price * 100) if trade['side'] == 'buy' \
-            else ((entry_price - exit_price) / entry_price * 100)
-
-        # Update trade in DB
-        cur.execute("""
-            UPDATE trades SET
-                exit_price = %s, pnl_realised = %s, pnl_pct = %s,
-                status = 'closed', closed_at = NOW(), close_reason = 'position_review'
-            WHERE id = %s
-            RETURNING id
-        """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), trade_id))
-
-        conn.commit()
-        cur.close()
-        conn.close()
 
         return {
             'trade_id': trade_id,
