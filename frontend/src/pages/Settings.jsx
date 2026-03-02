@@ -12,7 +12,7 @@ export default function Settings() {
     Promise.all([
       api('/system/risk-limits'),
       api('/system/config'),
-      api('/system/health'),
+      api('/system/health-detail'),
       api('/system/scram/history'),
       api('/system/bootstrap/history'),
     ]).then(([rl, cfg, h, sh, bh]) => {
@@ -94,8 +94,8 @@ export default function Settings() {
             <div className="limits-table">
               <ConfigRow label="Bootstrap Phase" value={health.bootstrap_phase} />
               <ConfigRow label="SCRAM Active" value={health.scram_active ? `Yes (${health.scram_level})` : 'No'} highlight={health.scram_active} />
-              <ConfigRow label="Open Trades" value={health.open_trades} />
-              <ConfigRow label="Closed Trades" value={health.closed_trades} />
+              <ConfigRow label="Open Trades" value={health.trade_stats?.open_trades} />
+              <ConfigRow label="Closed Trades" value={health.trade_stats?.total_closed} />
               <ConfigRow label="Total P&L" value={`$${parseFloat(health.total_pnl || 0).toFixed(2)}`} />
               <ConfigRow label="AI Cost" value={`$${parseFloat(health.total_ai_cost || 0).toFixed(2)}`} />
             </div>
