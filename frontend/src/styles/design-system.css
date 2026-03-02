@@ -1,0 +1,81 @@
+/* ============================================================
+   VAZOM V2 Design System
+   "Bloomberg meets Blade Runner"
+
+   All tokens use --v2- prefix to coexist with V1 tokens.
+   Import AFTER index.css in main.jsx.
+   ============================================================ */
+
+:root {
+  /* ── Backgrounds ── */
+  --v2-bg-primary: #0a0b0e;
+  --v2-bg-secondary: #12141a;
+  --v2-bg-tertiary: #1a1d26;
+  --v2-bg-card: rgba(18, 20, 26, 0.8);
+  --v2-bg-elevated: #1e2130;
+  --v2-bg-hover: rgba(255, 255, 255, 0.03);
+
+  /* ── Accent Colors ── */
+  --v2-accent-cyan: #00e5ff;
+  --v2-accent-green: #00e676;
+  --v2-accent-red: #ff1744;
+  --v2-accent-amber: #ffab00;
+  --v2-accent-magenta: #e040fb;
+
+  /* ── Text ── */
+  --v2-text-primary: #e8eaed;
+  --v2-text-secondary: #8b8d93;
+  --v2-text-muted: #55575e;
+
+  /* ── Borders ── */
+  --v2-border: rgba(255, 255, 255, 0.06);
+  --v2-border-hover: rgba(255, 255, 255, 0.12);
+  --v2-border-active: rgba(255, 255, 255, 0.18);
+
+  /* ── Glow Effects ── */
+  --v2-glow-cyan: 0 0 20px rgba(0, 229, 255, 0.15);
+  --v2-glow-green: 0 0 20px rgba(0, 230, 118, 0.15);
+  --v2-glow-red: 0 0 20px rgba(255, 23, 68, 0.15);
+  --v2-glow-amber: 0 0 20px rgba(255, 171, 0, 0.15);
+  --v2-glow-magenta: 0 0 20px rgba(224, 64, 251, 0.15);
+  --v2-glow-cyan-strong: 0 0 30px rgba(0, 229, 255, 0.3);
+  --v2-glow-green-strong: 0 0 30px rgba(0, 230, 118, 0.3);
+  --v2-glow-red-strong: 0 0 30px rgba(255, 23, 68, 0.3);
+
+  /* ── Spacing ── */
+  --v2-space-xs: 4px;
+  --v2-space-sm: 8px;
+  --v2-space-md: 12px;
+  --v2-space-lg: 16px;
+  --v2-space-xl: 24px;
+  --v2-space-2xl: 32px;
+  --v2-space-3xl: 48px;
+
+  /* ── Border Radius ── */
+  --v2-radius-sm: 6px;
+  --v2-radius-md: 10px;
+  --v2-radius-lg: 16px;
+  --v2-radius-full: 9999px;
+
+  /* ── Transitions ── */
+  --v2-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --v2-ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+  --v2-duration-fast: 150ms;
+  --v2-duration-normal: 300ms;
+  --v2-duration-slow: 500ms;
+
+  /* ── Typography ── */
+  --v2-font-data: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+  --v2-font-body: 'Outfit', sans-serif;
+  --v2-font-heading: 'Outfit', sans-serif;
+
+  /* ── Glass Morphism ── */
+  --v2-glass-bg: rgba(18, 20, 26, 0.6);
+  --v2-glass-blur: blur(12px);
+  --v2-glass-border: rgba(255, 255, 255, 0.08);
+
+  /* ── Shadows ── */
+  --v2-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --v2-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --v2-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+}

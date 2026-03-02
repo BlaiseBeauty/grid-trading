@@ -1,0 +1,129 @@
+/* ============================================================
+   VAZOM V2 Animations
+   Keyframes + utility classes for motion design.
+   ============================================================ */
+
+/* ── Pulse Glow ──
+   Subtle border glow pulse for active/live elements. */
+@keyframes v2-pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 8px rgba(0, 229, 255, 0.08);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+  }
+}
+
+/* ── Fade In Up ──
+   Content entry animation — slides up with fade. */
+@keyframes v2-fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Slide In Right ──
+   Feed item entry — slides from right. */
+@keyframes v2-slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── Number Flash ──
+   Brief background highlight when a value changes. */
+@keyframes v2-number-flash {
+  0% {
+    background-color: rgba(0, 229, 255, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* ── Number Flash (positive) ── */
+@keyframes v2-number-flash-green {
+  0% {
+    background-color: rgba(0, 230, 118, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* ── Number Flash (negative) ── */
+@keyframes v2-number-flash-red {
+  0% {
+    background-color: rgba(255, 23, 68, 0.2);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* ── Status Pulse ──
+   Pulsing dot for status indicators. */
+@keyframes v2-status-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.5;
+  }
+}
+
+/* ── Spin ──
+   Continuous rotation for loading indicators. */
+@keyframes v2-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ── Utility Classes ── */
+
+.v2-animate-in {
+  animation: v2-fade-in-up var(--v2-duration-normal) var(--v2-ease-out) both;
+}
+
+.v2-slide-in {
+  animation: v2-slide-in-right 250ms var(--v2-ease-out) both;
+}
+
+.v2-pulse {
+  animation: v2-pulse-glow 2s ease-in-out infinite;
+}
+
+.v2-flash {
+  animation: v2-number-flash 400ms ease-out;
+}
+
+.v2-flash-green {
+  animation: v2-number-flash-green 400ms ease-out;
+}
+
+.v2-flash-red {
+  animation: v2-number-flash-red 400ms ease-out;
+}
+
+/* ── Stagger Delays ──
+   Apply to children for cascading entry animations. */
+.v2-stagger-1 { animation-delay: 50ms; }
+.v2-stagger-2 { animation-delay: 100ms; }
+.v2-stagger-3 { animation-delay: 150ms; }
+.v2-stagger-4 { animation-delay: 200ms; }
+.v2-stagger-5 { animation-delay: 250ms; }
+.v2-stagger-6 { animation-delay: 300ms; }
+.v2-stagger-7 { animation-delay: 350ms; }
+.v2-stagger-8 { animation-delay: 400ms; }
