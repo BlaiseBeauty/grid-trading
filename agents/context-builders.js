@@ -39,15 +39,20 @@ async function buildTrendContext(trigger) {
       priceData[tf] = await queryAll(`
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
+          AND timestamp > NOW() - INTERVAL '7 days'
         ORDER BY timestamp DESC LIMIT 50
       `, [symbol, tf]);
     }
+
+    const newestCandle = priceData['4h']?.[0]?.timestamp;
+    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
 
     contextParts.push({
       symbol,
       asset_class: assetClass,
       indicators: indicators?.data || {},
-      price_data: priceData
+      price_data: priceData,
+      data_freshness: isStale ? 'stale' : 'fresh',
     });
   }
 
@@ -86,11 +91,21 @@ async function buildMomentumContext(trigger) {
       priceData[tf] = await queryAll(`
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
+          AND timestamp > NOW() - INTERVAL '7 days'
         ORDER BY timestamp DESC LIMIT 50
       `, [symbol, tf]);
     }
 
-    contextParts.push({ symbol, asset_class: assetClass, indicators: indicators?.data || {}, price_data: priceData });
+    const newestCandle = priceData['4h']?.[0]?.timestamp;
+    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+
+    contextParts.push({
+      symbol, asset_class: assetClass,
+      indicators: indicators?.data || {},
+      price_data: priceData,
+      data_freshness: isStale ? 'stale' : 'fresh',
+      ...(trigger.data_quality ? { data_quality: trigger.data_quality } : {}),
+    });
   }
 
   const memory = await getRelevantMemory('momentumAgent', {
@@ -125,11 +140,21 @@ async function buildVolatilityContext(trigger) {
       priceData[tf] = await queryAll(`
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
+          AND timestamp > NOW() - INTERVAL '7 days'
         ORDER BY timestamp DESC LIMIT 50
       `, [symbol, tf]);
     }
 
-    contextParts.push({ symbol, asset_class: assetClass, indicators: indicators?.data || {}, price_data: priceData });
+    const newestCandle = priceData['4h']?.[0]?.timestamp;
+    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+
+    contextParts.push({
+      symbol, asset_class: assetClass,
+      indicators: indicators?.data || {},
+      price_data: priceData,
+      data_freshness: isStale ? 'stale' : 'fresh',
+      ...(trigger.data_quality ? { data_quality: trigger.data_quality } : {}),
+    });
   }
 
   const memory = await getRelevantMemory('volatilityAgent', {
@@ -164,11 +189,21 @@ async function buildVolumeContext(trigger) {
       priceData[tf] = await queryAll(`
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
+          AND timestamp > NOW() - INTERVAL '7 days'
         ORDER BY timestamp DESC LIMIT 50
       `, [symbol, tf]);
     }
 
-    contextParts.push({ symbol, asset_class: assetClass, indicators: indicators?.data || {}, price_data: priceData });
+    const newestCandle = priceData['4h']?.[0]?.timestamp;
+    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+
+    contextParts.push({
+      symbol, asset_class: assetClass,
+      indicators: indicators?.data || {},
+      price_data: priceData,
+      data_freshness: isStale ? 'stale' : 'fresh',
+      ...(trigger.data_quality ? { data_quality: trigger.data_quality } : {}),
+    });
   }
 
   const memory = await getRelevantMemory('volumeAgent', {
@@ -213,6 +248,7 @@ async function buildPatternContext(trigger) {
       priceData[tf] = await queryAll(`
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
+          AND timestamp > NOW() - INTERVAL '7 days'
         ORDER BY timestamp DESC LIMIT 100
       `, [symbol, tf]);
     }
@@ -225,10 +261,14 @@ async function buildPatternContext(trigger) {
       `, [symbol]);
     } catch { /* table may be empty */ }
 
+    const newestCandle = priceData['4h']?.[0]?.timestamp;
+    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+
     contextParts.push({
       symbol, asset_class: assetClass,
       indicators: indicators?.data || {},
       price_data: priceData,
+      data_freshness: isStale ? 'stale' : 'fresh',
       asset_profile: profile?.profile_data || null,
       noise_flagged_patterns: noiseFlagged
     });
@@ -268,6 +308,7 @@ async function buildOrderFlowContext(trigger) {
     const priceData = await queryAll(`
       SELECT open, high, low, close, volume, timestamp
       FROM market_data WHERE symbol = $1 AND timeframe = '1h'
+        AND timestamp > NOW() - INTERVAL '3 days'
       ORDER BY timestamp DESC LIMIT 48
     `, [symbol]);
 
@@ -318,13 +359,23 @@ async function buildMacroContext(trigger) {
   ]);
 
   // Cross-asset price data
+  // M-2: SPY/GLD/DXY may not be populated — inject clear message if empty
   const crossAsset = {};
-  for (const sym of ['BTC/USDT', 'SPY', 'GLD', 'DXY']) {
+  const MACRO_ASSETS = ['BTC/USDT', 'SPY', 'GLD', 'DXY'];
+  const missingMacro = [];
+  for (const sym of MACRO_ASSETS) {
     crossAsset[sym] = await queryAll(`
       SELECT close, timestamp FROM market_data
       WHERE symbol = $1 AND timeframe = '1d'
+        AND timestamp > NOW() - INTERVAL '45 days'
       ORDER BY timestamp DESC LIMIT 30
     `, [sym]);
+    if (crossAsset[sym].length === 0 && sym !== 'BTC/USDT') {
+      missingMacro.push(sym);
+    }
+  }
+  if (missingMacro.length > 0) {
+    crossAsset._note = `Macro cross-asset data (${missingMacro.join(', ')}): NOT FETCHED. Base macro analysis on crypto-internal signals only.`;
   }
 
   // Upcoming events
@@ -383,8 +434,11 @@ async function buildSentimentContext(trigger) {
     'active_addresses', 'supply_in_profit_pct'
   ]);
 
-  // Fear & Greed
-  const fearGreed = await getExternalData('alternative_me', ['fear_greed_index']);
+  // Fear & Greed — inject clear message if unavailable
+  let fearGreed = await getExternalData('alternative_me', ['fear_greed_index']);
+  if (fearGreed?.fear_greed_index?.data?.error === 'unavailable') {
+    fearGreed = { fear_greed_index: { data: null, note: 'Fear & Greed Index: DATA UNAVAILABLE — do not assume any value. Treat sentiment as unknown.' } };
+  }
 
   const memory = await getRelevantMemory('sentimentAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
@@ -618,6 +672,7 @@ async function buildRegimeContext(trigger) {
     priceData[sym] = await queryAll(`
       SELECT open, high, low, close, volume, timestamp
       FROM market_data WHERE symbol = $1 AND timeframe = '1d'
+        AND timestamp > NOW() - INTERVAL '45 days'
       ORDER BY timestamp DESC LIMIT 30
     `, [sym]);
   }

@@ -19,7 +19,7 @@ const TOKEN_BUDGETS = {
   strategySynthesizer: 2000,
   riskManager: 800,
   positionReviewer: 800,
-  regimeClassifier: 0,
+  regimeClassifier: 500,
   performanceAnalyst: 0,
   patternDiscovery: 0,
 };
@@ -68,7 +68,11 @@ async function getRelevantMemory(agentName, { symbols, assetClasses, regime, sig
             `- ${t.pattern_type}/${t.time_key}${t.symbol ? ` (${t.symbol})` : ''}: ${t.win_rate}% WR, ${t.avg_return_pct}% avg`
           ).join('\n'));
         }
-      } catch { /* temporal table may be empty */ }
+      } catch (err) {
+        if (!err.message.includes('does not exist')) {
+          console.warn('[MEMORY] Temporal patterns query failed:', err.message);
+        }
+      }
     }
 
     // 3. Sequence patterns (synthesizer only)
@@ -88,11 +92,16 @@ async function getRelevantMemory(agentName, { symbols, assetClasses, regime, sig
             `- ${s.pattern_description}: ${s.win_rate}% WR (n=${s.sample_size})`
           ).join('\n'));
         }
-      } catch { /* sequence table may be empty */ }
+      } catch (err) {
+        if (!err.message.includes('does not exist')) {
+          console.warn('[MEMORY] Sequence patterns query failed:', err.message);
+        }
+      }
     }
 
     return parts.length > 0 ? parts.join('\n') : null;
-  } catch {
+  } catch (err) {
+    console.warn('[MEMORY] Memory injection failed:', err.message);
     return null;
   }
 }

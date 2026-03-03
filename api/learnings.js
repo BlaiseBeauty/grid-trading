@@ -11,9 +11,10 @@ async function routes(fastify) {
     });
   });
 
-  fastify.get('/learnings/:id', async (request) => {
+  fastify.get('/learnings/:id', async (request, reply) => {
     const learning = await learningsDb.getById(request.params.id);
-    return learning || { error: 'Learning not found' };
+    if (!learning) return reply.code(404).send({ error: 'Learning not found' });
+    return learning;
   });
 
   // All learnings including invalidated

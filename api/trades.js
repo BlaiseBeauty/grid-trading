@@ -22,9 +22,10 @@ async function routes(fastify) {
     return tradesDb.getStats();
   });
 
-  fastify.get('/trades/:id', async (request) => {
+  fastify.get('/trades/:id', async (request, reply) => {
     const trade = await tradesDb.getById(request.params.id);
-    return trade || { error: 'Trade not found' };
+    if (!trade) return reply.code(404).send({ error: 'Trade not found' });
+    return trade;
   });
 
   fastify.post('/trades', {
@@ -76,10 +77,19 @@ async function routes(fastify) {
     `, [request.params.id]);
   });
 
-  fastify.patch('/trades/:id/close', async (request) => {
+  // H-14: Validate body before closing trade
+  fastify.patch('/trades/:id/close', async (request, reply) => {
+    const { exit_price, pnl_realised } = request.body || {};
+    if (exit_price == null || isNaN(Number(exit_price)) || Number(exit_price) <= 0) {
+      return reply.code(400).send({ error: 'exit_price is required and must be a positive number' });
+    }
+    if (pnl_realised == null || isNaN(Number(pnl_realised))) {
+      return reply.code(400).send({ error: 'pnl_realised is required and must be a number' });
+    }
     const trade = await tradesDb.closeTrade(request.params.id, request.body);
-    if (trade) fastify.broadcast('trade_closed', trade);
-    return trade || { error: 'Trade not found' };
+    if (!trade) return reply.code(404).send({ error: 'Trade not found or already closed' });
+    fastify.broadcast('trade_closed', trade);
+    return trade;
   });
 }
 

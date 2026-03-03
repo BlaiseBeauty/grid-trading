@@ -269,7 +269,7 @@ class RiskManagerAgent extends BaseAgent {
       }
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch {}
+    } catch (err) { console.warn('[RISK_MANAGER] JSON parse failed in parseOutput:', err.message); }
     return { approved: [], rejected: [], signals: [], overallConfidence: null };
   }
 }

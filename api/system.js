@@ -96,10 +96,10 @@ async function routes(fastify) {
   });
 
   // POST /api/system/scram/activate — manually activate SCRAM
-  fastify.post('/system/scram/activate', async (request) => {
+  fastify.post('/system/scram/activate', async (request, reply) => {
     const { level } = request.body || {};
     if (!['elevated', 'crisis', 'emergency'].includes(level)) {
-      return { error: 'Invalid SCRAM level. Use: elevated, crisis, emergency' };
+      return reply.code(400).send({ error: 'Invalid SCRAM level. Use: elevated, crisis, emergency' });
     }
     // Clear any existing active SCRAM first
     await queryAll("UPDATE scram_events SET cleared_at = NOW(), duration_seconds = EXTRACT(EPOCH FROM (NOW() - activated_at))::int WHERE cleared_at IS NULL");

@@ -187,7 +187,10 @@ export const useDataStore = create((set, get) => ({
           }
         }
       }
-    } catch {}
+    } catch (err) {
+      console.error('[PRICES] Live price fetch failed:', err.message || err);
+      set({ priceError: true });
+    }
 
     // Fallback: read from DB candles if live endpoint returned nothing
     if (fetched === 0) {
@@ -201,7 +204,7 @@ export const useDataStore = create((set, get) => ({
           const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
           const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
           get().updatePrice(symbol, close, change24h);
-        } catch {}
+        } catch (err) { console.error(`[PRICES] DB candle fallback failed for ${symbol}:`, err.message || err); }
       }
     }
   },

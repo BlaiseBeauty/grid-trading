@@ -3,13 +3,21 @@ const { Pool } = require('pg');
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 60000,
+  connectionTimeoutMillis: 10000,
 });
 
 pool.on('error', (err) => {
   console.error('[DB] Unexpected pool error:', err.message);
 });
+
+// Periodic pool health check — log if connections are being exhausted
+setInterval(() => {
+  const { totalCount, idleCount, waitingCount } = pool;
+  if (waitingCount > 0) {
+    console.warn(`[DB] Pool pressure: ${totalCount} total, ${idleCount} idle, ${waitingCount} waiting`);
+  }
+}, 30000).unref();
 
 // Log queries taking >500ms
 const { wrapPoolQuery } = require('./query-logger');

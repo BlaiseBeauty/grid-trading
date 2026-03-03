@@ -68,6 +68,9 @@ function deliverWebhook(webhookConfig, title, body) {
     });
 
     const parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Webhook URL must use HTTP or HTTPS protocol');
+    }
     const transport = parsedUrl.protocol === 'https:' ? https : http;
 
     const req = transport.request({
@@ -83,7 +86,10 @@ function deliverWebhook(webhookConfig, title, body) {
       timeout: 10000,
     }, (res) => {
       let data = '';
-      res.on('data', chunk => data += chunk);
+      res.on('data', chunk => {
+        data += chunk;
+        if (data.length > 10000) { req.destroy(); reject(new Error('Webhook response too large')); }
+      });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
         else reject(new Error(`Webhook returned ${res.statusCode}: ${data.slice(0, 200)}`));

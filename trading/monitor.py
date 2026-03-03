@@ -20,7 +20,7 @@ class PositionMonitor:
         """Fetch current price with symbol normalization and 1 retry."""
         # ccxt expects '/' separator (e.g. BTC/USDT), DB may store with '-'
         normalized = symbol.replace('-', '/')
-        exc = exchange or 'binance'
+        exc = exchange or None  # None → uses PRIMARY_EXCHANGE from data.py
 
         try:
             return self.market_data.get_current_price(normalized, exc)
@@ -76,16 +76,23 @@ class PositionMonitor:
                         action = 'sl_hit'
 
                 if action:
-                    pnl_realised = float(quantity) * (current_price - float(entry_price))
-                    if side == 'sell':
-                        pnl_realised = -pnl_realised
+                    if side == 'buy':
+                        pnl_realised = float(quantity) * (current_price - float(entry_price))
+                    else:
+                        pnl_realised = float(quantity) * (float(entry_price) - current_price)
 
                     cur.execute("""
                         UPDATE trades SET
                             exit_price = %s, pnl_realised = %s, pnl_pct = %s,
                             status = 'closed', closed_at = NOW(), close_reason = %s
-                        WHERE id = %s
+                        WHERE id = %s AND status = 'open'
+                        RETURNING id
                     """, (current_price, round(pnl_realised, 4), round(pnl_pct, 4), action, trade_id))
+
+                    closed_row = cur.fetchone()
+                    if not closed_row:
+                        print(f'[MONITOR] Trade #{trade_id} already closed by another process — skipping')
+                        continue
 
                     print(f'[MONITOR] {action.upper()} — trade #{trade_id} {symbol} {side} closed @ {current_price} (P&L: {round(pnl_pct, 2)}%)')
 

@@ -19,6 +19,7 @@ const { queryOne: dbQueryOne } = require('../db/connection');
 const { notifications } = require('../services/notifications');
 const logger = require('../services/logger');
 const { symbols: trackedSymbols, timeframes } = require('../config/symbols');
+const { getRiskLimits, BOOTSTRAP } = require('../config/risk-limits');
 
 // Knowledge agents (8 total — all run in parallel)
 const TrendAgent = require('./knowledge/trend');
@@ -63,6 +64,8 @@ const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
 
 let cycleNumber = 0;
 let cycleRunning = false;
+let cycleStartedAt = null;
+const MAX_CYCLE_DURATION_MS = 60 * 60 * 1000; // 60 minute timeout (M-27)
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
 const ANALYSIS_INFANT_EVERY_N = 1;  // Run every cycle during INFANT phase for maximum learning
 
@@ -106,8 +109,11 @@ function fetchOHLCV(symbol, timeframe = '4h', limit = 200) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error));
+          else resolve(parsed);
+        } catch (e) { reject(e); }
       });
     });
     req.on('error', reject);
@@ -134,8 +140,11 @@ function executeTrade(tradeData) {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.error) reject(new Error(parsed.error));
+          else resolve(parsed);
+        } catch (e) { reject(e); }
       });
     });
     req.on('error', reject);
@@ -244,9 +253,25 @@ async function checkStandingOrders(broadcast) {
       );
       if (existingOpen) {
         console.log(`[MONITOR] Skipping standing order #${order.id} — open trade #${existingOpen.id} on ${order.symbol} already exists`);
-        // Mark as failed rather than reverting to active (prevents retry loop)
         await standingOrdersDb.markFailed(order.id, 'duplicate_position')
           .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
+        continue;
+      }
+
+      // Check MAX_OPEN_POSITIONS limit (respects bootstrap phase)
+      const limits = getRiskLimits();
+      let maxPositions = limits.MAX_OPEN_POSITIONS;
+      try {
+        const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
+        const phase = bootstrapRow?.phase;
+        if (phase && BOOTSTRAP[phase]?.MAX_OPEN_POSITIONS != null) {
+          maxPositions = BOOTSTRAP[phase].MAX_OPEN_POSITIONS;
+        }
+      } catch { /* use default */ }
+      const openCount = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
+      if ((openCount?.cnt || 0) >= maxPositions) {
+        console.log(`[MONITOR] Skipping standing order #${order.id} — ${openCount.cnt} open positions (max ${maxPositions})`);
+        await standingOrdersDb.revertToActive(order.id).catch(() => {});
         continue;
       }
 
@@ -268,7 +293,7 @@ async function checkStandingOrders(broadcast) {
         agent_decision_id: order.agent_decision_id,
         reasoning: `Standing order #${order.id} triggered at $${currentPrice}`,
         asset_class: order.asset_class || 'crypto',
-        exchange: 'binance',
+        exchange: 'kucoin',
       });
 
       // Link trade back to standing order
@@ -312,26 +337,95 @@ async function checkStandingOrders(broadcast) {
   return triggered;
 }
 
+// Freshness thresholds: data is stale if older than 2× the timeframe interval
+const FRESHNESS_THRESHOLDS_MS = {
+  '5m': 10 * 60 * 1000,
+  '1h': 2 * 60 * 60 * 1000,
+  '4h': 8 * 60 * 60 * 1000,
+  '1d': 48 * 60 * 60 * 1000,
+};
+
 /**
  * Fetch fresh market data for all tracked symbols.
+ * Returns { results, dataQuality, report } where report is a per-symbol/per-timeframe DataQualityReport.
  */
 async function refreshMarketData() {
   console.log('[ORCHESTRATOR] Refreshing market data...');
   const results = [];
+  const report = {}; // { symbol: { timeframe: { fetched, latestTimestamp, ageMinutes, ok } } }
+  let freshCount = 0;
+  let staleCount = 0;
+  let failedCount = 0;
 
   for (const { symbol } of trackedSymbols) {
+    report[symbol] = {};
     for (const tf of timeframes) {
       try {
         const result = await fetchOHLCV(symbol, tf, 200);
         results.push({ symbol, timeframe: tf, ...result });
-        console.log(`[DATA] ${symbol} ${tf}: ${result.stored || 0} candles stored`);
+
+        if ((result.fetched || 0) > 0) {
+          // Check actual freshness from DB
+          let latestTimestamp = null;
+          let ageMinutes = null;
+          let ok = true;
+          try {
+            const latest = await dbQueryOne(
+              'SELECT MAX(timestamp) as latest FROM market_data WHERE symbol = $1 AND timeframe = $2',
+              [symbol, tf]
+            );
+            if (latest?.latest) {
+              latestTimestamp = latest.latest;
+              ageMinutes = Math.round((Date.now() - new Date(latestTimestamp).getTime()) / 60000);
+              const threshold = FRESHNESS_THRESHOLDS_MS[tf] || FRESHNESS_THRESHOLDS_MS['4h'];
+              ok = (Date.now() - new Date(latestTimestamp).getTime()) < threshold;
+            }
+          } catch { /* DB check failed — assume ok if fetch succeeded */ }
+
+          report[symbol][tf] = { fetched: result.fetched, latestTimestamp, ageMinutes, ok };
+          if (ok) {
+            freshCount++;
+          } else {
+            staleCount++;
+            console.warn(`[DATA] ${symbol} ${tf}: data stale — ${ageMinutes}min old`);
+          }
+          console.log(`[DATA] ${symbol} ${tf}: ${result.stored || 0} candles stored`);
+        } else {
+          staleCount++;
+          report[symbol][tf] = { fetched: 0, latestTimestamp: null, ageMinutes: null, ok: false };
+          console.warn(`[DATA] ${symbol} ${tf}: exchange returned 0 candles — data may be stale`);
+        }
       } catch (err) {
+        failedCount++;
+        report[symbol][tf] = { fetched: 0, latestTimestamp: null, ageMinutes: null, ok: false, error: err.message };
         console.error(`[DATA] ${symbol} ${tf} failed:`, err.message);
       }
     }
   }
 
-  return results;
+  const totalAttempts = trackedSymbols.length * timeframes.length;
+  const freshPct = totalAttempts > 0 ? Math.round((freshCount / totalAttempts) * 100) : 0;
+
+  const dataQuality = {
+    total: totalAttempts,
+    fresh: freshCount,
+    stale: staleCount,
+    failed: failedCount,
+    freshPct,
+    status: freshPct >= 75 ? 'healthy' : freshPct >= 50 ? 'degraded' : 'critical',
+  };
+
+  console.log(`[ORCHESTRATOR] DataQualityReport: ${JSON.stringify(dataQuality)}`);
+
+  if (failedCount === totalAttempts) {
+    console.error(`[ORCHESTRATOR] CRITICAL: ALL ${totalAttempts} market data fetches failed — aborting recommended`);
+  } else if (dataQuality.status === 'degraded') {
+    console.warn(`[ORCHESTRATOR] DATA QUALITY DEGRADED: ${freshCount}/${totalAttempts} fresh (${freshPct}%)`);
+  } else if (failedCount > 0 || staleCount > 0) {
+    console.warn(`[ORCHESTRATOR] ${freshCount}/${totalAttempts} fresh, ${staleCount} stale, ${failedCount} failed`);
+  }
+
+  return { results, dataQuality, report };
 }
 
 /**
@@ -407,7 +501,7 @@ async function cacheIndicators(indicators) {
 /**
  * Run all knowledge agents in parallel.
  */
-async function runKnowledgeLayer(cycleNum, indicators, broadcast) {
+async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality) {
   console.log(`[ORCHESTRATOR] Running knowledge layer (cycle ${cycleNum})...`);
 
   // Run in batches of 2 to stay within rate limits (30k input tokens/min)
@@ -423,6 +517,8 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast) {
           symbols: trackedSymbols,
           indicators,
           cycleNumber: cycleNum,
+          // Inject data quality so agents can adjust confidence when data is degraded
+          ...(dataQuality?.status === 'degraded' ? { data_quality: 'degraded' } : {}),
         }).then(decision => {
           if (broadcast) {
             broadcast('agent_complete', {
@@ -469,8 +565,8 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast) {
 /**
  * Run the strategy layer: Regime → Synthesizer → Risk Manager → Execute.
  */
-async function runStrategyLayer(cycleNum, indicators, broadcast) {
-  console.log(`[ORCHESTRATOR] Running strategy layer (cycle ${cycleNum})...`);
+async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false) {
+  console.log(`[ORCHESTRATOR] Running strategy layer (cycle ${cycleNum})${quietMarket ? ' [QUIET MARKET]' : ''}...`);
 
   // Step 1: Classify market regime
   console.log('[ORCHESTRATOR] → Regime Classifier');
@@ -550,6 +646,12 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     console.warn('[ORCHESTRATOR] Last trade check failed:', err.message);
   }
 
+  // H-8: Rate limit pacing — wait 15s between Regime Classifier and Synthesizer
+  if (!forcedExploration) {
+    console.log('[ORCHESTRATOR] Rate limit pacing — waiting 15s before Synthesizer');
+    await new Promise(r => setTimeout(r, 15000));
+  }
+
   // Step 2: Synthesizer — match signals to templates, produce trade proposals
   console.log('[ORCHESTRATOR] → Synthesizer');
   let proposals = [];
@@ -566,7 +668,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
     });
     // Synthesizer outputs trade proposals in "actions" array (type: "trade_proposal")
     const rawActions = synthDecision?.output_json?.actions || [];
-    proposals = rawActions
+    const candidateProposals = rawActions
       .filter(a => a.type === 'trade_proposal')
       .map(a => ({
         ...a,
@@ -574,7 +676,22 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
         tp_price: a.exit_plan?.take_profit ?? a.tp_price,
         sl_price: a.exit_plan?.stop_loss ?? a.sl_price,
       }));
-    console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} proposals (from ${rawActions.length} actions)`);
+
+    // H-7: Validate required fields before passing to Risk Manager
+    const REQUIRED_PROPOSAL_FIELDS = ['symbol', 'direction'];
+    for (const p of candidateProposals) {
+      const missing = REQUIRED_PROPOSAL_FIELDS.filter(f => !p[f]);
+      // Also check for entry_price or trigger_price (standing orders use trigger)
+      if (!p.entry_price && !p.trigger_price) missing.push('entry_price');
+      if (!p.sl_price && !p.stop_loss) missing.push('stop_loss');
+      if (!p.tp_price && !p.take_profit) missing.push('take_profit');
+      if (missing.length === 0) {
+        proposals.push(p);
+      } else {
+        console.warn(`[ORCHESTRATOR] Proposal rejected — missing fields: [${missing.join(', ')}]. Raw: ${JSON.stringify(p).slice(0, 200)}`);
+      }
+    }
+    console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} valid proposals (from ${rawActions.length} actions, ${candidateProposals.length - proposals.length} rejected)`);
 
     // Persist standing orders to DB
     standingOrders = synthDecision?.output_json?.standing_orders || [];
@@ -657,8 +774,48 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
 
   // Step 4: Execute approved trades
   const trades = [];
+  // Pre-check position limits
+  const currentLimits = getRiskLimits();
+  let maxPos = currentLimits.MAX_OPEN_POSITIONS;
+  try {
+    const bsRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
+    if (bsRow?.phase && BOOTSTRAP[bsRow.phase]?.MAX_OPEN_POSITIONS != null) {
+      maxPos = BOOTSTRAP[bsRow.phase].MAX_OPEN_POSITIONS;
+    }
+  } catch { /* use default */ }
+  let currentOpenCount = parseInt((await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'"))?.cnt || 0);
+
+  // Daily loss gate — use calendar day, not rolling 24h
+  let dailyLossBreached = false;
+  try {
+    const dailyPnl = await dbQueryOne(`
+      SELECT COALESCE(SUM(pnl_realised), 0) as daily_pnl
+      FROM trades WHERE status = 'closed' AND closed_at::date = CURRENT_DATE
+    `);
+    const pv = await portfolioDb.getPortfolioValue();
+    const dailyLossPct = Math.abs(parseFloat(dailyPnl?.daily_pnl || 0)) / (pv.total_value || 10000) * 100;
+    if (parseFloat(dailyPnl?.daily_pnl || 0) < 0 && dailyLossPct >= currentLimits.MAX_DAILY_LOSS_PCT) {
+      dailyLossBreached = true;
+      console.warn(`[ORCHESTRATOR] DAILY LOSS LIMIT BREACHED: ${dailyLossPct.toFixed(1)}% (max ${currentLimits.MAX_DAILY_LOSS_PCT}%) — no new trades`);
+    }
+  } catch (err) {
+    console.warn('[ORCHESTRATOR] Daily loss check failed:', err.message);
+  }
+
   for (const trade of riskResult.approved) {
     try {
+      // Check daily loss limit
+      if (dailyLossBreached) {
+        console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — daily loss limit breached`);
+        continue;
+      }
+
+      // Check MAX_OPEN_POSITIONS limit
+      if (currentOpenCount >= maxPos) {
+        console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — ${currentOpenCount} open positions (max ${maxPos})`);
+        continue;
+      }
+
       // Position deduplication: skip if symbol already has an open trade
       const existingOpen = await dbQueryOne(
         "SELECT id FROM trades WHERE symbol = $1 AND status = 'open' LIMIT 1",
@@ -667,6 +824,36 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
       if (existingOpen) {
         console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — open trade #${existingOpen.id} already exists`);
         continue;
+      }
+
+      // M-18: Check minimum risk/reward ratio
+      if (trade.entry_price && trade.tp_price && trade.sl_price) {
+        const reward = Math.abs(trade.tp_price - trade.entry_price);
+        const risk = Math.abs(trade.entry_price - trade.sl_price);
+        if (risk > 0) {
+          const rrRatio = reward / risk;
+          if (rrRatio < currentLimits.MIN_RISK_REWARD_RATIO) {
+            console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — risk/reward ratio ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO}`);
+            continue;
+          }
+        }
+      }
+
+      // M-17: Check correlated exposure
+      try {
+        const openSymbolTrades = await dbQueryOne(
+          "SELECT COUNT(*)::int as cnt, COALESCE(SUM(quantity * entry_price), 0) as exposure FROM trades WHERE symbol = $1 AND status = 'open'",
+          [trade.symbol]
+        );
+        const pv = await portfolioDb.getPortfolioValue();
+        const existingExposurePct = (parseFloat(openSymbolTrades?.exposure || 0) / (pv.total_value || 10000)) * 100;
+        const proposedSizePct = trade.approved_size_pct || 1.0;
+        if (existingExposurePct + proposedSizePct > currentLimits.MAX_CORRELATED_EXPOSURE_PCT) {
+          console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — correlated exposure ${(existingExposurePct + proposedSizePct).toFixed(1)}% > max ${currentLimits.MAX_CORRELATED_EXPOSURE_PCT}%`);
+          continue;
+        }
+      } catch (err) {
+        console.warn('[ORCHESTRATOR] Correlated exposure check failed:', err.message);
       }
 
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
@@ -682,9 +869,10 @@ async function runStrategyLayer(cycleNum, indicators, broadcast) {
         agent_decision_id: synthDecision?.id,
         reasoning: trade.risk_notes || trade.reasoning,
         asset_class: 'crypto',
-        exchange: 'binance',
+        exchange: 'kucoin',
       });
       trades.push(result);
+      currentOpenCount++;
       console.log(`[ORCHESTRATOR] Trade executed: #${result.trade_id} ${trade.symbol} fill=${result.fill_price}`);
 
       // Notify
@@ -750,6 +938,10 @@ async function calculateQuantity(trade) {
   } catch (err) {
     logger.warn('Portfolio value unavailable, using starting capital', { err, error_type: 'portfolio' });
     portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
+  }
+  // H-11: Guard against zero/negative portfolio value
+  if (!portfolioValue || portfolioValue <= 0) {
+    throw new Error(`Portfolio value is zero or negative (${portfolioValue}) — cannot calculate position size`);
   }
   if (!trade.entry_price || trade.entry_price <= 0) {
     throw new Error(`Invalid entry_price: ${trade.entry_price}`);
@@ -1049,10 +1241,17 @@ async function reviewOpenPositions(cycleNum, broadcast) {
  */
 async function runCycle({ broadcast } = {}) {
   if (cycleRunning) {
-    console.log('[ORCHESTRATOR] Cycle already running — skipping');
-    return null;
+    // Check for stuck cycle — force release after timeout
+    if (cycleStartedAt && (Date.now() - cycleStartedAt) > MAX_CYCLE_DURATION_MS) {
+      console.error(`[ORCHESTRATOR] Previous cycle stuck for ${Math.round((Date.now() - cycleStartedAt) / 60000)}min — force releasing mutex`);
+      cycleRunning = false;
+    } else {
+      console.log('[ORCHESTRATOR] Cycle already running — skipping');
+      return null;
+    }
   }
   cycleRunning = true;
+  cycleStartedAt = Date.now();
   try {
   // Resume cycle number from DB if this is the first cycle after restart
   if (cycleNumber === 0) {
@@ -1083,7 +1282,20 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 1: Refresh market data
-  await refreshMarketData();
+  const { dataQuality, report: dataQualityReport } = await refreshMarketData();
+
+  // Gate: abort cycle if data quality is critical (>50% stale/failed)
+  if (dataQuality.status === 'critical') {
+    console.error(`[ORCHESTRATOR] ABORTING cycle ${cycleNumber} — data quality critical: ${dataQuality.fresh}/${dataQuality.total} fresh (${dataQuality.freshPct}%)`);
+    if (broadcast) {
+      broadcast('cycle_aborted', {
+        cycleNumber,
+        reason: `Data quality critical: ${dataQuality.freshPct}% fresh data`,
+        dataQuality,
+      });
+    }
+    return { cycleNumber, aborted: true, reason: 'data_quality_critical', dataQuality };
+  }
 
   // Step 2: Get indicators (shared between knowledge and strategy layers)
   const indicators = await getIndicatorsForAll('4h');
@@ -1096,7 +1308,8 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 3: Run knowledge agents (parallel — emit signals)
-  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast);
+  // Inject data quality status so agents can adjust confidence when degraded
+  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast, dataQuality);
 
   // Step 3.5: Active Position Management
   let positionReview = { reviews: [], actions: [] };
@@ -1107,25 +1320,30 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 4: Run strategy layer (sequential — consume signals, produce trades)
-  // Gate: require at least 3 knowledge agents to have produced signals
-  const MIN_SUCCESSFUL_AGENTS = 3;
+  // H-6: Never skip the Synthesizer — in quiet markets, run with a "quiet_market" flag
   const successfulAgents = knowledge.filter(k => k.status === 'fulfilled' && k.decision?.output_json?.signals?.length > 0);
+  const isQuietMarket = successfulAgents.length < 3;
   let strategy = { regime: null, proposals: [], approved: [], rejected: [], trades: [] };
 
-  if (successfulAgents.length < MIN_SUCCESSFUL_AGENTS) {
-    console.warn(`[ORCHESTRATOR] Skipping strategy layer: only ${successfulAgents.length}/${knowledgeAgents.length} agents produced signals (minimum ${MIN_SUCCESSFUL_AGENTS} required)`);
+  if (isQuietMarket) {
+    console.warn(`[ORCHESTRATOR] Quiet market: only ${successfulAgents.length}/${knowledgeAgents.length} agents produced signals — running Synthesizer with quiet_market flag`);
     if (broadcast) {
       broadcast('agent_complete', {
         cycleNumber, agent_name: 'strategy_gate', layer: 'strategy',
-        skipped: true, reason: `Insufficient signals: ${successfulAgents.length}/${MIN_SUCCESSFUL_AGENTS} minimum`,
+        quiet_market: true, reason: `Quiet market: ${successfulAgents.length} agents produced signals`,
       });
     }
-  } else {
-    try {
-      strategy = await runStrategyLayer(cycleNumber, indicators, broadcast);
-    } catch (err) {
-      console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
-    }
+  }
+  // H-8: Rate limit pacing — wait 30s after knowledge layer before starting Layer 2
+  console.log('[ORCHESTRATOR] Rate limit pacing — waiting 30s before Layer 2 (strategy)');
+  await new Promise(r => setTimeout(r, 30000));
+
+  // Always run strategy layer — even in quiet markets, the Synthesizer should evaluate
+  // existing standing orders and check for opportunistic entries
+  try {
+    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket);
+  } catch (err) {
+    console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
 
   // Step 5: Run analysis layer (periodic — every N cycles, every cycle during INFANT)
@@ -1150,7 +1368,8 @@ async function runCycle({ broadcast } = {}) {
   // Step 6: Record equity snapshot
   try {
     const pv = await portfolioDb.getPortfolioValue();
-    const openCount = strategy.trades?.length || 0;
+    const openCountRow = await dbQueryOne("SELECT COUNT(*) as cnt FROM trades WHERE status = 'open'");
+    const openCount = parseInt(openCountRow?.cnt) || 0;
     await equityDb.insert({
       cycleNumber, totalValue: pv.total_value,
       realisedPnl: pv.realised_pnl, unrealisedPnl: pv.unrealised_pnl,
@@ -1190,6 +1409,7 @@ async function runCycle({ broadcast } = {}) {
         standing_orders: strategy.standing_orders?.length || 0,
       },
       analysis: analysis.length > 0 ? analysis : null,
+      dataQuality,
       elapsed: `${elapsed}s`,
     });
   }
@@ -1216,4 +1436,5 @@ module.exports = {
   monitorPositions,
   checkStandingOrders,
   runCycle,
+  isCycleRunning: () => cycleRunning,
 };

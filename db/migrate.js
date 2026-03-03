@@ -36,11 +36,20 @@ async function migrate() {
     console.log(`[MIGRATE] Applying: ${file}`);
 
     try {
+      // Wrap each migration in a transaction (unless it already contains BEGIN/COMMIT)
+      const hasTransaction = /^\s*BEGIN\b/im.test(sql);
+      if (!hasTransaction) {
+        await query('BEGIN');
+      }
       await query(sql);
       await query('INSERT INTO _migrations (filename) VALUES ($1)', [file]);
+      if (!hasTransaction) {
+        await query('COMMIT');
+      }
       count++;
       console.log(`[MIGRATE] Applied: ${file}`);
     } catch (err) {
+      try { await query('ROLLBACK'); } catch { /* ignore rollback error */ }
       console.error(`[MIGRATE] Failed on ${file}:`, err.message);
       process.exit(1);
     }

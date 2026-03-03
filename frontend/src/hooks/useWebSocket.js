@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useDataStore } from '../stores/data';
+import { getToken } from '../lib/api';
 
 export function useWebSocket() {
   const wsRef = useRef(null);
@@ -14,8 +15,14 @@ export function useWebSocket() {
     let reconnectTimer;
 
     function connect() {
+      const token = getToken();
+      if (!token) {
+        // No token yet — retry after short delay
+        reconnectTimer = setTimeout(connect, 2000);
+        return;
+      }
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
+      const ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {

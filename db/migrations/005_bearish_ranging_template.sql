@@ -56,6 +56,7 @@ INSERT INTO strategy_templates (name, description, entry_conditions, exit_condit
   '["BTC/USDT", "ETH/USDT", "SOL/USDT"]'::jsonb,
   'active',
   'manual'
-);
+)
+ON CONFLICT (name) DO NOTHING;
 
 COMMIT;

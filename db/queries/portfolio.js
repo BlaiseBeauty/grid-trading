@@ -58,16 +58,20 @@ async function getPortfolioValue() {
     FROM trades WHERE status = 'closed'
   `);
   const positions = await queryOne(`
-    SELECT COALESCE(SUM(unrealised_pnl), 0) as total_unrealised
+    SELECT COALESCE(SUM(unrealised_pnl), 0) as total_unrealised,
+           MAX(updated_at) as last_price_update
     FROM portfolio_state
   `);
   const realised = parseFloat(pnl?.total_realised || 0);
   const unrealised = parseFloat(positions?.total_unrealised || 0);
+  const lastUpdate = positions?.last_price_update;
+  const priceStale = lastUpdate && (Date.now() - new Date(lastUpdate).getTime()) > 10 * 60 * 1000;
   return {
     starting_capital: startingCapital,
     realised_pnl: realised,
     unrealised_pnl: unrealised,
     total_value: startingCapital + realised + unrealised,
+    price_stale: !!priceStale,
   };
 }
 

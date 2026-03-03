@@ -46,9 +46,19 @@ def fetch_ohlcv():
         symbol = data.get('symbol', 'BTC/USDT')
         timeframe = data.get('timeframe', '4h')
         limit = data.get('limit', 100)
-        exchange = data.get('exchange', 'binance')
+        exchange = data.get('exchange', None)  # None → uses PRIMARY_EXCHANGE from data.py
 
         candles = market_data.fetch_ohlcv(symbol, timeframe, limit, exchange)
+
+        if not candles or len(candles) == 0:
+            return jsonify({
+                'symbol': symbol,
+                'timeframe': timeframe,
+                'fetched': 0,
+                'stored': 0,
+                'warning': 'Exchange returned zero candles',
+            }), 200
+
         stored = market_data.store_candles(symbol, timeframe, candles)
 
         return jsonify({
@@ -86,9 +96,13 @@ def get_indicators(symbol):
 
 @app.route('/execute-trade', methods=['POST'])
 def execute_trade():
-    """Execute a paper trade."""
+    """Execute a paper trade. Rejects if LIVE_TRADING_ENABLED and mode is not paper."""
     try:
         data = request.json
+        live_enabled = os.environ.get('LIVE_TRADING_ENABLED', 'false').lower() == 'true'
+        mode = data.get('mode', 'paper')
+        if mode != 'paper' and not live_enabled:
+            return jsonify({'error': 'Live trading is disabled. Set LIVE_TRADING_ENABLED=true to enable.'}), 403
         result = paper_trader.execute(data)
         return jsonify(result)
     except Exception as e:

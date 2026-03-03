@@ -50,13 +50,16 @@ async function create(trade) {
 }
 
 async function closeTrade(id, { exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning, close_reason }) {
+  if (!exit_price || exit_price <= 0) {
+    throw new Error(`Invalid exit_price: ${exit_price}`);
+  }
   return queryOne(`
     UPDATE trades SET
       exit_price = $2, pnl_realised = $3, pnl_pct = $4,
       outcome_class = $5, outcome_reasoning = $6,
       close_reason = COALESCE($7, close_reason),
       status = 'closed', closed_at = NOW()
-    WHERE id = $1
+    WHERE id = $1 AND status = 'open'
     RETURNING *
   `, [id, exit_price, pnl_realised, pnl_pct, outcome_class, outcome_reasoning, close_reason || null]);
 }
@@ -121,15 +124,24 @@ async function closeTradeAtomic(tradeId, calcPnl, { outcome_reasoning, close_rea
 
     const { exit_price, pnl, pnlPct } = await calcPnl(trade);
 
+    // Determine outcome class from P&L
+    let outcomeClass = null;
+    if (pnlPct != null) {
+      if (pnlPct >= 2) outcomeClass = 'big_win';
+      else if (pnlPct > 0) outcomeClass = 'small_win';
+      else if (pnlPct > -2) outcomeClass = 'small_loss';
+      else outcomeClass = 'big_loss';
+    }
+
     const { rows: updated } = await client.query(`
       UPDATE trades SET
         exit_price = $2, pnl_realised = $3, pnl_pct = $4,
-        outcome_class = NULL, outcome_reasoning = $5,
-        close_reason = COALESCE($6, close_reason),
+        outcome_class = $5, outcome_reasoning = $6,
+        close_reason = COALESCE($7, close_reason),
         status = 'closed', closed_at = NOW()
       WHERE id = $1
       RETURNING *
-    `, [tradeId, exit_price, pnl, pnlPct, outcome_reasoning || null, close_reason || null]);
+    `, [tradeId, exit_price, pnl, pnlPct, outcomeClass, outcome_reasoning || null, close_reason || null]);
 
     return updated[0];
   });

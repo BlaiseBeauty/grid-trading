@@ -243,7 +243,7 @@ class PatternDiscoveryAgent extends BaseAgent {
       }
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch {}
+    } catch (err) { console.warn('[PATTERN_DISCOVERY] JSON parse failed in parseOutput:', err.message); }
     return { new_templates: [], template_actions: [], anti_patterns: [], signals: [], overallConfidence: null };
   }
 }

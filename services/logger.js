@@ -17,7 +17,7 @@ function log(level, message, context = {}) {
 
   if (context.err instanceof Error) {
     entry.error = context.err.message;
-    if (level === 'error') entry.stack = context.err.stack;
+    if (level === 'error' || level === 'warn') entry.stack = context.err.stack;
   } else if (context.err) {
     entry.error = String(context.err);
   }

@@ -72,7 +72,7 @@ async function routes(fastify) {
         tp.avg_return_pct,
         tp.total_pnl,
         tp.profit_factor,
-        tp.max_drawdown_pct,
+        tp.max_drawdown,
         tp.sharpe as sharpe_ratio
       FROM template_performance tp
       JOIN strategy_templates st ON st.id = tp.template_id

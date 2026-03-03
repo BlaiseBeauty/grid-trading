@@ -43,16 +43,26 @@ async function routes(fastify) {
       [hashedRefresh, user.id]
     );
 
+    // H-16: Set refresh token as HttpOnly cookie
+    reply.setCookie('refreshToken', tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/api/auth',
+      maxAge: 7 * 24 * 60 * 60, // 7 days
+    });
+
     return {
       accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
+      refreshToken: tokens.refreshToken, // Still return for backward compat during migration
       user: { id: user.id, username: user.username, email: user.email },
     };
   });
 
   // POST /api/auth/refresh
   fastify.post('/refresh', async (request, reply) => {
-    const { refreshToken } = request.body || {};
+    // H-16: Accept refresh token from HttpOnly cookie or body
+    const refreshToken = request.cookies?.refreshToken || (request.body || {}).refreshToken;
     if (!refreshToken) {
       return reply.code(400).send({ error: 'Refresh token required' });
     }
@@ -81,6 +91,15 @@ async function routes(fastify) {
       [hashedRefresh, user.id]
     );
 
+    // H-16: Set refresh token as HttpOnly cookie
+    reply.setCookie('refreshToken', tokens.refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      path: '/api/auth',
+      maxAge: 7 * 24 * 60 * 60,
+    });
+
     return {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -98,6 +117,8 @@ async function routes(fastify) {
         // Token invalid — still clear on best effort
       }
     }
+    // H-16: Clear HttpOnly refresh cookie
+    reply.clearCookie('refreshToken', { path: '/api/auth' });
     return { success: true };
   });
 
@@ -108,8 +129,15 @@ async function routes(fastify) {
       return reply.code(400).send({ error: 'Setup already complete' });
     }
 
-    const email = process.env.ADMIN_EMAIL || 'admin@grid.local';
-    const password = process.env.ADMIN_PASSWORD || 'admin2026';
+    const email = process.env.ADMIN_EMAIL;
+    const password = process.env.ADMIN_PASSWORD;
+    if (!email || !password) {
+      return reply.code(500).send({ error: 'ADMIN_EMAIL and ADMIN_PASSWORD environment variables are required for setup' });
+    }
+    if (password.length < 12) {
+      return reply.code(400).send({ error: 'ADMIN_PASSWORD must be at least 12 characters' });
+    }
+
     const hash = await bcrypt.hash(password, 12);
 
     const user = await queryOne(

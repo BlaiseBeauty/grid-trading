@@ -78,20 +78,68 @@ class SynthesizerAgent extends BaseAgent {
   }
 
   parseOutput(text) {
+    // Try clean JSON parse first
     try {
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[1]);
         return {
           ...parsed,
           signals: [], // Synthesizer doesn't emit signals — it emits proposals
-          overallConfidence: parsed.proposals?.[0]?.confidence || null,
+          overallConfidence: parsed.proposals?.[0]?.confidence || parsed.actions?.[0]?.confidence || null,
         };
       }
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch {}
-    return { proposals: [], rejections: [], signals: [], overallConfidence: null };
+    } catch (err) {
+      console.warn('[SYNTHESIZER] Clean JSON parse failed, attempting truncation recovery');
+    }
+
+    // Truncated JSON recovery — search for all possible array keys
+    const RECOVERY_KEYS = ['actions', 'proposals', 'trades', 'standing_orders'];
+    const recovered = { signals: [], overallConfidence: null };
+    let totalRecovered = 0;
+
+    for (const key of RECOVERY_KEYS) {
+      const keyIdx = text.indexOf(`"${key}"`);
+      if (keyIdx === -1) continue;
+
+      const arrayStart = text.indexOf('[', keyIdx);
+      if (arrayStart === -1) continue;
+
+      const objects = [];
+      let depth = 0, objStart = -1;
+      for (let i = arrayStart + 1; i < text.length; i++) {
+        if (text[i] === '{' && depth === 0) { objStart = i; depth = 1; }
+        else if (text[i] === '{') depth++;
+        else if (text[i] === '}') {
+          depth--;
+          if (depth === 0 && objStart >= 0) {
+            try {
+              objects.push(JSON.parse(text.substring(objStart, i + 1)));
+            } catch { /* skip malformed object */ }
+            objStart = -1;
+          }
+        }
+      }
+
+      if (objects.length > 0) {
+        recovered[key] = objects;
+        totalRecovered += objects.length;
+        console.log(`[SYNTHESIZER] Recovered ${objects.length} "${key}" from truncated JSON`);
+      }
+    }
+
+    if (totalRecovered > 0) {
+      return recovered;
+    }
+
+    // Zero recovery from a long response = probable truncation loss
+    if (text.length > 20000) {
+      console.error(`[SYNTHESIZER] CRITICAL: Probable truncation — response length ${text.length} chars, zero actions extracted. Cycle proposals lost.`);
+    }
+
+    return { proposals: [], rejections: [], actions: [], standing_orders: [], signals: [], overallConfidence: null };
   }
 }
 

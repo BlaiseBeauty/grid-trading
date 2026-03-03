@@ -39,9 +39,10 @@ async function routes(fastify) {
     });
   });
 
-  fastify.get('/agents/decisions/:id', async (request) => {
+  fastify.get('/agents/decisions/:id', async (request, reply) => {
     const decision = await decisionsDb.getById(request.params.id);
-    return decision || { error: 'Decision not found' };
+    if (!decision) return reply.code(404).send({ error: 'Decision not found' });
+    return decision;
   });
 
   fastify.get('/agents/costs', async () => {

@@ -22,7 +22,7 @@ async function routes(fastify) {
   });
 
   // GET /api/market-data/:symbol/latest
-  fastify.get('/market-data/:symbol/latest', async (request) => {
+  fastify.get('/market-data/:symbol/latest', async (request, reply) => {
     const dbSymbol = request.params.symbol.replace('-', '/');
     const candle = await queryOne(`
       SELECT * FROM market_data
@@ -30,7 +30,8 @@ async function routes(fastify) {
       ORDER BY timestamp DESC
       LIMIT 1
     `, [dbSymbol]);
-    return candle || { error: 'No data found' };
+    if (!candle) return reply.code(404).send({ error: 'No data found' });
+    return candle;
   });
 }
 

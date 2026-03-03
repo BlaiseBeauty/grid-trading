@@ -17,9 +17,10 @@ async function routes(fastify) {
     return queryAll(`SELECT * FROM standing_orders ${where} ORDER BY created_at DESC LIMIT 50`, params);
   });
 
-  // GET /api/standing-orders/active — only active orders
+  // GET /api/standing-orders/active — only active, non-expired orders
+  // L-7: Filter out expired orders
   fastify.get('/standing-orders/active', async () => {
-    return queryAll("SELECT * FROM standing_orders WHERE status = 'active' ORDER BY priority, created_at DESC");
+    return queryAll("SELECT * FROM standing_orders WHERE status = 'active' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY priority, created_at DESC");
   });
 
   // POST /api/standing-orders — create manual standing order

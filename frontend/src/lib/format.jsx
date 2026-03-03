@@ -1,5 +1,5 @@
 export function formatMoney(value) {
-  if (value == null) return '\u2014';
+  if (value == null || !isFinite(value)) return '\u2014';
   const abs = Math.abs(value);
   const sign = value >= 0 ? '+' : '\u2212';
   const [whole, cents] = abs.toFixed(2).split('.');
@@ -12,7 +12,7 @@ export function formatMoney(value) {
 }
 
 export function formatPct(value, decimals = 1) {
-  if (value == null) return '\u2014';
+  if (value == null || !isFinite(value)) return '\u2014';
   const sign = value >= 0 ? '+' : '\u2212';
   return (
     <span className={`num ${value >= 0 ? 'profit' : 'loss'}`}>
@@ -22,7 +22,7 @@ export function formatPct(value, decimals = 1) {
 }
 
 export function formatNum(value, decimals = 2) {
-  if (value == null) return '\u2014';
+  if (value == null || !isFinite(Number(value))) return '\u2014';
   return <span className="num">{Number(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</span>;
 }
 

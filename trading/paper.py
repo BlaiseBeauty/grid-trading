@@ -10,19 +10,25 @@ from data import MarketData
 
 
 class PaperTrader:
-    # Realistic Binance fee structure
+    # Fee structure (0.10% — matches KuCoin/Binance/OKX standard taker fee)
     MAKER_FEE = 0.001     # 0.10%
     TAKER_FEE = 0.001     # 0.10%
     SLIPPAGE_BPS = 5       # 5 basis points average slippage
 
     def __init__(self):
         self.db_url = os.getenv('DATABASE_URL', 'postgresql://localhost:5432/grid')
+        self.market_data = MarketData()  # Reuse shared instance
 
     def _get_db(self):
         return psycopg2.connect(self.db_url)
 
     def execute(self, trade_data):
         """Execute a paper trade with realistic fee and slippage simulation."""
+        # H-10: Force paper mode if LIVE_TRADING_ENABLED is not true
+        live_enabled = os.environ.get('LIVE_TRADING_ENABLED', 'false').lower() == 'true'
+        if not live_enabled and trade_data.get('mode', 'paper') != 'paper':
+            print('[PAPER] LIVE_TRADING_ENABLED=false — forcing paper mode')
+            trade_data['mode'] = 'paper'
         symbol = trade_data['symbol']
         side = trade_data['side']
         quantity = float(trade_data['quantity'])
@@ -111,8 +117,7 @@ class PaperTrader:
             trade = dict(zip(cols, row))
 
             # Get current market price
-            md = MarketData()
-            current_price = md.get_current_price(trade['symbol'])
+            current_price = self.market_data.get_current_price(trade['symbol'])
 
             # Simulate exit slippage (selling gets worse price, buying gets worse price)
             slippage_pct = random.gauss(self.SLIPPAGE_BPS / 10000, self.SLIPPAGE_BPS / 20000)

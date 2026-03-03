@@ -9,6 +9,8 @@ import pandas as pd
 
 def compute_indicators(df):
     """Compute a comprehensive set of indicators and return as dict."""
+    if df is None or len(df) < 20:
+        return {'error': f'Insufficient data: {len(df) if df is not None else 0} candles (need 20+)'}
     results = {}
     c = df['close'].astype(float)
     h = df['high'].astype(float)
@@ -41,7 +43,8 @@ def compute_indicators(df):
     # Stochastic
     low14 = l.rolling(14).min()
     high14 = h.rolling(14).max()
-    stoch_k = 100 * (c - low14) / (high14 - low14)
+    stoch_denom = (high14 - low14).replace(0, np.nan)
+    stoch_k = 100 * (c - low14) / stoch_denom
     stoch_d = stoch_k.rolling(3).mean()
     results['stoch_k'] = _last(stoch_k)
     results['stoch_d'] = _last(stoch_d)
@@ -56,7 +59,8 @@ def compute_indicators(df):
     # Williams %R
     high14 = h.rolling(14).max()
     low14 = l.rolling(14).min()
-    willr = -100 * (high14 - c) / (high14 - low14)
+    willr_denom = (high14 - low14).replace(0, np.nan)
+    willr = -100 * (high14 - c) / willr_denom
     results['willr'] = _last(willr)
 
     # ROC
@@ -128,7 +132,8 @@ def _adx(high, low, close, period=14):
     atr = _atr(high, low, close, period)
     plus_di = 100 * pd.Series(plus_dm).rolling(period).mean() / atr
     minus_di = 100 * pd.Series(minus_dm).rolling(period).mean() / atr
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    di_sum = (plus_di + minus_di).replace(0, np.nan)
+    dx = 100 * abs(plus_di - minus_di) / di_sum
     adx = dx.rolling(period).mean()
 
     return {
@@ -143,7 +148,8 @@ def _mfi(high, low, close, volume, period=14):
     mf = tp * volume
     pos_mf = mf.where(tp > tp.shift(1), 0).rolling(period).sum()
     neg_mf = mf.where(tp < tp.shift(1), 0).rolling(period).sum()
-    mfi = 100 - (100 / (1 + pos_mf / neg_mf))
+    neg_mf_safe = neg_mf.replace(0, np.nan)
+    mfi = 100 - (100 / (1 + pos_mf / neg_mf_safe))
     return mfi
 
 

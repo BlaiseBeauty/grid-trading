@@ -178,7 +178,7 @@ class PerformanceAnalystAgent extends BaseAgent {
       }
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch {}
+    } catch (err) { console.warn('[PERF_ANALYST] JSON parse failed in parseOutput:', err.message); }
     return { learnings: [], invalidations: [], signals: [], overallConfidence: null };
   }
 }

@@ -23,13 +23,19 @@ async function upsertCache(source, metric, data, symbol = null, ttlSeconds = 360
 
 async function fetchFearGreed() {
   try {
-    const res  = await fetch('https://api.alternative.me/fng/?limit=7&format=json');
+    const res = await fetch('https://api.alternative.me/fng/?limit=7&format=json', {
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
+    if (!json.data || !json.data[0]) throw new Error('Malformed response: missing data array');
     const data = { current: json.data[0], history_7d: json.data };
     await upsertCache('alternative_me', 'fear_greed_index', data, null, 3600);
     console.log(`[FETCHER] fear_greed: ${data.current.value} (${data.current.value_classification})`);
   } catch (err) {
     console.error('[FETCHER] Alternative.me error:', err.message);
+    // Store error state so context builders know data is unavailable
+    await upsertCache('alternative_me', 'fear_greed_index', { error: 'unavailable', value: null, cached: false }, null, 300).catch(() => {});
   }
 }
 
@@ -43,7 +49,8 @@ async function fetchCoinGlass() {
   const symbols = ['BTC', 'ETH', 'SOL'];
 
   try {
-    const res  = await fetch('https://open-api.coinglass.com/public/v2/funding', { headers });
+    const res = await fetch('https://open-api.coinglass.com/public/v2/funding', { headers, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     if (json.success) {
       await upsertCache('coinglass', 'funding_rates', json.data, null, 900);
@@ -58,7 +65,8 @@ async function fetchCoinGlass() {
   }
 
   try {
-    const res  = await fetch('https://open-api.coinglass.com/public/v2/open_interest', { headers });
+    const res = await fetch('https://open-api.coinglass.com/public/v2/open_interest', { headers, signal: AbortSignal.timeout(10000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const json = await res.json();
     if (json.success) {
       await upsertCache('coinglass', 'aggregated_oi', json.data, null, 900);
@@ -81,10 +89,11 @@ async function fetchCoinGlass() {
 
   try {
     for (const sym of symbols) {
-      const res  = await fetch(
+      const res = await fetch(
         `https://open-api.coinglass.com/public/v2/long_short?symbol=${sym}&interval=h1&limit=24`,
-        { headers }
+        { headers, signal: AbortSignal.timeout(10000) }
       );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       if (json.success) await upsertCache('coinglass', 'long_short_ratio', json.data, `${sym}/USDT`, 900);
     }
@@ -93,18 +102,27 @@ async function fetchCoinGlass() {
     console.error('[FETCHER] CoinGlass L/S error:', err.message);
   }
 
-  try {
-    const res  = await fetch(
-      'https://open-api.coinglass.com/public/v2/liquidation_map?symbol=BTC&range=24',
-      { headers }
-    );
-    const json = await res.json();
-    if (json.success) {
-      await upsertCache('coinglass', 'liquidation_heatmap', json.data, 'BTC/USDT', 1800);
-      console.log('[FETCHER] CoinGlass liquidation heatmap OK');
+  // H-3: Fetch liquidation heatmap for BTC, ETH, and SOL
+  for (const sym of symbols) {
+    try {
+      const res = await fetch(
+        `https://open-api.coinglass.com/public/v2/liquidation_map?symbol=${sym}&range=24`,
+        { headers, signal: AbortSignal.timeout(10000) }
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if (json.success) {
+        await upsertCache('coinglass', 'liquidation_heatmap', json.data, `${sym}/USDT`, 1800);
+        console.log(`[FETCHER] CoinGlass liquidation heatmap OK for ${sym}`);
+      }
+    } catch (err) {
+      console.error(`[FETCHER] CoinGlass liquidation error for ${sym}:`, err.message);
+      // Store unavailability so context builders know
+      await upsertCache('coinglass', 'liquidation_heatmap', {
+        error: 'unavailable', value: null,
+        note: `Liquidation heatmap: NOT AVAILABLE for ${sym}. Do not reference liquidation clusters in your analysis.`,
+      }, `${sym}/USDT`, 1800).catch(() => {});
     }
-  } catch (err) {
-    console.error('[FETCHER] CoinGlass liquidation error:', err.message);
   }
 }
 

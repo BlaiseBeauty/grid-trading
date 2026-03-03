@@ -92,7 +92,7 @@ class RegimeClassifierAgent extends BaseAgent {
       }
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch {}
+    } catch (err) { console.warn('[REGIME_CLASSIFIER] JSON parse failed in parseOutput:', err.message); }
     return { regimes: [], signals: [], overallConfidence: null };
   }
 }

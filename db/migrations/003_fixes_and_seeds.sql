@@ -8,6 +8,9 @@ BEGIN;
 -- 1. Seed strategy templates
 -- ============================================================
 
+-- Ensure unique constraint exists for idempotent re-runs
+CREATE UNIQUE INDEX IF NOT EXISTS idx_strategy_templates_name ON strategy_templates(name);
+
 INSERT INTO strategy_templates (name, description, entry_conditions, exit_conditions, valid_regimes, valid_asset_classes, valid_symbols, status, source) VALUES
 
 -- Template 1: Bullish Momentum Convergence
@@ -163,6 +166,7 @@ INSERT INTO strategy_templates (name, description, entry_conditions, exit_condit
   '["BTC/USDT", "ETH/USDT", "SOL/USDT"]'::jsonb,
   'active',
   'manual'
-);
+)
+ON CONFLICT (name) DO NOTHING;
 
 COMMIT;

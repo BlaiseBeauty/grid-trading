@@ -107,15 +107,16 @@ class BaseAgent {
         try {
           response = await client.messages.create({
             model: this.model,
-            max_tokens: this.promptKey === 'strategySynthesizer' ? 16000 : 8192,
+            max_tokens: this.promptKey === 'strategySynthesizer' ? 32000 : 8192,
             system: systemPrompt,
             messages: [{ role: 'user', content: fullUserPrompt }],
           });
           break;
         } catch (apiErr) {
-          if (apiErr.status === 429 && attempt < 2) {
-            const wait = (attempt + 1) * 15000;
-            console.log(`[${this.name.toUpperCase()}] Rate limited, waiting ${wait/1000}s...`);
+          const retryable = apiErr.status === 429 || apiErr.status === 500 || apiErr.status === 502 || apiErr.status === 503;
+          if (retryable && attempt < 2) {
+            const wait = apiErr.status === 429 ? (attempt + 1) * 15000 : (attempt + 1) * 5000;
+            console.log(`[${this.name.toUpperCase()}] API error ${apiErr.status}, retrying in ${wait/1000}s...`);
             await new Promise(r => setTimeout(r, wait));
           } else {
             throw apiErr;
@@ -123,9 +124,42 @@ class BaseAgent {
         }
       }
 
-      const outputText = response.content[0]?.text || '';
+      let outputText = response.content[0]?.text || '';
       inputTokens = response.usage?.input_tokens || 0;
       outputTokens = response.usage?.output_tokens || 0;
+
+      // Retry once with higher max_tokens and compressed context if truncated
+      if (response.stop_reason === 'max_tokens' && this.promptKey === 'strategySynthesizer') {
+        console.warn(`[${this.name.toUpperCase()}] Response truncated at ${outputTokens} tokens — retrying with extended limit and compressed context`);
+        try {
+          // Compress context: reduce signals to top 5 by confidence
+          let retryPrompt = fullUserPrompt;
+          try {
+            const signalsMatch = fullUserPrompt.match(/"active_signals"\s*:\s*\[[\s\S]*?\]/);
+            if (signalsMatch) {
+              const signalsArr = JSON.parse(signalsMatch[0].replace('"active_signals":', '').trim());
+              const top5 = signalsArr
+                .sort((a, b) => (b.decayed_strength || b.strength || 0) - (a.decayed_strength || a.strength || 0))
+                .slice(0, 5);
+              retryPrompt = fullUserPrompt.replace(signalsMatch[0], `"active_signals":${JSON.stringify(top5)}`);
+              console.log(`[${this.name.toUpperCase()}] Compressed signals from ${signalsArr.length} to ${top5.length} for retry`);
+            }
+          } catch { /* use full prompt if compression fails */ }
+
+          const retryResponse = await client.messages.create({
+            model: this.model,
+            max_tokens: 64000,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: retryPrompt }],
+          });
+          outputText = retryResponse.content[0]?.text || outputText;
+          inputTokens += retryResponse.usage?.input_tokens || 0;
+          outputTokens += retryResponse.usage?.output_tokens || 0;
+        } catch (retryErr) {
+          console.warn(`[${this.name.toUpperCase()}] Truncation retry failed:`, retryErr.message);
+        }
+      }
+
       costUsd = this.calculateCost(inputTokens, outputTokens);
       const durationMs = Date.now() - start;
 
@@ -248,9 +282,15 @@ class BaseAgent {
       logger.debug('JSON parse failed, attempting truncation recovery', { err, agent_name: this.name, error_type: 'json_parse' });
     }
 
-    // Truncated JSON recovery: extract individual signal objects from the array
+    // Truncated JSON recovery: extract individual objects from signals or actions array
     try {
-      const signalsStart = text.indexOf('"signals"');
+      let signalsStart = text.indexOf('"signals"');
+      let arrayKey = 'signals';
+      // Synthesizer uses "actions" instead of "signals"
+      if (signalsStart === -1) {
+        signalsStart = text.indexOf('"actions"');
+        arrayKey = 'actions';
+      }
       if (signalsStart === -1) return { signals: [], overallConfidence: null };
 
       const arrayStart = text.indexOf('[', signalsStart);
@@ -276,8 +316,11 @@ class BaseAgent {
       }
 
       if (signals.length > 0) {
-        console.log(`[${this.name.toUpperCase()}] Recovered ${signals.length} signals from truncated JSON`);
-        return { signals, overallConfidence: null };
+        console.log(`[${this.name.toUpperCase()}] Recovered ${signals.length} ${arrayKey} from truncated JSON`);
+        const result = { overallConfidence: null };
+        result[arrayKey] = signals;
+        if (arrayKey !== 'signals') result.signals = [];
+        return result;
       }
     } catch (err) {
       logger.warn('Truncated JSON recovery failed', { err, agent_name: this.name, error_type: 'json_recovery' });

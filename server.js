@@ -8,12 +8,24 @@ const PORT = process.env.PORT || 3100;
 
 // ---------- Plugins ----------
 async function registerPlugins() {
+  const allowedOrigins = process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
+    : true; // Allow all in development
   await fastify.register(require('@fastify/cors'), {
-    origin: true,
+    origin: allowedOrigins,
     credentials: true,
   });
 
   await fastify.register(require('@fastify/cookie'));
+
+  // M-23: Handle empty POST bodies gracefully (Fastify rejects empty body with content-type: json)
+  fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    try {
+      done(null, body ? JSON.parse(body) : {});
+    } catch (err) {
+      done(err);
+    }
+  });
 
   // Serve React build in production, fallback to public/
   const fs = require('fs');
@@ -51,7 +63,11 @@ const wsClients = new Set();
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data, ts: Date.now() });
   for (const client of wsClients) {
-    if (client.readyState === 1) client.send(msg);
+    if (client.readyState === 1) {
+      try { client.send(msg); } catch { wsClients.delete(client); }
+    } else if (client.readyState > 1) {
+      wsClients.delete(client);
+    }
   }
 }
 
@@ -110,9 +126,22 @@ async function registerRoutes() {
   fastify.register(require('./api/standing-orders'), { prefix: '/api' });
   fastify.register(require('./api/events'), { prefix: '/api' });
 
-  // WebSocket endpoint
+  // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
-    fastify.get('/ws', { websocket: true }, (socket) => {
+    fastify.get('/ws', { websocket: true }, (socket, req) => {
+      // Verify JWT from query string: /ws?token=<jwt>
+      const url = new URL(req.url, `http://${req.headers.host}`);
+      const token = url.searchParams.get('token');
+      if (!token) {
+        socket.close(4401, 'Authentication required');
+        return;
+      }
+      try {
+        jwt.verify(token, process.env.JWT_SECRET);
+      } catch {
+        socket.close(4401, 'Invalid token');
+        return;
+      }
       wsClients.add(socket);
       socket.on('close', () => wsClients.delete(socket));
     });
@@ -129,7 +158,8 @@ async function registerRoutes() {
 
 // ---------- Market Data ----------
 const PYTHON_ENGINE_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
-const CANDLE_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+const { symbols: trackedSymbolsConfig } = require('./config/symbols');
+const CANDLE_SYMBOLS = trackedSymbolsConfig.map(s => s.symbol);
 const BINANCE_MAP = { 'BTC/USDT': 'BTCUSDT', 'ETH/USDT': 'ETHUSDT', 'SOL/USDT': 'SOLUSDT' };
 const COINGECKO_MAP = { 'BTC/USDT': 'bitcoin', 'ETH/USDT': 'ethereum', 'SOL/USDT': 'solana' };
 
@@ -169,21 +199,7 @@ async function fetchLivePrice(symbol) {
     logger.debug('Python engine price unavailable', { err, symbol, error_type: 'price_fallback' });
   }
 
-  // 2. Try Binance
-  try {
-    const binanceSym = BINANCE_MAP[symbol];
-    if (binanceSym) {
-      const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${binanceSym}`, { signal: AbortSignal.timeout(5000) });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.price) return { dashSym, price: parseFloat(data.price), source: 'binance' };
-      }
-    }
-  } catch (err) {
-    logger.debug('Binance price unavailable', { err, symbol, error_type: 'price_fallback' });
-  }
-
-  // 3. Try CoinGecko
+  // 2. Try CoinGecko (skip Binance — geo-blocked on Railway)
   try {
     const cgId = COINGECKO_MAP[symbol];
     if (cgId) {
@@ -196,7 +212,7 @@ async function fetchLivePrice(symbol) {
     logger.debug('CoinGecko price unavailable', { err, symbol, error_type: 'price_fallback' });
   }
 
-  // 4. Latest DB candle
+  // 3. Latest DB candle
   try {
     const { queryOne: qo } = require('./db/connection');
     const row = await qo(`SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`, [symbol]);
@@ -210,7 +226,7 @@ async function fetchLivePrice(symbol) {
 
 /**
  * Node.js fallback for stop-loss enforcement when Python engine is unreachable.
- * Uses the same fetchLivePrice() chain (Python → Binance → CoinGecko → DB candle).
+ * Uses the same fetchLivePrice() chain (Python → CoinGecko → DB candle).
  */
 async function checkStopLossesFallback() {
   const tradesDb = require('./db/queries/trades');
@@ -306,9 +322,14 @@ function setupCron() {
   cron.schedule('0 */4 * * *', async () => {
     console.log('[CRON] Starting agent cycle...');
     try {
-      await orchestrator.runCycle({ broadcast });
+      const result = await orchestrator.runCycle({ broadcast });
+      if (result?.aborted) {
+        console.error(`[CRON] Cycle aborted: ${result.reason}`);
+        broadcast('cycle_error', { reason: result.reason });
+      }
     } catch (err) {
       console.error('[CRON] Agent cycle failed:', err.message);
+      broadcast('cycle_error', { error: err.message });
     }
   });
 
@@ -342,7 +363,12 @@ function setupCron() {
   });
 
   // Check standing order triggers every 15 minutes
+  // M-14: Skip if a cycle is actively running to prevent race conditions
   cron.schedule('*/15 * * * *', async () => {
+    if (orchestrator.isCycleRunning()) {
+      console.log('[CRON] Skipping standing order check — cycle in progress');
+      return;
+    }
     console.log('[CRON] Monitoring standing orders...');
     try {
       // Retry orders that failed due to transient errors (15-min cooldown)
@@ -369,7 +395,8 @@ function setupCron() {
   cron.schedule('30 * * * *', async () => {
     console.log('[CRON] Running hourly position review...');
     try {
-      const result = await orchestrator.reviewOpenPositions(0, broadcast);
+      // cycleNumber -1 indicates an out-of-cycle hourly review
+      const result = await orchestrator.reviewOpenPositions(-1, broadcast);
       console.log(`[CRON] Position review: ${result.reviews.length} reviewed`);
     } catch (err) {
       console.error('[CRON] Hourly position review failed:', err.message);
@@ -437,6 +464,20 @@ function setupCron() {
 
 // ---------- Boot ----------
 async function start() {
+  // Validate required environment variables
+  const required = ['DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ANTHROPIC_API_KEY', 'ADMIN_PASSWORD'];
+  const missing = required.filter(k => !process.env[k]);
+  if (missing.length > 0) {
+    console.error(`[GRID] FATAL: Missing required environment variables: ${missing.join(', ')}`);
+    process.exit(1);
+  }
+
+  // Warn if Python engine URL points to localhost (won't work on Railway)
+  const pyUrl = process.env.PYTHON_ENGINE_URL || '';
+  if (pyUrl.includes('localhost') || pyUrl.includes('127.0.0.1')) {
+    console.warn(`[GRID] WARNING: PYTHON_ENGINE_URL (${pyUrl}) points to localhost — this will fail in production. Use the internal service URL.`);
+  }
+
   try {
     // Run migrations
     await migrate();
@@ -464,5 +505,32 @@ async function start() {
     process.exit(1);
   }
 }
+
+// ---------- Graceful Shutdown ----------
+async function gracefulShutdown(signal) {
+  console.log(`[GRID] ${signal} received — shutting down gracefully`);
+
+  // Stop accepting new connections
+  try {
+    await fastify.close();
+  } catch (err) {
+    console.error('[GRID] Error closing Fastify:', err.message);
+  }
+
+  // Close DB pool
+  try {
+    const { pool } = require('./db/connection');
+    await pool.end();
+    console.log('[GRID] DB pool closed');
+  } catch (err) {
+    console.error('[GRID] Error closing DB pool:', err.message);
+  }
+
+  console.log('[GRID] Shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 start();
