@@ -117,10 +117,12 @@ class BaseAgent {
           response = finalMessage;
           break;
         } catch (apiErr) {
-          const retryable = apiErr.status === 429 || apiErr.status === 500 || apiErr.status === 502 || apiErr.status === 503;
+          const isOverloaded = apiErr.status === 529 || apiErr.error?.type === 'overloaded_error';
+          const retryable = apiErr.status === 429 || isOverloaded || apiErr.status === 500 || apiErr.status === 502 || apiErr.status === 503;
           if (retryable && attempt < 2) {
-            const wait = apiErr.status === 429 ? (attempt + 1) * 15000 : (attempt + 1) * 5000;
-            console.log(`[${this.name.toUpperCase()}] API error ${apiErr.status}, retrying in ${wait/1000}s...`);
+            const wait = (apiErr.status === 429 || isOverloaded) ? (attempt + 1) * 15000 : (attempt + 1) * 5000;
+            if (isOverloaded) console.log(`[${this.name.toUpperCase()}] Anthropic overloaded, retrying in ${wait/1000}s...`);
+            else console.log(`[${this.name.toUpperCase()}] API error ${apiErr.status}, retrying in ${wait/1000}s...`);
             await new Promise(r => setTimeout(r, wait));
           } else {
             throw apiErr;

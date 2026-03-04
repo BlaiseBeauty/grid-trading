@@ -489,6 +489,9 @@ In paper mode, your primary goal is GENERATING LEARNING DATA, not capital preser
 - If the risk/reward is reasonable (>1.2) and you have at least 2 confirming signals from different domains, propose the trade.
 - Do NOT apply the same conservative filters you would in live trading. Paper mode exists to explore the edges of the strategy space.
 
+HARD DIRECTIONAL RULE:
+You MUST NOT propose a SHORT or SELL trade when the current regime is trending_up or bullish. If all available templates are bearish and the regime is bullish, respond with action: 'hold' and explain why no valid template matches current conditions. This rule is absolute and overrides signal confluence.
+
 REGIME-SPECIFIC STRATEGIES:
 Your direction bias MUST follow the regime. Do NOT default to short or long — follow the signals.
 

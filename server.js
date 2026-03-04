@@ -341,6 +341,7 @@ function setupCron() {
 
   // 4-hour agent cycle
   cron.schedule('0 */4 * * *', async () => {
+    console.log('[CRON] 4-hour cycle triggered at', new Date().toISOString());
     console.log('[CRON] Starting agent cycle...');
     try {
       const result = await orchestrator.runCycle({ broadcast });
@@ -560,6 +561,15 @@ async function start() {
 
     // Start cron
     setupCron();
+
+    // One-time boot cycle — confirm orchestrator works on this deployment
+    const orchestrator = require('./agents/orchestrator');
+    setTimeout(() => {
+      console.log('[BOOT] Firing one-time cycle 10s after startup...');
+      orchestrator.runCycle({ broadcast }).catch(err => {
+        console.error('[BOOT] One-time cycle failed:', err.message);
+      });
+    }, 10000);
 
     // Crash recovery: restore exchange SL/TP orders for live trades missing them
     if (process.env.LIVE_TRADING_ENABLED === 'true') {

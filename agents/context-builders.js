@@ -500,7 +500,17 @@ async function buildSynthesizerContext(trigger) {
     LEFT JOIN template_performance tp ON tp.template_id = st.id
     WHERE st.status IN ('active', 'testing')
     ORDER BY tp.win_rate DESC NULLS LAST
-  `);
+  `).then(rows => {
+    // Hard filter: only keep templates whose valid_regimes includes the current regime
+    const currentRegime = regime.regime;
+    if (currentRegime) {
+      return rows.filter(t => {
+        if (!t.valid_regimes || !Array.isArray(t.valid_regimes)) return true; // no restriction = allow
+        return t.valid_regimes.includes(currentRegime);
+      });
+    }
+    return rows;
+  });
 
   // Anti-patterns
   const antiPatterns = await queryAll(`
@@ -861,7 +871,7 @@ async function buildPerformanceAnalystContext(trigger) {
     FROM trades t
     LEFT JOIN trade_signals ts ON ts.trade_id = t.id
     LEFT JOIN signals s ON s.id = ts.signal_id
-    WHERE t.closed_at > NOW() - INTERVAL '24 hours'
+    WHERE t.closed_at > NOW() - INTERVAL '7 days'
     ORDER BY t.closed_at DESC
   `);
 
@@ -964,8 +974,8 @@ async function buildPatternDiscoveryContext(trigger) {
              'was_entry', ts.was_entry_signal
            )) as signals_at_entry
     FROM trades t
-    JOIN trade_signals ts ON ts.trade_id = t.id
-    JOIN signals s ON s.id = ts.signal_id
+    LEFT JOIN trade_signals ts ON ts.trade_id = t.id
+    LEFT JOIN signals s ON s.id = ts.signal_id
     WHERE t.closed_at > NOW() - INTERVAL '30 days'
     AND t.status = 'closed'
     GROUP BY t.id
