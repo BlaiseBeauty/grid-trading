@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useDataStore } from '../stores/data';
 import { api } from '../lib/api';
-import { formatMoney, formatPct, formatPrice, timeAgo } from '../lib/format';
+import { formatMoney, formatPct, formatPrice, formatDuration, timeAgo } from '../lib/format';
 import {
   GlowCard, TickingNumber, ProgressRing, SignalBadge, RangeBar, StatusPulse,
 } from '../components/ui';
@@ -172,6 +172,7 @@ export default function Trades() {
                     {t.status}
                   </span>
                   <span className="v2-trade-time">{timeAgo(t.closed_at || t.opened_at || t.created_at)}</span>
+                  <span className="v2-trade-duration">⏱ {formatDuration(t.opened_at, t.closed_at)} {t.closed_at ? 'held' : 'open'}</span>
                 </div>
               </div>
 

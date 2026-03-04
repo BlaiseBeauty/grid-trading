@@ -33,6 +33,19 @@ export function formatPrice(value) {
   return <span className="num">${v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</span>;
 }
 
+export function formatDuration(start, end) {
+  if (!start) return '';
+  const ms = (end ? new Date(end) : new Date()) - new Date(start);
+  const totalMins = Math.floor(ms / 60000);
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  const days = Math.floor(hrs / 24);
+  const remHrs = hrs % 24;
+  if (days > 0) return `${days}d ${remHrs}h`;
+  if (hrs > 0) return `${hrs}h ${mins}m`;
+  return `${mins}m`;
+}
+
 export function timeAgo(date) {
   if (!date) return '';
   const seconds = Math.floor((Date.now() - new Date(date).getTime()) / 1000);
