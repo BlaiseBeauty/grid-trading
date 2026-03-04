@@ -11,7 +11,7 @@ const { queryAll } = require('../../db/connection');
 
 class SynthesizerAgent extends BaseAgent {
   constructor() {
-    super({ name: 'synthesizer', layer: 'strategy', model: 'claude-sonnet-4-6' });
+    super({ name: 'synthesizer', layer: 'strategy', model: 'claude-opus-4-6' });
   }
 
   /**
