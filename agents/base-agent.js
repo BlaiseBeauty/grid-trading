@@ -101,16 +101,20 @@ class BaseAgent {
     let decision;
     let inputTokens = 0, outputTokens = 0, costUsd = 0;
     try {
-      // Call Claude with retry on rate limit
+      // Call Claude with retry on rate limit (streaming for long requests)
+      const maxTokens = this.promptKey === 'strategySynthesizer' ? 32000 : 8192;
       let response;
+      let outputText = '';
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          response = await client.messages.create({
+          const stream = await client.messages.stream({
             model: this.model,
-            max_tokens: this.promptKey === 'strategySynthesizer' ? 32000 : 8192,
+            max_tokens: maxTokens,
             system: systemPrompt,
             messages: [{ role: 'user', content: fullUserPrompt }],
           });
+          const finalMessage = await stream.finalMessage();
+          response = finalMessage;
           break;
         } catch (apiErr) {
           const retryable = apiErr.status === 429 || apiErr.status === 500 || apiErr.status === 502 || apiErr.status === 503;
@@ -124,7 +128,7 @@ class BaseAgent {
         }
       }
 
-      let outputText = response.content[0]?.text || '';
+      outputText = response.content[0]?.text || '';
       inputTokens = response.usage?.input_tokens || 0;
       outputTokens = response.usage?.output_tokens || 0;
 
@@ -146,12 +150,13 @@ class BaseAgent {
             }
           } catch { /* use full prompt if compression fails */ }
 
-          const retryResponse = await client.messages.create({
+          const retryStream = await client.messages.stream({
             model: this.model,
             max_tokens: 64000,
             system: systemPrompt,
             messages: [{ role: 'user', content: retryPrompt }],
           });
+          const retryResponse = await retryStream.finalMessage();
           outputText = retryResponse.content[0]?.text || outputText;
           inputTokens += retryResponse.usage?.input_tokens || 0;
           outputTokens += retryResponse.usage?.output_tokens || 0;
