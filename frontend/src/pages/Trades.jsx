@@ -329,6 +329,7 @@ export default function Trades() {
         .v2-status--win { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); background: rgba(0,230,118,0.06); }
         .v2-status--loss { color: var(--v2-accent-red); border-color: rgba(255,23,68,0.3); background: rgba(255,23,68,0.06); }
         .v2-trade-time { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-muted); }
+        .v2-trade-duration { font-family: 'IBM Plex Mono', var(--v2-font-data), monospace; font-size: 10px; color: var(--v2-text-muted); letter-spacing: 0.5px; }
 
         .v2-trade-detail {
           margin-top: var(--v2-space-md); padding-top: var(--v2-space-md);
