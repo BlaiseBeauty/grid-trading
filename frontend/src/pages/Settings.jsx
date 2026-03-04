@@ -8,6 +8,7 @@ export default function Settings() {
   const [health, setHealth] = useState(null);
   const [scramHistory, setScramHistory] = useState([]);
   const [bootstrapHistory, setBootstrapHistory] = useState([]);
+  const [correlations, setCorrelations] = useState(null);
 
   const fetchAll = () => {
     Promise.all([
@@ -16,12 +17,14 @@ export default function Settings() {
       api('/system/health-detail'),
       api('/system/scram/history'),
       api('/system/bootstrap/history'),
-    ]).then(([rl, cfg, h, sh, bh]) => {
+      api('/correlations').catch(() => null),
+    ]).then(([rl, cfg, h, sh, bh, corr]) => {
       setRiskLimits(rl);
       setConfig(cfg);
       setHealth(h);
       setScramHistory(sh || []);
       setBootstrapHistory(bh || []);
+      setCorrelations(corr);
     }).catch(console.error);
   };
 
@@ -181,8 +184,20 @@ export default function Settings() {
           </GlowCard>
         </div>
 
-        {/* System Config */}
+        {/* Correlation Matrix */}
         <div className="v2-animate-in v2-stagger-5">
+          <GlowCard>
+            <div className="v2-section-title">Correlation Matrix (30d)</div>
+            {correlations ? (
+              <CorrelationMatrix correlations={correlations} />
+            ) : (
+              <div className="v2-empty" style={{ padding: 'var(--v2-space-md) 0' }}>No correlation data yet</div>
+            )}
+          </GlowCard>
+        </div>
+
+        {/* System Config */}
+        <div className="v2-animate-in v2-stagger-6">
           <GlowCard>
             <div className="v2-section-title">System Configuration</div>
             <div className="v2-limits-table">
@@ -198,7 +213,7 @@ export default function Settings() {
         </div>
 
         {/* System Status */}
-        <div className="v2-animate-in v2-stagger-6">
+        <div className="v2-animate-in v2-stagger-7">
           <GlowCard>
             <div className="v2-section-title">System Status</div>
             {health && (
@@ -215,7 +230,7 @@ export default function Settings() {
         </div>
 
         {/* Agent Models */}
-        <div className="v2-animate-in v2-stagger-7">
+        <div className="v2-animate-in v2-stagger-8">
           <GlowCard>
             <div className="v2-section-title">Agent Models</div>
             <div className="v2-limits-table">
@@ -428,6 +443,103 @@ function ConfigRow({ label, value, highlight }) {
     <div className="v2-config-row">
       <span className="v2-config-label">{label}</span>
       <span className={`v2-config-value ${highlight ? 'highlight' : ''}`}>{value}</span>
+    </div>
+  );
+}
+
+const CORR_SYMBOLS = ['BTC', 'ETH', 'SOL'];
+
+function CorrelationMatrix({ correlations }) {
+  function getCorr(a, b) {
+    if (a === b) return 1.0;
+    const key1 = `${a}_${b}`;
+    const key2 = `${b}_${a}`;
+    return correlations[key1] ?? correlations[key2] ?? null;
+  }
+
+  function corrColor(val) {
+    if (val === null) return 'var(--v2-text-muted)';
+    if (val >= 0.9) return 'var(--v2-accent-red)';
+    if (val >= 0.8) return 'var(--v2-accent-amber)';
+    return 'var(--v2-accent-green)';
+  }
+
+  function corrBg(val) {
+    if (val === null) return 'transparent';
+    if (val >= 0.9) return 'rgba(255,45,85,0.08)';
+    if (val >= 0.8) return 'rgba(255,184,0,0.06)';
+    return 'transparent';
+  }
+
+  const computedAt = correlations.computed_at
+    ? new Date(correlations.computed_at).toLocaleDateString()
+    : 'defaults';
+
+  return (
+    <div className="v2-corr">
+      <div className="v2-corr-grid">
+        {/* Header row: corner + column headers */}
+        <div className="v2-corr-cell v2-corr-corner" />
+        {CORR_SYMBOLS.map(s => (
+          <div key={s} className="v2-corr-cell v2-corr-header">{s}</div>
+        ))}
+        {/* Data rows: row header + values */}
+        {CORR_SYMBOLS.map(row => {
+          const cells = [
+            <div key={`${row}-label`} className="v2-corr-cell v2-corr-header">{row}</div>
+          ];
+          for (const col of CORR_SYMBOLS) {
+            const val = getCorr(row, col);
+            const isDiag = row === col;
+            cells.push(
+              <div
+                key={`${row}-${col}`}
+                className={`v2-corr-cell v2-corr-val ${isDiag ? 'v2-corr-diag' : ''}`}
+                style={{
+                  color: isDiag ? 'var(--v2-text-muted)' : corrColor(val),
+                  background: isDiag ? 'transparent' : corrBg(val),
+                }}
+              >
+                {val !== null ? val.toFixed(2) : '--'}
+              </div>
+            );
+          }
+          return cells;
+        })}
+      </div>
+      <div className="v2-corr-meta">
+        Updated: {computedAt}
+        <span className="v2-corr-legend">
+          <span style={{ color: 'var(--v2-accent-green)' }}>&lt;0.8</span>
+          <span style={{ color: 'var(--v2-accent-amber)' }}>0.8-0.9</span>
+          <span style={{ color: 'var(--v2-accent-red)' }}>&gt;0.9</span>
+        </span>
+      </div>
+      <style>{`
+        .v2-corr { display: flex; flex-direction: column; gap: var(--v2-space-sm); }
+        .v2-corr-grid {
+          display: grid; grid-template-columns: 50px repeat(3, 1fr);
+          gap: 2px;
+        }
+        .v2-corr-cell {
+          padding: var(--v2-space-sm);
+          font-family: var(--v2-font-data); font-size: 12px;
+          font-variant-numeric: tabular-nums; text-align: center;
+          border-radius: 3px;
+        }
+        .v2-corr-header {
+          font-weight: 600; font-size: 10px; text-transform: uppercase;
+          letter-spacing: 1px; color: var(--v2-text-muted);
+        }
+        .v2-corr-val { font-weight: 500; }
+        .v2-corr-diag { opacity: 0.3; }
+        .v2-corr-meta {
+          font-family: var(--v2-font-data); font-size: 9px;
+          color: var(--v2-text-muted); display: flex;
+          justify-content: space-between; align-items: center;
+        }
+        .v2-corr-legend { display: flex; gap: var(--v2-space-sm); font-weight: 500; }
+      `}</style>
     </div>
   );
 }

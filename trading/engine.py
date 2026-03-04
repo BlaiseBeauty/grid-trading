@@ -13,12 +13,14 @@ load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 from data import MarketData
 from paper import PaperTrader
+from live import LiveTrader
 from indicators import compute_indicators
 from monitor import PositionMonitor
 
 app = Flask(__name__)
 market_data = MarketData()
 paper_trader = PaperTrader()
+live_trader = LiveTrader()
 monitor = PositionMonitor()
 
 
@@ -96,14 +98,19 @@ def get_indicators(symbol):
 
 @app.route('/execute-trade', methods=['POST'])
 def execute_trade():
-    """Execute a paper trade. Rejects if LIVE_TRADING_ENABLED and mode is not paper."""
+    """Execute a trade. Routes to LiveTrader when LIVE_TRADING_ENABLED=true and mode=live."""
     try:
         data = request.json
         live_enabled = os.environ.get('LIVE_TRADING_ENABLED', 'false').lower() == 'true'
         mode = data.get('mode', 'paper')
+
         if mode != 'paper' and not live_enabled:
             return jsonify({'error': 'Live trading is disabled. Set LIVE_TRADING_ENABLED=true to enable.'}), 403
-        result = paper_trader.execute(data)
+
+        if mode == 'live' and live_enabled:
+            result = live_trader.execute(data)
+        else:
+            result = paper_trader.execute(data)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -111,16 +118,79 @@ def execute_trade():
 
 @app.route('/close-trade', methods=['POST'])
 def close_trade():
-    """Close an open trade via position review."""
+    """Close an open trade. Uses LiveTrader for live trades, PaperTrader for paper."""
     try:
         data = request.json
         trade_id = data.get('trade_id')
         if not trade_id:
             return jsonify({'error': 'trade_id required'}), 400
-        result = paper_trader.close(trade_id)
+
+        # Check if this is a live trade
+        mode = data.get('mode')
+        if not mode:
+            # Look up trade mode from DB
+            import psycopg2
+            conn = psycopg2.connect(os.getenv('DATABASE_URL', 'postgresql://localhost:5432/grid'))
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT mode FROM trades WHERE id = %s", (trade_id,))
+                row = cur.fetchone()
+                mode = row[0] if row else 'paper'
+                cur.close()
+            finally:
+                conn.close()
+
+        if mode == 'live':
+            result = live_trader.close(trade_id)
+        else:
+            result = paper_trader.close(trade_id)
         return jsonify(result)
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/recover-orders', methods=['POST'])
+def recover_orders():
+    """Crash recovery: find open live trades missing SL/TP exchange orders, place them."""
+    try:
+        live_enabled = os.environ.get('LIVE_TRADING_ENABLED', 'false').lower() == 'true'
+        if not live_enabled:
+            return jsonify({'recovered': 0, 'message': 'Live trading disabled'})
+
+        import psycopg2
+        conn = psycopg2.connect(os.getenv('DATABASE_URL', 'postgresql://localhost:5432/grid'))
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT id, symbol, side, quantity, entry_price, tp_price, sl_price,
+                       exchange_sl_order_id, exchange_tp_order_id, entry_fee
+                FROM trades
+                WHERE status = 'open' AND mode = 'live'
+                  AND (
+                    (sl_price IS NOT NULL AND exchange_sl_order_id IS NULL) OR
+                    (tp_price IS NOT NULL AND exchange_tp_order_id IS NULL)
+                  )
+            """)
+            cols = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            cur.close()
+        finally:
+            conn.close()
+
+        recovered = []
+        for row in rows:
+            trade = dict(zip(cols, row))
+            try:
+                result = live_trader.place_sl_tp(trade)
+                print(f'[RECOVERY] Trade #{trade["id"]}: SL={result["sl_order_id"]} TP={result["tp_order_id"]}')
+                recovered.append({'trade_id': trade['id'], **result})
+            except Exception as e:
+                print(f'[RECOVERY] Failed for trade #{trade["id"]}: {e}')
+                recovered.append({'trade_id': trade['id'], 'error': str(e)})
+
+        return jsonify({'recovered': len(recovered), 'details': recovered})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

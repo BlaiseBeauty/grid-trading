@@ -69,6 +69,26 @@ function broadcast(type, data) {
       wsClients.delete(client);
     }
   }
+
+  // Trigger calibration when trades close (debounced — runs at most once per 30s)
+  if (type === 'positions_closed' || type === 'cycle_complete') {
+    scheduleCalibration();
+  }
+}
+
+let calibrationTimer = null;
+function scheduleCalibration() {
+  if (calibrationTimer) return; // already scheduled
+  calibrationTimer = setTimeout(async () => {
+    calibrationTimer = null;
+    try {
+      const { runCalibration } = require('./agents/calibration-worker');
+      const result = await runCalibration();
+      broadcast('calibration_update', result);
+    } catch (err) {
+      console.error('[CALIBRATION] Auto-run failed:', err.message);
+    }
+  }, 30_000);
 }
 
 // ---------- Routes ----------
@@ -125,6 +145,7 @@ async function registerRoutes() {
   fastify.register(require('./api/notifications'), { prefix: '/api' });
   fastify.register(require('./api/standing-orders'), { prefix: '/api' });
   fastify.register(require('./api/events'), { prefix: '/api' });
+  fastify.register(require('./api/calibration'), { prefix: '/api' });
 
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
@@ -439,6 +460,54 @@ function setupCron() {
     }
   });
 
+  // Hourly equity snapshot for drawdown tracking (independent of agent cycles)
+  const equityDb = require('./db/queries/equity');
+  const portfolioDb = require('./db/queries/portfolio');
+  cron.schedule('15 * * * *', async () => {
+    try {
+      const pv = await portfolioDb.getPortfolioValue();
+      const { queryOne: qo } = require('./db/connection');
+      const openCountRow = await qo("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
+      const openCount = parseInt(openCountRow?.cnt) || 0;
+      await equityDb.insert({
+        cycleNumber: -1, // -1 indicates hourly snapshot, not a cycle
+        totalValue: pv.total_value,
+        realisedPnl: pv.realised_pnl,
+        unrealisedPnl: pv.unrealised_pnl,
+        openPositions: openCount,
+      });
+      console.log(`[CRON] Equity snapshot recorded: $${pv.total_value.toFixed(2)}`);
+    } catch (err) {
+      console.error('[CRON] Equity snapshot failed:', err.message);
+    }
+  });
+
+  // Correlation matrix recomputation every 6 hours
+  const { computeCorrelations } = require('./agents/correlation-calculator');
+  cron.schedule('0 */6 * * *', async () => {
+    console.log('[CRON] Recomputing correlation matrix...');
+    try {
+      const result = await computeCorrelations();
+      broadcast('correlation_update', result);
+      console.log(`[CRON] Correlations updated: ${JSON.stringify(result)}`);
+    } catch (err) {
+      console.error('[CRON] Correlation computation failed:', err.message);
+    }
+  });
+
+  // Daily confidence calibration at 00:00 UTC
+  const { runCalibration } = require('./agents/calibration-worker');
+  cron.schedule('0 0 * * *', async () => {
+    console.log('[CRON] Running daily confidence calibration...');
+    try {
+      const result = await runCalibration();
+      broadcast('calibration_update', result);
+      console.log(`[CRON] Calibration complete: ${result.totalTrades} trades across ${result.buckets.length} buckets`);
+    } catch (err) {
+      console.error('[CRON] Calibration failed:', err.message);
+    }
+  });
+
   // Broadcast live prices every 10 seconds
   const { queryOne: queryOnePrice } = require('./db/connection');
 
@@ -491,6 +560,26 @@ async function start() {
 
     // Start cron
     setupCron();
+
+    // Crash recovery: restore exchange SL/TP orders for live trades missing them
+    if (process.env.LIVE_TRADING_ENABLED === 'true') {
+      try {
+        const res = await fetch(`${PYTHON_ENGINE_URL}/recover-orders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+          signal: AbortSignal.timeout(30000),
+        });
+        const recovery = await res.json();
+        if (recovery.recovered > 0) {
+          console.log(`[BOOT] Crash recovery: restored ${recovery.recovered} exchange order(s)`);
+        } else {
+          console.log('[BOOT] Crash recovery: no orphaned live trades');
+        }
+      } catch (err) {
+        console.error('[BOOT] Crash recovery failed (Python engine may not be ready):', err.message);
+      }
+    }
 
     // Fetch external data + fresh candles on boot
     const { fetchAll } = require('./agents/external-data-fetcher');

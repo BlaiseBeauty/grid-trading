@@ -1,29 +1,29 @@
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@800&family=Instrument+Sans:wght@400;500;600&family=Outfit:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
 
 :root {
-  --void: #050608;
-  --abyss: #090b10;
-  --surface: #0d0f15;
-  --elevated: #12141c;
-  --raised: #171a24;
-  --shelf: #1c1f2c;
+  --void: #ffffff;
+  --abyss: #f8f9fb;
+  --surface: #f1f3f6;
+  --elevated: #e8ebf0;
+  --raised: #dfe2e8;
+  --shelf: #d5d9e2;
 
-  --cyan: #00e5ff;
-  --profit: #00ff88;
-  --loss: #ff2d55;
-  --warn: #ffb800;
-  --ai: #a78bfa;
+  --cyan: #0090a8;
+  --profit: #0a8a4f;
+  --loss: #d6204b;
+  --warn: #c48800;
+  --ai: #7c5cbf;
 
-  --t1: #f4f5f9;
-  --t2: #b8bdd0;
+  --t1: #1a1d2b;
+  --t2: #4a4f65;
   --t3: #6e7590;
-  --t4: #3d4260;
-  --t5: #252940;
+  --t4: #a0a5b8;
+  --t5: #c8cbda;
 
-  --border-0: rgba(255,255,255,0.03);
-  --border-1: rgba(255,255,255,0.06);
-  --border-2: rgba(255,255,255,0.10);
-  --border-3: rgba(255,255,255,0.16);
+  --border-0: rgba(0,0,0,0.04);
+  --border-1: rgba(0,0,0,0.08);
+  --border-2: rgba(0,0,0,0.12);
+  --border-3: rgba(0,0,0,0.18);
 
   --space-xs: 4px;
   --space-sm: 8px;
@@ -115,19 +115,19 @@ input:focus, select:focus { border-color: var(--cyan); }
 .badge-loss { color: var(--loss); background: rgba(255,45,85,0.10); }
 .badge-warn { color: var(--warn); background: rgba(255,184,0,0.10); }
 .badge-ai { color: var(--ai); background: rgba(167,139,250,0.10); }
-.badge-neutral { color: var(--t3); background: rgba(255,255,255,0.05); }
-.badge-cyan { color: var(--cyan); background: rgba(0,229,255,0.10); }
-.badge-draft { color: var(--t3); background: rgba(255,255,255,0.05); }
+.badge-neutral { color: var(--t3); background: rgba(0,0,0,0.05); }
+.badge-cyan { color: var(--cyan); background: rgba(0,144,168,0.10); }
+.badge-draft { color: var(--t3); background: rgba(0,0,0,0.05); }
 .badge-testing { color: var(--ai); background: rgba(167,139,250,0.10); }
 .badge-active { color: var(--profit); background: rgba(0,255,136,0.10); }
 .badge-paused { color: var(--warn); background: rgba(255,184,0,0.10); }
-.badge-retired { color: var(--t4); background: rgba(255,255,255,0.03); }
+.badge-retired { color: var(--t4); background: rgba(0,0,0,0.04); }
 .badge-infant, .badge-learning { color: var(--warn); background: rgba(255,184,0,0.10); }
 .badge-maturing { color: var(--cyan); background: rgba(0,229,255,0.10); }
 .badge-graduated { color: var(--profit); background: rgba(0,255,136,0.10); }
 
 .skeleton {
-  background: linear-gradient(90deg, var(--surface) 25%, var(--elevated) 50%, var(--surface) 75%);
+  background: linear-gradient(90deg, var(--elevated) 25%, var(--raised) 50%, var(--elevated) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
   border-radius: var(--radius-sm);
@@ -141,7 +141,7 @@ input:focus, select:focus { border-color: var(--cyan); }
   .sidebar { transform: translateX(-100%); transition: transform var(--transition-normal); width: 220px; }
   .sidebar.open { transform: translateX(0); }
   .sidebar-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    position: fixed; inset: 0; background: rgba(0,0,0,0.3);
     z-index: 9; display: none;
   }
   .sidebar-overlay.open { display: block; }

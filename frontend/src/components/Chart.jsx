@@ -24,8 +24,8 @@ function MiniChart({ symbol }) {
         fontSize: 10,
       },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.03)' },
-        horzLines: { color: 'rgba(255,255,255,0.03)' },
+        vertLines: { color: 'rgba(0,0,0,0.05)' },
+        horzLines: { color: 'rgba(0,0,0,0.05)' },
       },
       crosshair: { mode: 0 },
       timeScale: {
@@ -41,18 +41,18 @@ function MiniChart({ symbol }) {
     });
 
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: '#00e676',
-      downColor: '#ff1744',
-      borderUpColor: '#00e676',
-      borderDownColor: '#ff1744',
-      wickUpColor: '#00e676',
-      wickDownColor: '#ff1744',
+      upColor: '#0a8a4f',
+      downColor: '#d6204b',
+      borderUpColor: '#0a8a4f',
+      borderDownColor: '#d6204b',
+      wickUpColor: '#0a8a4f',
+      wickDownColor: '#d6204b',
     });
 
     series.applyOptions({
       lastValueVisible: true,
       priceLineVisible: true,
-      priceLineColor: '#00e5ff',
+      priceLineColor: '#0090a8',
       priceLineStyle: 2,
       priceLineWidth: 1,
     });

@@ -489,12 +489,41 @@ In paper mode, your primary goal is GENERATING LEARNING DATA, not capital preser
 - If the risk/reward is reasonable (>1.2) and you have at least 2 confirming signals from different domains, propose the trade.
 - Do NOT apply the same conservative filters you would in live trading. Paper mode exists to explore the edges of the strategy space.
 
-BEARISH REGIME STRATEGIES:
-When regime is trending_down or volatile_bearish, actively consider these approaches:
-- SHORT MOMENTUM: Enter short when price breaks below key support with volume confirmation. Look for bearish MACD cross, RSI trending below 45, and increasing sell-side volume. Template matching still applies — match against bearish templates.
-- BEARISH CONTINUATION: Short on retest of broken support (now resistance). Wait for price to rally back to broken level with weakening momentum (bearish divergence on RSI/MACD). Tighter stops above the broken level.
-- CASH PRESERVATION: If the exchange does not support shorting for a given pair, explicitly propose reducing position sizes and holding USDT. State this in no_action_reasons: "Bearish regime but no short capability — recommending cash preservation."
-- In bearish regimes, long proposals require EXCEPTIONAL confluence (4+ domains, >75% confidence). The default bias should be short or flat.
+REGIME-SPECIFIC STRATEGIES:
+Your direction bias MUST follow the regime. Do NOT default to short or long — follow the signals.
+
+BULLISH (trending_up):
+- LONG MOMENTUM: Enter long when price breaks above resistance with volume confirmation. Look for bullish MACD cross, RSI trending above 55, and increasing buy-side volume.
+- PULLBACK BUY: Buy dips to support in an uptrend. Wait for RSI to pull back to 40-50 range with trend still intact (higher lows holding). Tighter stops below the pullback low.
+- In bullish regimes, short proposals require strong confluence (3+ domains, >70% confidence). The default bias is long or flat.
+
+BEARISH (trending_down):
+- SHORT MOMENTUM: Enter short when price breaks below key support with volume confirmation. Look for bearish MACD cross, RSI trending below 45, and increasing sell-side volume.
+- BEARISH CONTINUATION: Short on retest of broken support (now resistance). Wait for price to rally back to broken level with weakening momentum.
+- In bearish regimes, long proposals require strong confluence (3+ domains, >70% confidence). The default bias is short or flat.
+
+VOLATILE (volatile):
+- Volatility is NOT inherently bearish. Read the signals — they will tell you direction.
+- CONTRARIAN REVERSALS: Extreme fear (F&G <15) or extreme greed (F&G >85) combined with divergences are high-probability setups. Extreme fear is bullish, extreme greed is bearish.
+- BREAKOUT PLAYS: High ATR with directional volume signals a breakout. Follow the volume direction, not your assumption.
+- Use WIDER stops (1.5x normal) to avoid noise. Volatile markets need room to breathe.
+- If signals conflict heavily, propose nothing. But if 3+ domains agree on direction, trust them — volatile markets produce the strongest moves.
+
+RANGING (ranging):
+- MEAN REVERSION: Buy at support, short at resistance. Use Bollinger Bands and RSI extremes.
+- Smaller position sizes. Tighter targets. Ranges eventually break — don't get caught in a breakout against you.
+
+QUIET (quiet):
+- Minimal trading. Quiet often precedes major moves. Use standing orders for breakout entries in either direction.
+
+SIGNAL-DRIVEN PROPOSALS (when no templates match):
+If zero templates match the current regime but you have strong signal confluence (3+ domains, 60%+ confidence), you MAY propose a trade WITHOUT a template match. Requirements:
+- At least 3 independent signal domains agreeing on direction
+- No active anti-patterns
+- Confidence based on signal strength and domain diversity, NOT template history
+- Mark template_id as null in the proposal
+- Thesis must explain why no templates matched and what signal confluence justifies the trade
+This ensures the system can act on strong opportunities even in regimes where historical templates are sparse.
 
 FORCED EXPLORATION (paper mode only):
 If your context shows NO trades have been opened in the last 6 hours AND we are in paper mode:

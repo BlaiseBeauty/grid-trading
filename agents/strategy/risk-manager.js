@@ -7,6 +7,7 @@ const BaseAgent = require('../base-agent');
 const riskLimitsConfig = require('../../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
 const { queryOne, queryAll, query } = require('../../db/connection');
+const { getLatestCorrelations } = require('../correlation-calculator');
 
 class RiskManagerAgent extends BaseAgent {
   constructor() {
@@ -21,7 +22,7 @@ class RiskManagerAgent extends BaseAgent {
     const systemState = await this.getSystemState();
 
     // Code-enforced pre-flight — reject anything that violates hard limits
-    const { passed, codeRejected } = this.preflightCheck(proposals, systemState);
+    const { passed, codeRejected } = await this.preflightCheck(proposals, systemState);
 
     // Store code-rejected opportunities
     for (const rej of codeRejected) {
@@ -84,10 +85,43 @@ class RiskManagerAgent extends BaseAgent {
   /**
    * Hard-coded pre-flight check. Code enforces — AI cannot override these.
    */
-  preflightCheck(proposals, state) {
+  async preflightCheck(proposals, state) {
     const passed = [];
     const codeRejected = [];
     const limits = this.getEffectiveLimits(state);
+
+    // Drawdown check — runs once before per-proposal checks
+    try {
+      const drawdown = await this.computeCurrentDrawdown();
+      if (drawdown !== null && drawdown >= limits.MAX_DRAWDOWN_PCT) {
+        console.log(`[RISK_MANAGER] MAX_DRAWDOWN_PCT breached: ${drawdown.toFixed(2)}% >= ${limits.MAX_DRAWDOWN_PCT}%`);
+        // Trigger SCRAM at crisis level
+        await this.triggerDrawdownScram(drawdown, limits.MAX_DRAWDOWN_PCT);
+        // Reject ALL proposals
+        for (const proposal of proposals || []) {
+          codeRejected.push({
+            symbol: proposal.symbol,
+            direction: proposal.direction,
+            confidence: proposal.confidence,
+            rejection_reason: 'code_enforced',
+            rejection_detail: `max_drawdown_exceeded (${drawdown.toFixed(1)}% >= ${limits.MAX_DRAWDOWN_PCT}%)`,
+            signals_present: proposal.supporting_signals,
+          });
+        }
+        return { passed: [], codeRejected };
+      }
+    } catch (err) {
+      console.warn('[RISK_MANAGER] Drawdown check failed, proceeding:', err.message);
+    }
+
+    // Fetch correlation matrix for correlated exposure check
+    let correlations;
+    try {
+      correlations = await getLatestCorrelations();
+    } catch (err) {
+      console.warn('[RISK_MANAGER] Correlation fetch failed, using defaults:', err.message);
+      correlations = { BTC_ETH: 0.85, BTC_SOL: 0.85, ETH_SOL: 0.85 };
+    }
 
     for (const proposal of proposals || []) {
       const reasons = [];
@@ -118,6 +152,14 @@ class RiskManagerAgent extends BaseAgent {
       // Position size limit
       if ((proposal.position_size_suggestion_pct || 0) > limits.MAX_SINGLE_POSITION_PCT) {
         proposal.position_size_suggestion_pct = limits.MAX_SINGLE_POSITION_PCT;
+      }
+
+      // Correlated exposure check
+      const correlatedExposure = this.computeCorrelatedExposure(
+        proposal, state.openTrades, correlations, state.totalPortfolioValue
+      );
+      if (correlatedExposure > limits.MAX_CORRELATED_EXPOSURE_PCT) {
+        reasons.push(`correlated_exposure_limit (${correlatedExposure.toFixed(1)}% > ${limits.MAX_CORRELATED_EXPOSURE_PCT}%)`);
       }
 
       // SCRAM check
@@ -154,6 +196,106 @@ class RiskManagerAgent extends BaseAgent {
     }
 
     return { passed, codeRejected };
+  }
+
+  /**
+   * Compute the total correlated crypto exposure if this proposal is added.
+   * For each existing open position, the effective additional exposure from
+   * the new trade is: new_size + sum(existing_size * correlation) for all
+   * correlated open positions.
+   */
+  computeCorrelatedExposure(proposal, openTrades, correlations, portfolioValue) {
+    if (!portfolioValue || portfolioValue <= 0) return 0;
+
+    const newSizePct = proposal.position_size_suggestion_pct || 0;
+    const newSymbol = (proposal.symbol || '').split('/')[0]; // e.g. "BTC"
+
+    // Determine directional sign: long = +1, short = -1
+    const newSign = (proposal.direction === 'short' || proposal.direction === 'bearish') ? -1 : 1;
+
+    // Sum correlated exposure from existing open trades
+    let correlatedSum = newSizePct;
+
+    for (const trade of openTrades || []) {
+      const tradeSymbol = (trade.symbol || '').split('/')[0];
+      if (tradeSymbol === newSymbol) continue; // same-symbol dedup handled elsewhere
+
+      // Get correlation between the two symbols
+      const pairKey1 = `${newSymbol}_${tradeSymbol}`;
+      const pairKey2 = `${tradeSymbol}_${newSymbol}`;
+      const corr = correlations[pairKey1] ?? correlations[pairKey2] ?? 0;
+
+      // Only count if correlation > 0.5 (meaningfully correlated)
+      if (Math.abs(corr) <= 0.5) continue;
+
+      // Compute existing position size as % of portfolio
+      const entryPrice = parseFloat(trade.entry_price) || 0;
+      const qty = parseFloat(trade.quantity) || 0;
+      const existingSizePct = (entryPrice * qty / portfolioValue) * 100;
+
+      // Directional sign of existing trade
+      const existingSign = trade.side === 'sell' ? -1 : 1;
+
+      // If both same direction, correlation adds risk; if opposing, it reduces
+      const directionalCorr = corr * newSign * existingSign;
+
+      // Only add to exposure if directionally correlated (same direction + positive corr)
+      if (directionalCorr > 0) {
+        correlatedSum += existingSizePct * Math.abs(corr);
+      }
+    }
+
+    return correlatedSum;
+  }
+
+  /**
+   * Compute current drawdown from high-water mark.
+   * Returns drawdown as a positive percentage, or null if insufficient data.
+   */
+  async computeCurrentDrawdown() {
+    // High-water mark: max total_value ever recorded in equity_snapshots
+    const hwmRow = await queryOne(
+      'SELECT MAX(total_value) as high_water_mark FROM equity_snapshots'
+    );
+    const highWaterMark = parseFloat(hwmRow?.high_water_mark);
+    if (!highWaterMark || highWaterMark <= 0) return null;
+
+    // Current equity: starting capital + realised P&L + unrealised P&L
+    const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
+    const [realisedRow, unrealisedRow] = await Promise.all([
+      queryOne("SELECT COALESCE(SUM(pnl_realised), 0) as total FROM trades WHERE status = 'closed'"),
+      queryOne('SELECT COALESCE(SUM(unrealised_pnl), 0) as total FROM portfolio_state'),
+    ]);
+    const currentEquity = startingCapital
+      + parseFloat(realisedRow?.total || 0)
+      + parseFloat(unrealisedRow?.total || 0);
+
+    if (currentEquity >= highWaterMark) return 0; // No drawdown
+
+    const drawdownPct = ((highWaterMark - currentEquity) / highWaterMark) * 100;
+    return drawdownPct;
+  }
+
+  /**
+   * Trigger a SCRAM at crisis level due to drawdown breach.
+   * Skips if a SCRAM is already active.
+   */
+  async triggerDrawdownScram(currentDrawdown, threshold) {
+    // Check if SCRAM already active
+    const active = await queryOne(
+      "SELECT id FROM scram_events WHERE cleared_at IS NULL LIMIT 1"
+    );
+    if (active) {
+      console.log('[RISK_MANAGER] SCRAM already active — skipping drawdown SCRAM trigger');
+      return;
+    }
+
+    await query(`
+      INSERT INTO scram_events (level, trigger_name, trigger_value, threshold_value)
+      VALUES ('crisis', 'max_drawdown_exceeded', $1, $2)
+    `, [Math.round(currentDrawdown * 100) / 100, threshold]);
+
+    console.log(`[RISK_MANAGER] SCRAM CRISIS activated: drawdown ${currentDrawdown.toFixed(2)}% exceeds ${threshold}%`);
   }
 
   /**

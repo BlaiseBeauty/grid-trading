@@ -585,7 +585,7 @@ export default function Dashboard() {
         }
         .v2-position:hover {
           border-color: var(--v2-border-hover);
-          background: rgba(255,255,255,0.04);
+          background: rgba(0,0,0,0.03);
         }
         .v2-pos-header {
           display: flex;

@@ -1,4 +1,4 @@
-const { queryOne, queryAll } = require('../db/connection');
+const { queryOne, queryAll, query } = require('../db/connection');
 const riskLimitsConfig = require('../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
 const { notifications } = require('../services/notifications');
@@ -131,6 +131,47 @@ async function routes(fastify) {
   fastify.get('/system/scram/history', async (request) => {
     const { limit } = request.query;
     return queryAll('SELECT * FROM scram_events ORDER BY activated_at DESC LIMIT $1', [parseInt(limit) || 20]);
+  });
+
+  // POST /api/system/reset-drawdown-hwm — reset high-water mark to current equity
+  // Allows trading to resume after reviewing a drawdown period.
+  // This deletes all equity snapshots above current equity, effectively resetting the HWM.
+  fastify.post('/system/reset-drawdown-hwm', async (request, reply) => {
+    // Compute current equity
+    const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
+    const [realisedRow, unrealisedRow] = await Promise.all([
+      queryOne("SELECT COALESCE(SUM(pnl_realised), 0) as total FROM trades WHERE status = 'closed'"),
+      queryOne('SELECT COALESCE(SUM(unrealised_pnl), 0) as total FROM portfolio_state'),
+    ]);
+    const currentEquity = startingCapital
+      + parseFloat(realisedRow?.total || 0)
+      + parseFloat(unrealisedRow?.total || 0);
+
+    // Get old HWM for logging
+    const hwmRow = await queryOne('SELECT MAX(total_value) as hwm FROM equity_snapshots');
+    const oldHwm = parseFloat(hwmRow?.hwm || 0);
+
+    // Delete all snapshots with total_value above current equity
+    // This resets the HWM to current equity level
+    await query(
+      'DELETE FROM equity_snapshots WHERE total_value > $1',
+      [currentEquity]
+    );
+
+    // Insert a fresh snapshot at current equity to establish the new HWM
+    await query(`
+      INSERT INTO equity_snapshots (cycle_number, total_value, realised_pnl, unrealised_pnl, open_positions)
+      VALUES (-2, $1, $2, $3, (SELECT COUNT(*)::int FROM trades WHERE status = 'open'))
+    `, [currentEquity, parseFloat(realisedRow?.total || 0), parseFloat(unrealisedRow?.total || 0)]);
+
+    console.log(`[SYSTEM] Drawdown HWM reset: ${oldHwm.toFixed(2)} → ${currentEquity.toFixed(2)}`);
+    fastify.broadcast('hwm_reset', { old_hwm: oldHwm, new_hwm: currentEquity });
+
+    return {
+      old_high_water_mark: Math.round(oldHwm * 100) / 100,
+      new_high_water_mark: Math.round(currentEquity * 100) / 100,
+      message: 'High-water mark reset to current equity. Clear SCRAM separately if active.',
+    };
   });
 
   // POST /api/system/run-cycle — trigger a full agent cycle (fire-and-forget)

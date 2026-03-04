@@ -17,8 +17,8 @@ export default function EquityCurve({ data }) {
         fontSize: 11,
       },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.03)' },
-        horzLines: { color: 'rgba(255,255,255,0.03)' },
+        vertLines: { color: 'rgba(0,0,0,0.05)' },
+        horzLines: { color: 'rgba(0,0,0,0.05)' },
       },
       timeScale: {
         borderColor: 'var(--v2-border)',
@@ -33,9 +33,9 @@ export default function EquityCurve({ data }) {
     });
 
     const areaSeries = chart.addSeries(AreaSeries, {
-      topColor: 'rgba(0, 229, 255, 0.3)',
-      bottomColor: 'rgba(0, 229, 255, 0.02)',
-      lineColor: '#00e5ff',
+      topColor: 'rgba(0, 144, 168, 0.15)',
+      bottomColor: 'rgba(0, 144, 168, 0.02)',
+      lineColor: '#0090a8',
       lineWidth: 2,
     });
 

@@ -31,9 +31,9 @@ export default function Analytics() {
 
     const chartOpts = {
       layout: { background: { color: 'transparent' }, textColor: '#55575e', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.03)' }, horzLines: { color: 'rgba(255,255,255,0.03)' } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.06)', timeVisible: true },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.06)' },
+      grid: { vertLines: { color: 'rgba(0,0,0,0.05)' }, horzLines: { color: 'rgba(0,0,0,0.05)' } },
+      timeScale: { borderColor: 'rgba(0,0,0,0.08)', timeVisible: true },
+      rightPriceScale: { borderColor: 'rgba(0,0,0,0.08)' },
       crosshair: { mode: 0 },
       handleScale: { mouseWheel: true },
       handleScroll: { mouseWheel: true, pressedMouseMove: true },
@@ -41,14 +41,14 @@ export default function Analytics() {
 
     const eqChart = createChart(equityRef.current, chartOpts);
     const eqSeries = eqChart.addSeries(AreaSeries, {
-      topColor: 'rgba(0, 229, 255, 0.25)', bottomColor: 'rgba(0, 229, 255, 0.01)',
-      lineColor: '#00e5ff', lineWidth: 2,
+      topColor: 'rgba(0, 144, 168, 0.15)', bottomColor: 'rgba(0, 144, 168, 0.01)',
+      lineColor: '#0090a8', lineWidth: 2,
     });
 
     const ddChart = createChart(drawdownRef.current, chartOpts);
     const ddSeries = ddChart.addSeries(AreaSeries, {
-      topColor: 'rgba(255, 23, 68, 0.01)', bottomColor: 'rgba(255, 23, 68, 0.2)',
-      lineColor: '#ff1744', lineWidth: 2, invertFilledArea: true,
+      topColor: 'rgba(214, 32, 75, 0.01)', bottomColor: 'rgba(214, 32, 75, 0.15)',
+      lineColor: '#d6204b', lineWidth: 2, invertFilledArea: true,
     });
 
     Promise.all([

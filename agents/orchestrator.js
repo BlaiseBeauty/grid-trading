@@ -261,13 +261,26 @@ async function checkStandingOrders(broadcast) {
       // Check MAX_OPEN_POSITIONS limit (respects bootstrap phase)
       const limits = getRiskLimits();
       let maxPositions = limits.MAX_OPEN_POSITIONS;
+      let minConfidence = limits.MIN_CONFIDENCE_TO_TRADE;
       try {
         const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
         const phase = bootstrapRow?.phase;
         if (phase && BOOTSTRAP[phase]?.MAX_OPEN_POSITIONS != null) {
           maxPositions = BOOTSTRAP[phase].MAX_OPEN_POSITIONS;
         }
+        if (phase && BOOTSTRAP[phase]?.MIN_CONFIDENCE_TO_TRADE != null) {
+          minConfidence = BOOTSTRAP[phase].MIN_CONFIDENCE_TO_TRADE;
+        }
       } catch { /* use default */ }
+
+      // Confidence gate: standing orders must meet MIN_CONFIDENCE_TO_TRADE at trigger time
+      if ((order.confidence || 0) < minConfidence) {
+        console.log(`[MONITOR] Skipping standing order #${order.id} — confidence ${order.confidence} < ${minConfidence}`);
+        await standingOrdersDb.markFailed(order.id, `low_confidence (${order.confidence} < ${minConfidence})`)
+          .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
+        continue;
+      }
+
       const openCount = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
       if ((openCount?.cnt || 0) >= maxPositions) {
         console.log(`[MONITOR] Skipping standing order #${order.id} — ${openCount.cnt} open positions (max ${maxPositions})`);

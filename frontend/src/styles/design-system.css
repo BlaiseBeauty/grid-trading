@@ -1,6 +1,6 @@
 /* ============================================================
-   VAZOM V2 Design System
-   "Bloomberg meets Blade Runner"
+   VAZOM V2 Design System — Light Theme
+   Clean, professional light mode.
 
    All tokens use --v2- prefix to coexist with V1 tokens.
    Import AFTER index.css in main.jsx.
@@ -8,39 +8,39 @@
 
 :root {
   /* ── Backgrounds ── */
-  --v2-bg-primary: #0a0b0e;
-  --v2-bg-secondary: #12141a;
-  --v2-bg-tertiary: #1a1d26;
-  --v2-bg-card: rgba(18, 20, 26, 0.8);
-  --v2-bg-elevated: #1e2130;
-  --v2-bg-hover: rgba(255, 255, 255, 0.03);
+  --v2-bg-primary: #ffffff;
+  --v2-bg-secondary: #f4f5f8;
+  --v2-bg-tertiary: #eaecf1;
+  --v2-bg-card: rgba(244, 245, 248, 0.85);
+  --v2-bg-elevated: #e2e5ec;
+  --v2-bg-hover: rgba(0, 0, 0, 0.03);
 
   /* ── Accent Colors ── */
-  --v2-accent-cyan: #00e5ff;
-  --v2-accent-green: #00e676;
-  --v2-accent-red: #ff1744;
-  --v2-accent-amber: #ffab00;
-  --v2-accent-magenta: #e040fb;
+  --v2-accent-cyan: #0090a8;
+  --v2-accent-green: #0a8a4f;
+  --v2-accent-red: #d6204b;
+  --v2-accent-amber: #c48800;
+  --v2-accent-magenta: #a020c0;
 
   /* ── Text ── */
-  --v2-text-primary: #e8eaed;
-  --v2-text-secondary: #8b8d93;
-  --v2-text-muted: #55575e;
+  --v2-text-primary: #1a1d2b;
+  --v2-text-secondary: #5c6070;
+  --v2-text-muted: #8e92a0;
 
   /* ── Borders ── */
-  --v2-border: rgba(255, 255, 255, 0.06);
-  --v2-border-hover: rgba(255, 255, 255, 0.12);
-  --v2-border-active: rgba(255, 255, 255, 0.18);
+  --v2-border: rgba(0, 0, 0, 0.08);
+  --v2-border-hover: rgba(0, 0, 0, 0.14);
+  --v2-border-active: rgba(0, 0, 0, 0.22);
 
-  /* ── Glow Effects ── */
-  --v2-glow-cyan: 0 0 20px rgba(0, 229, 255, 0.15);
-  --v2-glow-green: 0 0 20px rgba(0, 230, 118, 0.15);
-  --v2-glow-red: 0 0 20px rgba(255, 23, 68, 0.15);
-  --v2-glow-amber: 0 0 20px rgba(255, 171, 0, 0.15);
-  --v2-glow-magenta: 0 0 20px rgba(224, 64, 251, 0.15);
-  --v2-glow-cyan-strong: 0 0 30px rgba(0, 229, 255, 0.3);
-  --v2-glow-green-strong: 0 0 30px rgba(0, 230, 118, 0.3);
-  --v2-glow-red-strong: 0 0 30px rgba(255, 23, 68, 0.3);
+  /* ── Subtle Accent Highlights (replaces glow on light bg) ── */
+  --v2-glow-cyan: 0 0 12px rgba(0, 144, 168, 0.12);
+  --v2-glow-green: 0 0 12px rgba(10, 138, 79, 0.12);
+  --v2-glow-red: 0 0 12px rgba(214, 32, 75, 0.12);
+  --v2-glow-amber: 0 0 12px rgba(196, 136, 0, 0.12);
+  --v2-glow-magenta: 0 0 12px rgba(160, 32, 192, 0.12);
+  --v2-glow-cyan-strong: 0 0 20px rgba(0, 144, 168, 0.2);
+  --v2-glow-green-strong: 0 0 20px rgba(10, 138, 79, 0.2);
+  --v2-glow-red-strong: 0 0 20px rgba(214, 32, 75, 0.2);
 
   /* ── Spacing ── */
   --v2-space-xs: 4px;
@@ -70,12 +70,12 @@
   --v2-font-heading: 'Outfit', sans-serif;
 
   /* ── Glass Morphism ── */
-  --v2-glass-bg: rgba(18, 20, 26, 0.6);
+  --v2-glass-bg: rgba(255, 255, 255, 0.7);
   --v2-glass-blur: blur(12px);
-  --v2-glass-border: rgba(255, 255, 255, 0.08);
+  --v2-glass-border: rgba(0, 0, 0, 0.08);
 
   /* ── Shadows ── */
-  --v2-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --v2-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --v2-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --v2-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --v2-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --v2-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
 }

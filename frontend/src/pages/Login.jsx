@@ -75,7 +75,7 @@ export default function Login() {
           letter-spacing: 10px;
           color: var(--v2-accent-cyan);
           margin-bottom: var(--v2-space-xs);
-          text-shadow: 0 0 30px rgba(0,229,255,0.3);
+          text-shadow: none;
         }
         .v2-login-subtitle {
           font-family: var(--v2-font-body);
@@ -104,7 +104,7 @@ export default function Login() {
         }
         .v2-login-input:focus {
           border-color: var(--v2-accent-cyan);
-          box-shadow: 0 0 0 1px rgba(0,229,255,0.1);
+          box-shadow: 0 0 0 1px rgba(0,144,168,0.2);
         }
         .v2-login-input::placeholder {
           color: var(--v2-text-muted);
@@ -124,7 +124,7 @@ export default function Login() {
           cursor: pointer;
         }
         .v2-login-btn:hover {
-          box-shadow: 0 0 30px rgba(0,229,255,0.25);
+          box-shadow: 0 2px 12px rgba(0,144,168,0.2);
         }
         .v2-login-loading {
           display: flex;

@@ -43,11 +43,11 @@ class PaperTrader:
         else:
             actual_price = entry_price * (1 - slippage_pct)
 
-        # Calculate fees
-        fee = quantity * actual_price * self.TAKER_FEE
+        # Calculate entry fee
+        entry_fee = quantity * actual_price * self.TAKER_FEE
         slippage_bps = abs(actual_price - entry_price) / entry_price * 10000
 
-        # Store trade in DB
+        # Store trade in DB (with entry_fee for deduction at close)
         conn = self._get_db()
         try:
             cur = conn.cursor()
@@ -57,10 +57,10 @@ class PaperTrader:
                     tp_price, sl_price, template_id, execution_tier, confidence,
                     mode, cycle_number, agent_decision_id, reasoning, bootstrap_phase,
                     entry_confidence, expected_fill_price, actual_fill_price,
-                    slippage_bps, status
+                    slippage_bps, entry_fee, status
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    'paper', %s, %s, %s, %s, %s, %s, %s, %s, 'open'
+                    'paper', %s, %s, %s, %s, %s, %s, %s, %s, %s, 'open'
                 ) RETURNING id
             """, (
                 symbol,
@@ -80,6 +80,7 @@ class PaperTrader:
                 entry_price,
                 actual_price,
                 slippage_bps,
+                round(entry_fee, 4),
             ))
 
             trade_id = cur.fetchone()[0]
@@ -96,7 +97,7 @@ class PaperTrader:
             'requested_price': entry_price,
             'fill_price': round(actual_price, 8),
             'slippage_bps': round(slippage_bps, 2),
-            'fee': round(fee, 4),
+            'fee': round(entry_fee, 4),
             'mode': 'paper',
         }
 
@@ -139,17 +140,22 @@ class PaperTrader:
             else:
                 pnl = (entry_price - exit_price) * quantity
 
-            pnl_pct = ((exit_price - entry_price) / entry_price * 100) if trade['side'] == 'buy' \
-                else ((entry_price - exit_price) / entry_price * 100)
+            # Deduct round-trip fees from P&L
+            entry_fee = float(trade['entry_fee']) if trade.get('entry_fee') else quantity * entry_price * self.TAKER_FEE
+            exit_fee = quantity * exit_price * self.TAKER_FEE
+            fees_paid = entry_fee + exit_fee
+            pnl -= fees_paid
+
+            pnl_pct = (pnl / (quantity * entry_price)) * 100
 
             # Update trade in DB
             cur.execute("""
                 UPDATE trades SET
-                    exit_price = %s, pnl_realised = %s, pnl_pct = %s,
+                    exit_price = %s, pnl_realised = %s, pnl_pct = %s, fees_paid = %s,
                     status = 'closed', closed_at = NOW(), close_reason = 'position_review'
                 WHERE id = %s
                 RETURNING id
-            """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), trade_id))
+            """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), round(fees_paid, 4), trade_id))
 
             conn.commit()
             cur.close()
@@ -164,5 +170,6 @@ class PaperTrader:
             'exit_price': round(exit_price, 8),
             'pnl': round(pnl, 4),
             'pnl_pct': round(pnl_pct, 4),
+            'fees_paid': round(fees_paid, 4),
             'close_reason': 'position_review',
         }
