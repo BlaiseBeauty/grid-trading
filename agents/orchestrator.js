@@ -695,7 +695,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     for (const p of candidateProposals) {
       const missing = REQUIRED_PROPOSAL_FIELDS.filter(f => !p[f]);
       // Also check for entry_price or trigger_price (standing orders use trigger)
-      if (!p.entry_price && !p.trigger_price) missing.push('entry_price');
+      // Market orders don't require entry_price — it's resolved at execution time
+      if (!p.entry_price && !p.trigger_price && p.entry_type !== 'market') missing.push('entry_price');
       if (!p.sl_price && !p.stop_loss) missing.push('stop_loss');
       if (!p.tp_price && !p.take_profit) missing.push('take_profit');
       if (missing.length === 0) {
@@ -869,6 +870,13 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         console.warn('[ORCHESTRATOR] Correlated exposure check failed:', err.message);
       }
 
+      // Resolve entry_price for market orders
+      if (!trade.entry_price) {
+        try {
+          const row = await marketDataDb.getLatestClose(trade.symbol);
+          if (row) trade.entry_price = parseFloat(row.close);
+        } catch (e) { /* will fail at calculateQuantity if still null */ }
+      }
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
       const result = await executeTrade({
         symbol: trade.symbol,
