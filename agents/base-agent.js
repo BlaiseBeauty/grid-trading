@@ -237,20 +237,24 @@ class BaseAgent {
       console.log(`[${this.name.toUpperCase()}] Completed in ${durationMs}ms — ${storedCount}/${parsed.signals?.length || 0} signals stored, $${costUsd.toFixed(4)}`);
 
     } catch (err) {
-      decision = await decisionsDb.create({
-        agent_name: this.name,
-        agent_layer: this.layer,
-        cycle_number: cycleNumber,
-        model_used: this.model,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        cost_usd: costUsd,
-        reasoning: null,
-        confidence_score: null,
-        output_json: null,
-        duration_ms: Date.now() - start,
-        error: err.message,
-      });
+      try {
+        decision = await decisionsDb.create({
+          agent_name: this.name,
+          agent_layer: this.layer,
+          cycle_number: cycleNumber,
+          model_used: this.model,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cost_usd: costUsd,
+          reasoning: null,
+          confidence_score: null,
+          output_json: null,
+          duration_ms: Date.now() - start,
+          error: err.message,
+        });
+      } catch (dbErr) {
+        console.error(`[${this.name.toUpperCase()}] Failed to store decision:`, dbErr.message, dbErr.stack);
+      }
       console.error(`[${this.name.toUpperCase()}] Error:`, err.message);
     }
 
