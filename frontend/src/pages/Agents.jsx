@@ -299,7 +299,7 @@ export default function Agents() {
         .v2-ac-stats { display: flex; align-items: center; gap: var(--v2-space-sm); flex-wrap: wrap; }
         .v2-ac-stat { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-muted); }
         .v2-ac-cost { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-accent-magenta); }
-        .v2-ac-model { font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; padding: 1px 5px; border-radius: 3px; background: rgba(0,0,0,0.03); color: var(--v2-text-muted); border: 1px solid var(--v2-border); margin-left: auto; }
+        .v2-ac-model { font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; padding: 1px 5px; border-radius: 3px; background: rgba(255,255,255,0.04); color: var(--v2-text-muted); border: 1px solid var(--v2-border); margin-left: auto; }
         .v2-ac-model--opus { color: var(--v2-accent-magenta); border-color: rgba(224,64,251,0.3); background: rgba(224,64,251,0.05); }
 
         .v2-section-title { font-family: var(--v2-font-data); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted); margin-bottom: var(--v2-space-md); }

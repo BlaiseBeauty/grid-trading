@@ -306,7 +306,7 @@ export default function StrategyLab() {
         .v2-tag {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
           padding: 2px 6px; border-radius: 3px;
-          background: rgba(0,0,0,0.04); color: var(--v2-text-secondary);
+          background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border);
         }
         .v2-tag-magenta { color: var(--v2-accent-magenta); border-color: rgba(224,64,251,0.3); background: rgba(224,64,251,0.05); }
@@ -318,7 +318,7 @@ export default function StrategyLab() {
         }
         .v2-conf-high { color: var(--v2-accent-green); background: rgba(0,230,118,0.08); border: 1px solid rgba(0,230,118,0.2); }
         .v2-conf-med { color: var(--v2-accent-amber); background: rgba(255,171,0,0.08); border: 1px solid rgba(255,171,0,0.2); }
-        .v2-conf-low { color: var(--v2-text-muted); background: rgba(0,0,0,0.03); border: 1px solid var(--v2-border); }
+        .v2-conf-low { color: var(--v2-text-muted); background: rgba(255,255,255,0.03); border: 1px solid var(--v2-border); }
 
         /* Anti-patterns */
         .v2-ap-row { padding: var(--v2-space-sm) 0; border-bottom: 1px solid var(--v2-border); }
