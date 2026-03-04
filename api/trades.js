@@ -1,5 +1,8 @@
 const tradesDb = require('../db/queries/trades');
-const { queryAll } = require('../db/connection');
+const { queryAll, queryOne } = require('../db/connection');
+const costsDb = require('../db/queries/costs');
+const Anthropic = require('@anthropic-ai/sdk');
+const anthropic = new Anthropic();
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -75,6 +78,96 @@ async function routes(fastify) {
       WHERE ts.trade_id = $1
       ORDER BY ts.created_at
     `, [request.params.id]);
+  });
+
+  // POST /api/trades/:id/explain — AI-generated trade explanation via Haiku
+  fastify.post('/trades/:id/explain', {
+    schema: { body: { type: 'object', properties: {} } },
+  }, async (request, reply) => {
+    const tradeId = request.params.id;
+
+    // Assemble full context: trade + synthesizer output + regime + signals
+    const context = await queryOne(`
+      SELECT t.*,
+        ad.output_json as synth_output,
+        ad.reasoning as synth_reasoning,
+        (SELECT row_to_json(r) FROM (
+          SELECT regime, confidence, transition_probabilities
+          FROM market_regime WHERE created_at <= t.opened_at
+          ORDER BY created_at DESC LIMIT 1
+        ) r) as regime_at_open,
+        (SELECT json_agg(json_build_object(
+          'agent', s.agent_name, 'type', s.signal_type,
+          'category', s.signal_category, 'direction', s.direction,
+          'strength', COALESCE(ts.strength_at_entry, s.strength), 'reasoning', s.reasoning
+        )) FROM trade_signals ts
+        JOIN signals s ON s.id = ts.signal_id
+        WHERE ts.trade_id = t.id) as signals
+      FROM trades t
+      LEFT JOIN agent_decisions ad ON ad.id = t.agent_decision_id
+      WHERE t.id = $1
+    `, [tradeId]);
+
+    if (!context) return reply.code(404).send({ error: 'Trade not found' });
+
+    // Extract relevant fields for the prompt (avoid sending full raw reasoning)
+    const promptData = {
+      trade: {
+        id: context.id, symbol: context.symbol, side: context.side,
+        entry_price: context.entry_price, exit_price: context.exit_price,
+        tp_price: context.tp_price, sl_price: context.sl_price,
+        pnl_realised: context.pnl_realised, pnl_pct: context.pnl_pct,
+        confidence: context.confidence, status: context.status,
+        mode: context.mode, opened_at: context.opened_at, closed_at: context.closed_at,
+        reasoning: context.reasoning,
+      },
+      regime: context.regime_at_open,
+      signals: context.signals || [],
+      synthesizer: context.synth_output ? {
+        actions: context.synth_output.actions,
+        standing_orders: context.synth_output.standing_orders,
+        no_action_reasons: context.synth_output.no_action_reasons,
+        market_assessment: context.synth_output.market_assessment,
+        meta: context.synth_output.meta,
+      } : null,
+    };
+
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 2048,
+        system: `You are GRID's trade narrator. Given the full context of an autonomous trade decision, write a 200-300 word explanation structured as:
+
+1. REGIME — what regime was active, at what confidence, transition outlook
+2. SIGNALS — what the knowledge agents detected, grouped by domain
+3. THESIS — why the Synthesizer chose this symbol, direction, and template
+4. REJECTED — what alternatives were considered and why they were passed
+5. COUNTERFACTUAL — what would have had to be different for this trade to NOT happen (regime change, missing signals, anti-pattern trigger)
+
+Write in clear direct prose. No bullet points. Reference specific signal types, strengths, and template names. Be precise about numbers.`,
+        messages: [{ role: 'user', content: JSON.stringify(promptData) }],
+      });
+
+      const explanation = response.content[0]?.text || '';
+      const inputTokens = response.usage?.input_tokens || 0;
+      const outputTokens = response.usage?.output_tokens || 0;
+      const costUsd = (inputTokens * 0.8 + outputTokens * 4.0) / 1_000_000;
+
+      // Record cost
+      try {
+        await costsDb.record({
+          service: 'anthropic', agent_name: 'trade_explainer',
+          model: 'claude-haiku-4-5-20251001',
+          input_tokens: inputTokens, output_tokens: outputTokens,
+          cost_usd: costUsd, cycle_number: null,
+        });
+      } catch (e) { /* non-critical */ }
+
+      return { explanation, model: 'claude-haiku-4-5-20251001', tokens: inputTokens + outputTokens, cost_usd: costUsd };
+    } catch (err) {
+      console.error('[EXPLAIN] Haiku call failed:', err.message);
+      return reply.code(500).send({ error: 'Failed to generate explanation' });
+    }
   });
 
   // H-14: Validate body before closing trade

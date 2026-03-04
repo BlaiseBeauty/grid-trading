@@ -6,6 +6,8 @@ import Modal from './Modal';
 
 export default function TradeDetail({ trade, open, onClose }) {
   const [signals, setSignals] = useState([]);
+  const [explanation, setExplanation] = useState(null);
+  const [explainLoading, setExplainLoading] = useState(false);
 
   useEffect(() => {
     if (!trade?.id || !open) return;
@@ -57,6 +59,31 @@ export default function TradeDetail({ trade, open, onClose }) {
             <div className="v2-td-reasoning">{trade.reasoning}</div>
           </div>
         )}
+
+        <div className="v2-td-section v2-td-full">
+          <div className="v2-td-section-title">AI Explanation</div>
+          {explanation ? (
+            <>
+              <div className="v2-td-reasoning">{explanation.text}</div>
+              <div className="v2-td-explain-meta">haiku · ${explanation.cost?.toFixed(4)}</div>
+            </>
+          ) : (
+            <button
+              className="v2-explain-btn"
+              disabled={explainLoading}
+              onClick={async () => {
+                setExplainLoading(true);
+                try {
+                  const res = await api(`/trades/${trade.id}/explain`, { method: 'POST', body: '{}' });
+                  setExplanation({ text: res.explanation, cost: res.cost_usd });
+                } catch { setExplanation({ text: 'Failed to generate explanation.', cost: 0 }); }
+                setExplainLoading(false);
+              }}
+            >
+              {explainLoading ? 'Generating...' : 'Explain This Trade'}
+            </button>
+          )}
+        </div>
 
         {signals.length > 0 && (
           <div className="v2-td-section v2-td-full">
@@ -126,6 +153,19 @@ export default function TradeDetail({ trade, open, onClose }) {
         .v2-td-signal-str {
           font-family: var(--v2-font-data); font-size: 11px;
           color: var(--v2-text-primary); min-width: 30px; text-align: right;
+        }
+        .v2-explain-btn {
+          font-family: var(--v2-font-data); font-size: 11px; font-weight: 500;
+          padding: 6px 14px; border-radius: 4px; cursor: pointer;
+          background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
+          border: 1px solid var(--v2-border); transition: all 0.15s;
+        }
+        .v2-explain-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); color: var(--v2-text-primary); }
+        .v2-explain-btn:disabled { opacity: 0.5; cursor: wait; }
+        .v2-td-explain-meta {
+          font-family: var(--v2-font-data); font-size: 9px;
+          color: var(--v2-text-muted); margin-top: var(--v2-space-xs);
+          letter-spacing: 0.5px;
         }
         .v2-td-tags { display: flex; gap: var(--v2-space-xs); flex-wrap: wrap; }
         .v2-tag {
