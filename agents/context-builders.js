@@ -18,6 +18,40 @@ const {
 
 
 // ============================================================================
+// TOKEN BUDGET CONSTANTS & UTILITIES
+// ============================================================================
+
+const CONTEXT_LIMITS = {
+  MAX_TRADES_RAW: 30,          // Max raw trade rows any agent receives
+  MAX_SIGNALS_RAW: 50,         // Max raw signal rows
+  MAX_CANDLES_RAW: 100,        // Max candle rows
+  MAX_CANDLES_TREND: 200,      // For agents needing longer MA lookback
+  MAX_LEARNINGS_CHARS: 8000,   // Truncate injected learnings string at this
+  MAX_DECISIONS_RAW: 20,       // Max recent agent_decisions rows
+};
+
+function estimateTokens(str) {
+  // ~4 chars per token is a reasonable approximation
+  return Math.ceil(str.length / 4);
+}
+
+function warnIfLarge(agentName, context) {
+  const tokens = estimateTokens(JSON.stringify(context));
+  if (tokens > 150000) {
+    console.warn(
+      `[CONTEXT] ${agentName} context is ~${tokens} estimated tokens — approaching limit`
+    );
+  }
+  return context;
+}
+
+function truncateLearnings(str) {
+  if (!str || str.length <= CONTEXT_LIMITS.MAX_LEARNINGS_CHARS) return str;
+  return str.slice(0, CONTEXT_LIMITS.MAX_LEARNINGS_CHARS) + ' [truncated]';
+}
+
+
+// ============================================================================
 // KNOWLEDGE AGENT CONTEXT BUILDERS
 // ============================================================================
 
@@ -40,7 +74,7 @@ async function buildTrendContext(trigger) {
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
           AND timestamp > NOW() - INTERVAL '7 days'
-        ORDER BY timestamp DESC LIMIT 50
+        ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_TREND}
       `, [symbol, tf]);
     }
 
@@ -56,12 +90,12 @@ async function buildTrendContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('trendAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('trendAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['trend']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: contextParts,
     section2_context: {
       regime: regime.regime,
@@ -70,6 +104,7 @@ async function buildTrendContext(trigger) {
     section3_memory: memory,
     section4_task: `Analyse trend indicators for ${symbols.join(', ')} across 1h/4h/1d timeframes. Output signals in JSON.`
   });
+  return warnIfLarge('trend_agent', context);
 }
 
 
@@ -92,7 +127,7 @@ async function buildMomentumContext(trigger) {
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
           AND timestamp > NOW() - INTERVAL '7 days'
-        ORDER BY timestamp DESC LIMIT 50
+        ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_TREND}
       `, [symbol, tf]);
     }
 
@@ -108,17 +143,18 @@ async function buildMomentumContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('momentumAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('momentumAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['momentum']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: contextParts,
     section2_context: { regime: regime.regime, regime_confidence: regime.confidence },
     section3_memory: memory,
     section4_task: `Analyse momentum/oscillator indicators for ${symbols.join(', ')}. Identify divergences, oversold/overbought extremes, and multi-indicator alignment. Output signals in JSON.`
   });
+  return warnIfLarge('momentum_agent', context);
 }
 
 
@@ -141,7 +177,7 @@ async function buildVolatilityContext(trigger) {
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
           AND timestamp > NOW() - INTERVAL '7 days'
-        ORDER BY timestamp DESC LIMIT 50
+        ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_TREND}
       `, [symbol, tf]);
     }
 
@@ -157,17 +193,18 @@ async function buildVolatilityContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('volatilityAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('volatilityAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['volatility']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: contextParts,
     section2_context: { regime: regime.regime, regime_confidence: regime.confidence },
     section3_memory: memory,
     section4_task: `Analyse volatility indicators for ${symbols.join(', ')}. Focus on squeezes, expansion/contraction, breakouts, and volatility regime changes. Output signals in JSON.`
   });
+  return warnIfLarge('volatility_agent', context);
 }
 
 
@@ -190,7 +227,7 @@ async function buildVolumeContext(trigger) {
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
           AND timestamp > NOW() - INTERVAL '7 days'
-        ORDER BY timestamp DESC LIMIT 50
+        ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_TREND}
       `, [symbol, tf]);
     }
 
@@ -206,17 +243,18 @@ async function buildVolumeContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('volumeAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('volumeAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['volume']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: contextParts,
     section2_context: { regime: regime.regime, regime_confidence: regime.confidence },
     section3_memory: memory,
     section4_task: `Analyse volume indicators for ${symbols.join(', ')}. Identify OBV divergences, VWAP levels, volume profile S/R, accumulation/distribution, and volume surges. Output signals in JSON.`
   });
+  return warnIfLarge('volume_agent', context);
 }
 
 
@@ -249,7 +287,7 @@ async function buildPatternContext(trigger) {
         SELECT open, high, low, close, volume, timestamp
         FROM market_data WHERE symbol = $1 AND timeframe = $2
           AND timestamp > NOW() - INTERVAL '7 days'
-        ORDER BY timestamp DESC LIMIT 100
+        ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_TREND}
       `, [symbol, tf]);
     }
 
@@ -274,17 +312,18 @@ async function buildPatternContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('patternAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('patternAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['pattern']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: contextParts,
     section2_context: { regime: regime.regime, regime_confidence: regime.confidence },
     section3_memory: memory,
     section4_task: `Identify candlestick, chart, harmonic patterns and key S/R structure for ${symbols.join(', ')}. Deprioritise noise-flagged pattern types. Output signals in JSON.`
   });
+  return warnIfLarge('pattern_agent', context);
 }
 
 
@@ -309,7 +348,7 @@ async function buildOrderFlowContext(trigger) {
       SELECT open, high, low, close, volume, timestamp
       FROM market_data WHERE symbol = $1 AND timeframe = '1h'
         AND timestamp > NOW() - INTERVAL '3 days'
-      ORDER BY timestamp DESC LIMIT 48
+      ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_RAW}
     `, [symbol]);
 
     contextParts.push({
@@ -319,12 +358,12 @@ async function buildOrderFlowContext(trigger) {
     });
   }
 
-  const memory = await getRelevantMemory('orderFlowAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('orderFlowAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['order_flow']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       per_symbol: contextParts,
       aggregated: coinglass
@@ -333,6 +372,7 @@ async function buildOrderFlowContext(trigger) {
     section3_memory: memory,
     section4_task: `Analyse order flow and derivatives data for ${symbols.join(', ')}. Focus on liquidation clusters, funding extremes, OI divergences, and positioning. Output signals in JSON.`
   });
+  return warnIfLarge('order_flow_agent', context);
 }
 
 
@@ -368,7 +408,7 @@ async function buildMacroContext(trigger) {
       SELECT close, timestamp FROM market_data
       WHERE symbol = $1 AND timeframe = '1d'
         AND timestamp > NOW() - INTERVAL '45 days'
-      ORDER BY timestamp DESC LIMIT 30
+      ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_RAW}
     `, [sym]);
     if (crossAsset[sym].length === 0 && sym !== 'BTC/USDT') {
       missingMacro.push(sym);
@@ -390,12 +430,12 @@ async function buildMacroContext(trigger) {
     `);
   } catch { /* table may be empty */ }
 
-  const memory = await getRelevantMemory('macroAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('macroAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['macro', 'on_chain']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       glassnode, cryptoquant, fred,
       cross_asset_prices: crossAsset,
@@ -410,6 +450,7 @@ async function buildMacroContext(trigger) {
     section3_memory: memory,
     section4_task: `Analyse macro environment and on-chain data. Assess DXY, yields, VIX, MVRV cycle position, exchange flows, and upcoming events. Output signals in JSON.`
   });
+  return warnIfLarge('macro_agent', context);
 }
 
 
@@ -440,12 +481,12 @@ async function buildSentimentContext(trigger) {
     fearGreed = { fear_greed_index: { data: null, note: 'Fear & Greed Index: DATA UNAVAILABLE — do not assume any value. Treat sentiment as unknown.' } };
   }
 
-  const memory = await getRelevantMemory('sentimentAgent', {
+  const memory = truncateLearnings(await getRelevantMemory('sentimentAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['sentiment']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       fear_greed: fearGreed,
       per_asset_sentiment: santiment,
@@ -456,6 +497,7 @@ async function buildSentimentContext(trigger) {
     section3_memory: memory,
     section4_task: `Analyse sentiment data for ${symbols.join(', ')}. Identify emotional extremes, social volume spikes, sentiment divergences, whale activity, and on-chain signals (SOPR, exchange flows, active addresses, supply in profit). Output signals in JSON.`
   });
+  return warnIfLarge('sentiment_agent', context);
 }
 
 
@@ -472,11 +514,34 @@ async function buildSynthesizerContext(trigger) {
   const scram = await getScramState();
   const bootstrap = await getBootstrapPhase();
 
-  // Top 50 active signals by decayed strength (was: all, often 200+)
-  const rawSignals = await getActiveSignals(null, '6 hours', 50);
+  // Fetch active signals (generous limit), then cap with per-agent coverage
+  const rawSignals = await getActiveSignals(null, '6 hours', 200);
+
+  // Cap: keep highest-confidence signals, but ensure at least 1 per agent category
+  let cappedSignals;
+  if (rawSignals.length > CONTEXT_LIMITS.MAX_SIGNALS_RAW) {
+    const byCategory = {};
+    for (const s of rawSignals) {
+      const cat = s.signal_category;
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(s);
+    }
+    const guaranteed = [];
+    const rest = [];
+    for (const sigs of Object.values(byCategory)) {
+      sigs.sort((a, b) => (b.decayed_strength || b.strength) - (a.decayed_strength || a.strength));
+      guaranteed.push(sigs[0]);
+      rest.push(...sigs.slice(1));
+    }
+    rest.sort((a, b) => (b.decayed_strength || b.strength) - (a.decayed_strength || a.strength));
+    const remaining = Math.max(0, CONTEXT_LIMITS.MAX_SIGNALS_RAW - guaranteed.length);
+    cappedSignals = [...guaranteed, ...rest.slice(0, remaining)];
+  } else {
+    cappedSignals = rawSignals;
+  }
 
   // Slim signal payload — drop parameters, agent_name, agent_decision_id, etc.
-  const signals = rawSignals.map(s => ({
+  const signals = cappedSignals.map(s => ({
     id: s.id,
     symbol: s.symbol,
     signal_type: s.signal_type,
@@ -556,19 +621,19 @@ async function buildSynthesizerContext(trigger) {
   }
 
   // Memory injection (2000 token budget)
-  const memory = await getRelevantMemory('strategySynthesizer', {
+  const memory = truncateLearnings(await getRelevantMemory('strategySynthesizer', {
     symbols: [...new Set(signals.map(s => s.symbol))],
     assetClasses: ['crypto'],
     regime: regime.regime,
     signalCategories: [...new Set(signals.map(s => s.signal_category))]
-  });
+  }));
 
   // Exploration context (passed from orchestrator via base-agent spread)
   const hoursSinceLastTrade = trigger.hoursSinceLastTrade ?? null;
   const forcedExploration = trigger.forcedExploration || false;
   const paperMode = process.env.LIVE_TRADING_ENABLED !== 'true';
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       active_signals: signals,
       signal_cooccurrence: cooccurrence
@@ -593,6 +658,7 @@ async function buildSynthesizerContext(trigger) {
     section3_memory: memory,
     section4_task: `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`
   });
+  return warnIfLarge('strategy_synthesizer', context);
 }
 
 
@@ -644,14 +710,14 @@ async function buildRiskManagerContext(trigger) {
   } catch { /* table may be empty */ }
 
   // Memory (800 token budget)
-  const memory = await getRelevantMemory('riskManager', {
+  const memory = truncateLearnings(await getRelevantMemory('riskManager', {
     symbols: heldSymbols,
     assetClasses: [...new Set((portfolio.positions || []).map(p => p.asset_class))],
     regime: (await getCurrentRegime()).regime,
     signalCategories: ['risk']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       proposal: parentDecision,
       trigger_type: trigger.trigger
@@ -671,6 +737,7 @@ async function buildRiskManagerContext(trigger) {
       ? `Review all open positions. Check if stops need tightening, if new risks emerged, if correlation changed.`
       : `Validate the trade proposal against all risk limits. Approve, modify, or reject with specific reasoning.`
   });
+  return warnIfLarge('risk_manager', context);
 }
 
 
@@ -683,7 +750,7 @@ async function buildRegimeContext(trigger) {
       SELECT open, high, low, close, volume, timestamp
       FROM market_data WHERE symbol = $1 AND timeframe = '1d'
         AND timestamp > NOW() - INTERVAL '45 days'
-      ORDER BY timestamp DESC LIMIT 30
+      ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_RAW}
     `, [sym]);
   }
 
@@ -697,6 +764,7 @@ async function buildRegimeContext(trigger) {
       FROM market_data WHERE symbol = $1 AND timeframe = '1h'
         AND timestamp > NOW() - INTERVAL '24 hours'
       ORDER BY timestamp DESC
+      LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_RAW}
     `, [sym]);
     if (candles.length > 0) {
       const latest = candles[0];
@@ -737,7 +805,7 @@ async function buildRegimeContext(trigger) {
     FROM market_regime ORDER BY created_at DESC LIMIT 10
   `);
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       price_data_30d: priceData,
       intraday_24h: intradayData,
@@ -752,6 +820,7 @@ async function buildRegimeContext(trigger) {
     section3_memory: null,
     section4_task: `Classify current market regime. The intraday_24h section contains the most recent price action (1h candles + 24h change %) — weigh this heavily alongside the 30-day daily data. Estimate transition probabilities for next 7 days. Include MVRV cycle overlay.`
   });
+  return warnIfLarge('regime_classifier', context);
 }
 
 
@@ -778,7 +847,8 @@ async function buildPositionReviewerContext(trigger) {
     LEFT JOIN signals s ON s.id = ts.signal_id
     WHERE t.status = 'open'
     GROUP BY t.id
-    ORDER BY t.opened_at DESC
+    ORDER BY t.created_at DESC
+    LIMIT ${CONTEXT_LIMITS.MAX_TRADES_RAW}
   `);
 
   // Skip if no open positions
@@ -829,14 +899,14 @@ async function buildPositionReviewerContext(trigger) {
   } catch { /* may not exist */ }
 
   // Memory injection (800 token budget)
-  const memory = await getRelevantMemory('positionReviewer', {
+  const memory = truncateLearnings(await getRelevantMemory('positionReviewer', {
     symbols: heldSymbols,
     assetClasses: ['crypto'],
     regime: regime.regime,
     signalCategories: ['risk']
-  });
+  }));
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
       open_positions: openTrades,
       active_signals_per_symbol: activeSignals,
@@ -856,6 +926,7 @@ async function buildPositionReviewerContext(trigger) {
     section3_memory: memory,
     section4_task: `Review all ${openTrades.length} open position(s). For each, decide: HOLD, CLOSE, TIGHTEN, or PARTIAL_CLOSE. Output JSON with reviews array.`
   });
+  return warnIfLarge('position_reviewer', context);
 }
 
 
@@ -864,20 +935,63 @@ async function buildPositionReviewerContext(trigger) {
 // ============================================================================
 
 async function buildPerformanceAnalystContext(trigger) {
-  // All trades closed today
-  const todayTrades = await queryAll(`
-    SELECT t.*, ts.signal_id,
-           s.signal_type, s.signal_category, s.direction as signal_direction, s.strength as signal_strength
+  // --- Pre-aggregated trade stats (replaces unbounded raw trade dump) ---
+
+  // Overall stats
+  const overallStats = await queryOne(`
+    SELECT COUNT(*)::int as total_trades,
+           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::numeric
+                 / NULLIF(COUNT(*), 0), 4) as win_rate,
+           ROUND(AVG(pnl_pct)::numeric, 4) as avg_return,
+           ROUND(SUM(pnl_pct)::numeric, 4) as total_pnl
+    FROM trades WHERE status = 'closed'
+  `);
+
+  // Breakdown by symbol
+  const bySymbol = await queryAll(`
+    SELECT symbol, COUNT(*)::int as trades,
+           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(AVG(pnl_pct)::numeric, 4) as avg_return,
+           ROUND(SUM(pnl_pct)::numeric, 4) as total_pnl
+    FROM trades WHERE status = 'closed'
+    GROUP BY symbol ORDER BY total_pnl DESC
+  `);
+
+  // Breakdown by regime (regime at time of trade entry)
+  const byRegime = await queryAll(`
+    SELECT mr.regime, COUNT(*)::int as trades,
+           SUM(CASE WHEN t.pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(AVG(t.pnl_pct)::numeric, 4) as avg_return
     FROM trades t
-    LEFT JOIN trade_signals ts ON ts.trade_id = t.id
-    LEFT JOIN signals s ON s.id = ts.signal_id
-    WHERE t.closed_at > NOW() - INTERVAL '7 days'
-    ORDER BY t.closed_at DESC
+    LEFT JOIN LATERAL (
+      SELECT regime FROM market_regime WHERE created_at <= t.opened_at
+      ORDER BY created_at DESC LIMIT 1
+    ) mr ON true
+    WHERE t.status = 'closed'
+    GROUP BY mr.regime
+  `);
+
+  // Breakdown by direction
+  const byDirection = await queryAll(`
+    SELECT side as direction, COUNT(*)::int as trades,
+           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(AVG(pnl_pct)::numeric, 4) as avg_return
+    FROM trades WHERE status = 'closed'
+    GROUP BY side
+  `);
+
+  // Recent trades (raw, capped for recency context)
+  const recentTrades = await queryAll(`
+    SELECT * FROM trades
+    ORDER BY created_at DESC
+    LIMIT ${CONTEXT_LIMITS.MAX_TRADES_RAW}
   `);
 
   // Open positions
   const openPositions = await queryAll(`
-    SELECT * FROM trades WHERE status = 'open' ORDER BY opened_at
+    SELECT id, symbol, side, entry_price, current_price, pnl_pct, opened_at
+    FROM trades WHERE status = 'open' ORDER BY opened_at
   `);
 
   // Template performance
@@ -890,17 +1004,23 @@ async function buildPerformanceAnalystContext(trigger) {
     WHERE st.status IN ('active', 'testing', 'paused')
   `);
 
-  // Active learnings
-  const learnings = await queryAll(`
+  // Active learnings (fetch rows, then truncate serialised string)
+  const learningsRows = await queryAll(`
     SELECT id, insight_text, category, confidence, learning_type,
            created_at, updated_at
     FROM learnings WHERE invalidated_at IS NULL
     ORDER BY confidence DESC, updated_at DESC LIMIT 50
   `);
+  let learnings = JSON.stringify(learningsRows, null, 0);
+  if (learnings.length > CONTEXT_LIMITS.MAX_LEARNINGS_CHARS) {
+    learnings = learnings.slice(0, CONTEXT_LIMITS.MAX_LEARNINGS_CHARS) + ' [truncated]';
+  }
 
   // Calibration
   const calibration = await queryAll(`
-    SELECT * FROM confidence_calibration ORDER BY confidence_bracket
+    SELECT confidence_bracket, predicted_avg, actual_win_rate, sample_size,
+           calibration_error, adjustment_factor
+    FROM confidence_calibration ORDER BY confidence_bracket
   `);
 
   // Memory effectiveness
@@ -912,6 +1032,7 @@ async function buildPerformanceAnalystContext(trigger) {
       FROM memory_effectiveness
       WHERE was_injected = true
       GROUP BY learning_id HAVING COUNT(*) >= 3
+      LIMIT ${CONTEXT_LIMITS.MAX_DECISIONS_RAW}
     `);
   } catch { /* table may be empty */ }
 
@@ -936,12 +1057,19 @@ async function buildPerformanceAnalystContext(trigger) {
   try {
     scramEvents = await queryAll(`
       SELECT * FROM scram_events WHERE activated_at > NOW() - INTERVAL '24 hours'
+      LIMIT ${CONTEXT_LIMITS.MAX_DECISIONS_RAW}
     `);
   } catch { /* table may be empty */ }
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
-      trades_closed_today: todayTrades,
+      trade_summary: {
+        overall: overallStats,
+        by_symbol: bySymbol,
+        by_regime: byRegime,
+        by_direction: byDirection,
+      },
+      recent_trades: recentTrades,
       open_positions: openPositions
     },
     section2_context: {
@@ -956,54 +1084,95 @@ async function buildPerformanceAnalystContext(trigger) {
     section3_memory: null,
     section4_task: `Nightly review. Generate new learnings, invalidate stale ones, update template assessments, check calibration, assess system evolution, analyse costs.`
   });
+
+  return warnIfLarge('performance_analyst', context);
 }
 
 
 async function buildPatternDiscoveryContext(trigger) {
-  // All trades from last 30 days with signal attribution
-  const trades = await queryAll(`
+  // --- Pre-aggregated trade+signal stats (replaces unbounded raw dump) ---
+
+  // Trade stats by template (30d)
+  const tradesByTemplate = await queryAll(`
+    SELECT template_id, COUNT(*)::int as trades,
+           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(AVG(pnl_pct)::numeric, 4) as avg_return,
+           ROUND(SUM(pnl_pct)::numeric, 4) as total_pnl
+    FROM trades WHERE status = 'closed' AND closed_at > NOW() - INTERVAL '30 days'
+    GROUP BY template_id ORDER BY total_pnl DESC
+  `);
+
+  // Signal type effectiveness (30d)
+  const signalStats = await queryAll(`
+    SELECT s.signal_type, s.signal_category,
+           COUNT(DISTINCT t.id)::int as trade_count,
+           SUM(CASE WHEN t.pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
+           ROUND(AVG(t.pnl_pct)::numeric, 4) as avg_return,
+           ROUND(AVG(s.strength)::numeric, 4) as avg_strength
+    FROM trade_signals ts
+    JOIN signals s ON s.id = ts.signal_id
+    JOIN trades t ON t.id = ts.trade_id
+    WHERE t.status = 'closed' AND t.closed_at > NOW() - INTERVAL '30 days'
+    GROUP BY s.signal_type, s.signal_category
+    ORDER BY trade_count DESC
+  `);
+
+  // Recent trades (raw, capped for recency context)
+  const recentTrades = await queryAll(`
     SELECT t.id, t.symbol, t.side, t.pnl_pct, t.template_id,
-           t.outcome_class, t.asset_class,
-           t.entry_confidence, t.effective_independent_signals, t.complexity_score,
-           t.opened_at, t.closed_at,
+           t.outcome_class, t.entry_confidence, t.opened_at, t.closed_at,
            json_agg(json_build_object(
              'signal_type', s.signal_type,
              'signal_category', s.signal_category,
              'direction', s.direction,
-             'strength', s.strength,
-             'was_entry', ts.was_entry_signal
-           )) as signals_at_entry
+             'strength', s.strength
+           )) FILTER (WHERE s.id IS NOT NULL) as signals_at_entry
     FROM trades t
     LEFT JOIN trade_signals ts ON ts.trade_id = t.id
     LEFT JOIN signals s ON s.id = ts.signal_id
-    WHERE t.closed_at > NOW() - INTERVAL '30 days'
-    AND t.status = 'closed'
+    WHERE t.closed_at > NOW() - INTERVAL '30 days' AND t.status = 'closed'
     GROUP BY t.id
-    ORDER BY t.closed_at DESC
+    ORDER BY t.created_at DESC
+    LIMIT ${CONTEXT_LIMITS.MAX_TRADES_RAW}
   `);
 
-  // Current templates
+  // Current templates (slim fields)
   const templates = await queryAll(`
-    SELECT st.*, tp.win_rate, tp.avg_return_pct, tp.total_trades,
+    SELECT st.id, st.name, st.description, st.entry_conditions, st.exit_conditions,
+           st.valid_regimes, st.status, st.trade_count,
+           tp.win_rate, tp.avg_return_pct, tp.total_trades,
            tp.sharpe, tp.concentration_ratio, tp.outlier_dependent
     FROM strategy_templates st
     LEFT JOIN template_performance tp ON tp.template_id = st.id
     WHERE st.status != 'retired'
   `);
 
-  // Anti-patterns
-  const antiPatterns = await queryAll(`SELECT * FROM anti_patterns WHERE active = true`);
+  // Anti-patterns (slim fields)
+  const antiPatterns = await queryAll(`
+    SELECT description, signal_combination, lose_rate, valid_regimes
+    FROM anti_patterns WHERE active = true
+  `);
 
-  // Signal cooccurrence
+  // Signal cooccurrence (capped)
   let cooccurrence = [];
   try {
-    cooccurrence = await queryAll(`SELECT * FROM signal_cooccurrence`);
+    cooccurrence = await queryAll(`
+      SELECT signal_type_a, signal_type_b, cooccurrence_rate
+      FROM signal_cooccurrence
+      ORDER BY cooccurrence_rate DESC
+      LIMIT ${CONTEXT_LIMITS.MAX_SIGNALS_RAW}
+    `);
   } catch { /* table may be empty */ }
 
-  // Signal half-life (noise detection)
+  // Signal half-life (capped)
   let halflife = [];
   try {
-    halflife = await queryAll(`SELECT * FROM signal_halflife`);
+    halflife = await queryAll(`
+      SELECT signal_type, peak_accuracy, half_life_hours, sample_size
+      FROM signal_halflife
+      ORDER BY sample_size DESC
+      LIMIT ${CONTEXT_LIMITS.MAX_SIGNALS_RAW}
+    `);
   } catch { /* table may be empty */ }
 
   // Crowding scores
@@ -1021,9 +1190,11 @@ async function buildPatternDiscoveryContext(trigger) {
     FROM market_regime ORDER BY created_at DESC LIMIT 30
   `);
 
-  return formatUserMessage({
+  const context = formatUserMessage({
     section1_market_data: {
-      trades_30d: trades,
+      trade_stats_by_template: tradesByTemplate,
+      signal_effectiveness: signalStats,
+      recent_trades: recentTrades,
       signal_cooccurrence: cooccurrence,
       signal_halflife: halflife
     },
@@ -1036,6 +1207,7 @@ async function buildPatternDiscoveryContext(trigger) {
     section3_memory: null,
     section4_task: `Weekly analysis. Evaluate signal effectiveness, discover winning combinations, detect anti-patterns, manage template lifecycle. Use cooccurrence matrix for independence. Respect half-life noise flags.`
   });
+  return warnIfLarge('pattern_discovery', context);
 }
 
 
@@ -1085,4 +1257,4 @@ const CONTEXT_BUILDERS = {
   patternDiscovery: buildPatternDiscoveryContext,
 };
 
-module.exports = { CONTEXT_BUILDERS, formatUserMessage };
+module.exports = { CONTEXT_BUILDERS, CONTEXT_LIMITS, formatUserMessage };
