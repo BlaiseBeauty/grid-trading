@@ -23,11 +23,12 @@ const {
 
 const CONTEXT_LIMITS = {
   MAX_TRADES_RAW: 30,          // Max raw trade rows any agent receives
-  MAX_SIGNALS_RAW: 50,         // Max raw signal rows
-  MAX_CANDLES_RAW: 100,        // Max candle rows
-  MAX_CANDLES_TREND: 200,      // For agents needing longer MA lookback
+  MAX_SIGNALS_RAW: 50,         // Max raw signal rows (ORDER BY decayed_strength DESC)
+  MAX_CANDLES_RAW: 50,         // Max candle rows
+  MAX_CANDLES_TREND: 100,      // For agents needing longer MA lookback
   MAX_LEARNINGS_CHARS: 8000,   // Truncate injected learnings string at this
-  MAX_DECISIONS_RAW: 20,       // Max recent agent_decisions rows
+  MAX_DECISIONS_RAW: 30,       // Max recent agent_decisions rows (ORDER BY created_at DESC)
+  MAX_CONTEXT_CHARS: 100000,   // Hard cap — no context builder may exceed ~100k chars
 };
 
 function estimateTokens(str) {
@@ -35,14 +36,12 @@ function estimateTokens(str) {
   return Math.ceil(str.length / 4);
 }
 
-function warnIfLarge(agentName, context) {
-  const tokens = estimateTokens(JSON.stringify(context));
-  if (tokens > 150000) {
-    console.warn(
-      `[CONTEXT] ${agentName} context is ~${tokens} estimated tokens — approaching limit`
-    );
+function warnIfLarge(name, str) {
+  if (str.length > CONTEXT_LIMITS.MAX_CONTEXT_CHARS) {
+    console.warn(`[ContextBuilder:${name}] Truncating ${str.length} → ${CONTEXT_LIMITS.MAX_CONTEXT_CHARS} chars`);
+    return str.slice(0, CONTEXT_LIMITS.MAX_CONTEXT_CHARS);
   }
-  return context;
+  return str;
 }
 
 function truncateLearnings(str) {
@@ -514,44 +513,9 @@ async function buildSynthesizerContext(trigger) {
   const scram = await getScramState();
   const bootstrap = await getBootstrapPhase();
 
-  // Fetch active signals (generous limit), then cap with per-agent coverage
-  const rawSignals = await getActiveSignals(null, '6 hours', 200);
-
-  // Cap: keep highest-confidence signals, but ensure at least 1 per agent category
-  let cappedSignals;
-  if (rawSignals.length > CONTEXT_LIMITS.MAX_SIGNALS_RAW) {
-    const byCategory = {};
-    for (const s of rawSignals) {
-      const cat = s.signal_category;
-      if (!byCategory[cat]) byCategory[cat] = [];
-      byCategory[cat].push(s);
-    }
-    const guaranteed = [];
-    const rest = [];
-    for (const sigs of Object.values(byCategory)) {
-      sigs.sort((a, b) => (b.decayed_strength || b.strength) - (a.decayed_strength || a.strength));
-      guaranteed.push(sigs[0]);
-      rest.push(...sigs.slice(1));
-    }
-    rest.sort((a, b) => (b.decayed_strength || b.strength) - (a.decayed_strength || a.strength));
-    const remaining = Math.max(0, CONTEXT_LIMITS.MAX_SIGNALS_RAW - guaranteed.length);
-    cappedSignals = [...guaranteed, ...rest.slice(0, remaining)];
-  } else {
-    cappedSignals = rawSignals;
-  }
-
-  // Slim signal payload — drop parameters, agent_name, agent_decision_id, etc.
-  const signals = cappedSignals.map(s => ({
-    id: s.id,
-    symbol: s.symbol,
-    signal_type: s.signal_type,
-    signal_category: s.signal_category,
-    direction: s.direction,
-    strength: s.strength,
-    decayed_strength: s.decayed_strength,
-    timeframe: s.timeframe,
-    reasoning: s.reasoning,
-  }));
+  // Fetch active signals — already slim (no parameters/decay_model/expires_at) and
+  // capped at 50 ORDER BY decayed_strength DESC from getActiveSignals()
+  const signals = await getActiveSignals(null, '6 hours', CONTEXT_LIMITS.MAX_SIGNALS_RAW);
 
   // Active templates — only fields the Synthesizer needs for matching
   const templates = await queryAll(`
@@ -583,8 +547,16 @@ async function buildSynthesizerContext(trigger) {
     FROM anti_patterns WHERE active = true
   `);
 
-  // Recent trades (was: 20, now: 10)
-  const recentTrades = await getRecentTrades(10);
+  // Active learnings only (stage='active' after lifecycle advancement)
+  const recentLearnings = await queryAll(`
+    SELECT insight_text, learning_type, scope_level,
+           decayed_confidence, regime_breakdown,
+           influenced_trades, influenced_wins, stage
+    FROM learnings
+    WHERE stage = 'active' AND invalidated_at IS NULL
+    ORDER BY decayed_confidence DESC NULLS LAST
+    LIMIT 20
+  `);
 
   // Events
   const events = await getUpcomingEvents(48);
@@ -646,7 +618,7 @@ async function buildSynthesizerContext(trigger) {
       correlations,
       active_templates: templates,
       anti_patterns: antiPatterns,
-      recent_trades: recentTrades,
+      learnings: recentLearnings,
       upcoming_events: events,
       calibration_data: calibration,
       scram_state: scram,
@@ -658,6 +630,7 @@ async function buildSynthesizerContext(trigger) {
     section3_memory: memory,
     section4_task: `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`
   });
+  console.log('[SYNTH] context length:', JSON.stringify(context).length);
   return warnIfLarge('strategy_synthesizer', context);
 }
 
@@ -829,18 +802,18 @@ async function buildRegimeContext(trigger) {
 // ============================================================================
 
 async function buildPositionReviewerContext(trigger) {
-  // Open trades with linked entry signals
+  // Open trades with linked entry signals (slim signal fields)
   const openTrades = await queryAll(`
-    SELECT t.*,
+    SELECT t.id, t.symbol, t.side, t.entry_price, t.exit_price,
+           t.pnl_pct, t.template_id, t.entry_confidence, t.sl_price,
+           t.tp_price, t.opened_at, t.status,
            EXTRACT(EPOCH FROM (NOW() - t.opened_at)) / 3600 AS hours_held,
            json_agg(json_build_object(
              'signal_id', s.id,
              'signal_type', s.signal_type,
              'signal_category', s.signal_category,
              'direction', s.direction,
-             'strength', s.strength,
-             'expires_at', s.expires_at,
-             'expired', s.expires_at < NOW()
+             'strength', s.strength
            )) FILTER (WHERE s.id IS NOT NULL) AS entry_signals
     FROM trades t
     LEFT JOIN trade_signals ts ON ts.trade_id = t.id
@@ -857,9 +830,10 @@ async function buildPositionReviewerContext(trigger) {
   const heldSymbols = [...new Set(openTrades.map(t => t.symbol))];
 
   // Current active signals per held symbol (fresh from this cycle)
+  // getActiveSignals already returns slim fields, capped & ordered by decayed_strength
   const activeSignals = {};
   for (const symbol of heldSymbols) {
-    activeSignals[symbol] = await getActiveSignals(symbol, '6 hours', 20);
+    activeSignals[symbol] = await getActiveSignals(symbol, '6 hours', CONTEXT_LIMITS.MAX_SIGNALS_RAW);
   }
 
   const regime = await getCurrentRegime();
@@ -963,12 +937,11 @@ async function buildPerformanceAnalystContext(trigger) {
     SELECT mr.regime, COUNT(*)::int as trades,
            SUM(CASE WHEN t.pnl_pct > 0 THEN 1 ELSE 0 END)::int as wins,
            ROUND(AVG(t.pnl_pct)::numeric, 4) as avg_return
-    FROM trades t
+    FROM (SELECT * FROM trades WHERE status = 'closed' ORDER BY closed_at DESC LIMIT 50) t
     LEFT JOIN LATERAL (
       SELECT regime FROM market_regime WHERE created_at <= t.opened_at
       ORDER BY created_at DESC LIMIT 1
     ) mr ON true
-    WHERE t.status = 'closed'
     GROUP BY mr.regime
   `);
 
@@ -981,27 +954,29 @@ async function buildPerformanceAnalystContext(trigger) {
     GROUP BY side
   `);
 
-  // Recent trades (raw, capped for recency context)
+  // Recent trades (slim fields, capped for recency context)
   const recentTrades = await queryAll(`
-    SELECT * FROM trades
+    SELECT id, symbol, side, entry_price, exit_price, pnl_pct,
+           template_id, entry_confidence, outcome_class, opened_at, closed_at, status
+    FROM trades
     ORDER BY created_at DESC
     LIMIT ${CONTEXT_LIMITS.MAX_TRADES_RAW}
   `);
 
   // Open positions
   const openPositions = await queryAll(`
-    SELECT id, symbol, side, entry_price, current_price, pnl_pct, opened_at
-    FROM trades WHERE status = 'open' ORDER BY opened_at
+    SELECT id, symbol, side, entry_price, pnl_pct, opened_at
+    FROM trades WHERE status = 'open' ORDER BY opened_at LIMIT 20
   `);
 
   // Template performance
   const templates = await queryAll(`
     SELECT st.id, st.name, st.status,
-           tp.win_rate, tp.avg_return_pct, tp.total_trades, tp.sharpe,
-           tp.max_drawdown, tp.concentration_ratio, tp.outlier_dependent
+           tp.win_rate, tp.avg_return_pct, tp.total_trades
     FROM strategy_templates st
     LEFT JOIN template_performance tp ON tp.template_id = st.id
     WHERE st.status IN ('active', 'testing', 'paused')
+    LIMIT 20
   `);
 
   // Active learnings (fetch rows, then truncate serialised string)
@@ -1020,7 +995,7 @@ async function buildPerformanceAnalystContext(trigger) {
   const calibration = await queryAll(`
     SELECT confidence_bracket, predicted_avg, actual_win_rate, sample_size,
            calibration_error, adjustment_factor
-    FROM confidence_calibration ORDER BY confidence_bracket
+    FROM confidence_calibration ORDER BY calculated_at DESC LIMIT 20
   `);
 
   // Memory effectiveness
@@ -1049,6 +1024,7 @@ async function buildPerformanceAnalystContext(trigger) {
     crowding = await queryAll(`
       SELECT DISTINCT ON (template_id) template_id, crowding_score, assessment
       FROM crowding_scores ORDER BY template_id, computed_at DESC
+      LIMIT 20
     `);
   } catch { /* table may be empty */ }
 
@@ -1085,6 +1061,7 @@ async function buildPerformanceAnalystContext(trigger) {
     section4_task: `Nightly review. Generate new learnings, invalidate stale ones, update template assessments, check calibration, assess system evolution, analyse costs.`
   });
 
+  console.log('[PA] context length:', JSON.stringify(context).length);
   return warnIfLarge('performance_analyst', context);
 }
 

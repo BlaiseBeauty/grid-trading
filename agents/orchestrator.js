@@ -13,9 +13,10 @@ const portfolioDb = require('../db/queries/portfolio');
 const standingOrdersDb = require('../db/queries/standing-orders');
 const indicatorCacheDb = require('../db/queries/indicator-cache');
 const equityDb = require('../db/queries/equity');
+const cycleReportsDb = require('../db/queries/cycle-reports');
 const positionReviewsDb = require('../db/queries/position-reviews');
 const marketDataDb = require('../db/queries/market-data');
-const { queryOne: dbQueryOne } = require('../db/connection');
+const { queryOne: dbQueryOne, queryAll: dbQueryAll, query: dbQuery } = require('../db/connection');
 const { notifications } = require('../services/notifications');
 const logger = require('../services/logger');
 const { symbols: trackedSymbols, timeframes } = require('../config/symbols');
@@ -679,6 +680,12 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       hoursSinceLastTrade,
       forcedExploration,
     });
+    // [SYNTH_DEBUG] Log raw synthesizer output for diagnostics
+    const outputJson = synthDecision?.output_json || {};
+    const noActionReasons = outputJson.no_action_reasons || [];
+    const marketAssessment = outputJson.market_assessment || null;
+    console.log(`[SYNTH_DEBUG] Cycle ${cycleNum} | actions: ${(outputJson.actions || []).length} | standing_orders: ${(outputJson.standing_orders || []).length} | no_action_reasons: ${noActionReasons.length > 0 ? noActionReasons.join('; ') : 'none'} | market: ${marketAssessment ? JSON.stringify(marketAssessment).slice(0, 200) : 'N/A'}`);
+
     // Synthesizer outputs trade proposals in "actions" array (type: "trade_proposal")
     const rawActions = synthDecision?.output_json?.actions || [];
     const candidateProposals = rawActions
@@ -748,7 +755,23 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'synthesizer', layer: 'strategy', error: err.message });
   }
 
+  // Track learning influence — which learnings were in Synthesizer context this cycle
+  try {
+    const activeLearnings = await dbQueryAll(`
+      SELECT id, insight_text FROM learnings
+      WHERE stage = 'active' AND invalidated_at IS NULL
+      ORDER BY decayed_confidence DESC NULLS LAST LIMIT 20
+    `);
+    if (activeLearnings.length > 0 && synthDecision) {
+      await trackLearningInfluence(cycleNum, synthDecision.output_json || {}, activeLearnings, regime);
+    }
+  } catch (err) {
+    console.error('[ORCHESTRATOR] Learning influence tracking failed:', err.message);
+  }
+
   if (proposals.length === 0) {
+    const reasons = synthDecision?.output_json?.no_action_reasons || [];
+    console.log(`[SYNTH_DEBUG] 0 proposals — reasons: ${reasons.length > 0 ? reasons.join('; ') : 'none provided'} | regime: ${regime?.regime || 'unknown'} (${regime?.confidence || '?'}%) | standing_orders: ${standingOrders.length}`);
     console.log('[ORCHESTRATOR] No proposals to evaluate — strategy layer complete');
     return { regime, proposals: [], approved: [], rejected: [], trades: [], standing_orders: standingOrders };
   }
@@ -916,7 +939,11 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     broadcast('trades_executed', { cycleNumber: cycleNum, trades });
   }
 
-  return { regime, proposals, approved: riskResult.approved, rejected: riskResult.rejected, trades, standing_orders: standingOrders };
+  return {
+    regime, proposals, approved: riskResult.approved, rejected: riskResult.rejected, trades,
+    standing_orders: standingOrders,
+    _synthOutput: synthDecision?.output_json || {},
+  };
 }
 
 /**
@@ -995,7 +1022,7 @@ async function runAnalysisLayer(cycleNum, broadcast) {
     console.log(`[ORCHESTRATOR] Performance Analyst: ${perfResult?.output_json?.learnings?.length || 0} learnings extracted`);
   } catch (err) {
     results.push({ agent: 'performance_analyst', status: 'rejected', error: err.message });
-    console.error('[ORCHESTRATOR] Performance Analyst failed:', err.message);
+    console.error('[ORCHESTRATOR] performanceAnalyst failed:', err.stack);
   }
 
   // Step 2: Pattern Discovery — find patterns, manage templates
@@ -1015,7 +1042,7 @@ async function runAnalysisLayer(cycleNum, broadcast) {
     console.log(`[ORCHESTRATOR] Pattern Discovery: ${patternResult?.output_json?.new_templates?.length || 0} templates, ${patternResult?.output_json?.anti_patterns?.length || 0} anti-patterns`);
   } catch (err) {
     results.push({ agent: 'pattern_discovery', status: 'rejected', error: err.message });
-    console.error('[ORCHESTRATOR] Pattern Discovery failed:', err.message);
+    console.error('[ORCHESTRATOR] patternDiscovery failed:', err.stack);
   }
 
   if (broadcast) {
@@ -1023,6 +1050,128 @@ async function runAnalysisLayer(cycleNum, broadcast) {
   }
 
   return results;
+}
+
+/**
+ * Track which learnings influenced this cycle's Synthesizer decision.
+ * Called after Synthesizer runs each cycle.
+ */
+async function trackLearningInfluence(cycleNumber, synthesizerOutput, activeLearnings, currentRegime) {
+  if (!activeLearnings || activeLearnings.length === 0) return;
+
+  const STOP_WORDS = new Set(['the', 'a', 'an', 'is', 'in', 'of', 'to', 'for', 'and', 'or', 'with', 'on', 'at', 'by', 'it', 'be', 'as', 'that', 'this', 'was', 'are', 'not', 'but', 'has', 'had', 'have']);
+
+  function getSignificantWords(text) {
+    if (!text) return [];
+    return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(w => w.length > 2 && !STOP_WORDS.has(w));
+  }
+
+  const synthReasoning = synthesizerOutput?.market_assessment || synthesizerOutput?.reasoning || '';
+  const synthWords = new Set(getSignificantWords(synthReasoning));
+
+  const regime = currentRegime?.regime || currentRegime?.crypto?.regime || 'unknown';
+
+  for (const learning of activeLearnings) {
+    try {
+      // 1. Insert 'referenced' event — learning was in context
+      await dbQuery(`
+        INSERT INTO learning_influence_events (learning_id, cycle_number, event_type, regime)
+        VALUES ($1, $2, 'referenced', $3)
+      `, [learning.id, cycleNumber, regime]);
+
+      // 2. Update reference counts
+      await dbQuery(`
+        UPDATE learnings SET
+          times_referenced = times_referenced + 1,
+          last_referenced_at = NOW()
+        WHERE id = $1
+      `, [learning.id]);
+
+      // 3. Check if Synthesizer reasoning cited this learning (>3 word overlap)
+      const learningWords = getSignificantWords(learning.insight_text);
+      const overlap = learningWords.filter(w => synthWords.has(w));
+      if (overlap.length > 3) {
+        await dbQuery(`
+          INSERT INTO learning_influence_events (learning_id, cycle_number, event_type, regime)
+          VALUES ($1, $2, 'cited', $3)
+        `, [learning.id, cycleNumber, regime]);
+      }
+    } catch (err) {
+      console.error(`[ORCHESTRATOR] trackLearningInfluence failed for learning #${learning.id}:`, err.message);
+    }
+  }
+  console.log(`[ORCHESTRATOR] Tracked influence for ${activeLearnings.length} learnings (cycle ${cycleNumber})`);
+}
+
+/**
+ * After a trade closes, find learnings that were referenced in the opening cycle
+ * and record trade outcome against them.
+ */
+async function recordTradeCloseLearningOutcome(tradeId, pnl) {
+  try {
+    // Find the cycle when this trade was opened
+    const trade = await dbQueryOne(`SELECT opened_at, symbol FROM trades WHERE id = $1`, [tradeId]);
+    if (!trade) return;
+
+    // Find cycle number closest to trade open time
+    const cycleRow = await dbQueryOne(`
+      SELECT cycle_number FROM cycle_reports
+      WHERE created_at <= $1
+      ORDER BY created_at DESC LIMIT 1
+    `, [trade.opened_at]);
+    if (!cycleRow) return;
+    const openCycle = cycleRow.cycle_number;
+
+    // Find learnings that were referenced in that cycle
+    const referencedLearnings = await dbQueryAll(`
+      SELECT DISTINCT learning_id FROM learning_influence_events
+      WHERE cycle_number = $1 AND event_type IN ('referenced', 'cited')
+    `, [openCycle]);
+
+    if (referencedLearnings.length === 0) return;
+
+    const isWin = parseFloat(pnl) > 0;
+    const eventType = isWin ? 'trade_won' : 'trade_lost';
+
+    // Get current regime for regime_breakdown
+    const regimeRow = await dbQueryOne(`SELECT regime FROM market_regime ORDER BY created_at DESC LIMIT 1`);
+    const regime = regimeRow?.regime || 'unknown';
+
+    for (const { learning_id } of referencedLearnings) {
+      // Insert outcome event
+      await dbQuery(`
+        INSERT INTO learning_influence_events (learning_id, cycle_number, trade_id, event_type, regime)
+        VALUES ($1, $2, $3, $4, $5)
+      `, [learning_id, openCycle, tradeId, eventType, regime]);
+
+      // Update influenced_trades / influenced_wins counters
+      await dbQuery(`
+        UPDATE learnings SET
+          influenced_trades = influenced_trades + 1
+          ${isWin ? ', influenced_wins = influenced_wins + 1' : ''}
+        WHERE id = $1
+      `, [learning_id]);
+
+      // Update regime_breakdown JSONB
+      await dbQuery(`
+        UPDATE learnings SET
+          regime_breakdown = jsonb_set(
+            jsonb_set(
+              COALESCE(regime_breakdown, '{}'),
+              ARRAY[$2, 'trades'],
+              (COALESCE((regime_breakdown->$2->>'trades')::int, 0) + 1)::text::jsonb
+            ),
+            ARRAY[$2, 'wins'],
+            (COALESCE((regime_breakdown->$2->>'wins')::int, 0) + ${isWin ? 1 : 0})::text::jsonb
+          )
+        WHERE id = $1
+      `, [learning_id, regime]);
+    }
+
+    console.log(`[ORCHESTRATOR] Recorded trade #${tradeId} outcome (${eventType}) for ${referencedLearnings.length} learnings`);
+  } catch (err) {
+    console.error(`[ORCHESTRATOR] recordTradeCloseLearningOutcome failed for trade #${tradeId}:`, err.message);
+  }
 }
 
 /**
@@ -1146,6 +1295,7 @@ async function executeReviewDecision(review, cycleNum) {
         const result = await closeTradePython(review.trade_id);
         review.close_executed = true;
         console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via Python — P&L: ${result.pnl_pct}%`);
+        await recordTradeCloseLearningOutcome(review.trade_id, result.pnl_realised || result.pnl || 0);
       } catch (pyErr) {
         console.warn(`[ORCHESTRATOR] Python close failed for #${review.trade_id}, using DB fallback:`, pyErr.message);
         try {
@@ -1169,6 +1319,7 @@ async function executeReviewDecision(review, cycleNum) {
           if (closed) {
             review.close_executed = true;
             console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback (atomic) — P&L: ${closed.pnl_pct}%`);
+            await recordTradeCloseLearningOutcome(review.trade_id, closed.pnl_realised || 0);
           } else {
             console.log(`[ORCHESTRATOR] Trade #${review.trade_id} already closed — skipping`);
           }
@@ -1246,10 +1397,11 @@ async function reviewOpenPositions(cycleNum, broadcast) {
       cost_usd: result.decision?.cost_usd || 0,
       duration_ms: elapsed,
     });
+    const summaryText = `${summary.hold} hold, ${summary.close} close, ${summary.tighten} tighten, ${summary.partial_close} partial_close`;
     broadcast('position_review', {
       cycleNumber: cycleNum,
       reviews,
-      summary,
+      summary: summaryText,
       portfolio_notes: result.portfolio_notes,
     });
   }
@@ -1295,9 +1447,11 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 0: Expire old standing orders
+  let expiredStandingOrders = 0;
   try {
     const expired = await standingOrdersDb.expireOld();
-    if (expired.rowCount > 0) console.log(`[ORCHESTRATOR] Expired ${expired.rowCount} standing orders`);
+    expiredStandingOrders = expired.rowCount || 0;
+    if (expiredStandingOrders > 0) console.log(`[ORCHESTRATOR] Expired ${expiredStandingOrders} standing orders`);
   } catch (err) {
     logger.debug('Standing order expiry skipped', { err, cycle_id: cycleNumber, error_type: 'standing_order' });
   }
@@ -1367,23 +1521,12 @@ async function runCycle({ broadcast } = {}) {
     console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
 
-  // Step 5: Run analysis layer (periodic — every N cycles, every cycle during INFANT)
+  // Step 5: Run analysis layer (every cycle)
   let analysis = [];
-  let analysisFrequency = ANALYSIS_EVERY_N_CYCLES;
   try {
-    const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
-    const phase = bootstrapRow?.phase || 'infant';
-    if (phase === 'infant' || phase === 'learning') {
-      analysisFrequency = ANALYSIS_INFANT_EVERY_N;
-    }
-  } catch { /* default to normal frequency */ }
-
-  if (cycleNumber % analysisFrequency === 0) {
-    try {
-      analysis = await runAnalysisLayer(cycleNumber, broadcast);
-    } catch (err) {
-      console.error('[ORCHESTRATOR] Analysis layer failed:', err.message);
-    }
+    analysis = await runAnalysisLayer(cycleNumber, broadcast);
+  } catch (err) {
+    console.error('[ORCHESTRATOR] Analysis layer failed:', err.stack);
   }
 
   // Step 6: Record equity snapshot
@@ -1408,8 +1551,117 @@ async function runCycle({ broadcast } = {}) {
     console.log(`[ORCHESTRATOR] Analysis: ${analysis.filter(a => a.status === 'fulfilled').length}/${analysis.length} agents succeeded`);
   }
 
+  // Step 7: Assemble and store cycle report
+  const regimeData = strategy.regime?.crypto || Object.values(strategy.regime || {})[0] || {};
+  const synthOutput = strategy._synthOutput || {};
+  const posActions = positionReview.actions || {};
+
+  // Build knowledge agent entries
+  const knowledgeReport = knowledge.map(k => ({
+    name: k.agent,
+    signals: k.decision?.output_json?.signals?.length || 0,
+    status: k.status === 'fulfilled' ? 'ok' : 'error',
+    error: k.error || null,
+  }));
+
+  // Build rejection reasons from risk manager
+  const rejectionReasons = (strategy.rejected || []).map(r =>
+    r.reason || r.rejection_reason || `${r.symbol || 'unknown'} rejected`
+  );
+
+  // Performance analyst and pattern discovery from analysis layer
+  const perfAnalyst = analysis.find(a => a.agent === 'performance_analyst');
+  const patternDisc = analysis.find(a => a.agent === 'pattern_discovery');
+
+  // Standing order counts
+  let soActive = 0;
+  let soExpiredThisCycle = 0;
+  try {
+    const soActiveRow = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM standing_orders WHERE status = 'active'");
+    soActive = parseInt(soActiveRow?.cnt) || 0;
+    soExpiredThisCycle = expiredStandingOrders;
+  } catch { /* non-critical */ }
+
+  // Auto-detect warnings
+  const warnings = [];
+  for (const k of knowledgeReport) {
+    if (k.status === 'error') warnings.push(`${k.name} agent error: ${k.error}`);
+    else if (k.signals === 0) warnings.push(`${k.name} returned 0 signals`);
+  }
+  if (strategy.proposals.length === 0 && (strategy.standing_orders?.length || 0) === 0) {
+    warnings.push('Synthesizer produced 0 proposals and 0 standing orders');
+  }
+  if ((strategy.rejected?.length || 0) > 0 && (strategy.approved?.length || 0) === 0) {
+    warnings.push(`Risk Manager rejected all ${strategy.rejected.length} proposals`);
+  }
+  if (perfAnalyst?.status === 'rejected') {
+    warnings.push(`Performance Analyst error: ${perfAnalyst.error}`);
+  }
+  if (patternDisc?.status === 'rejected') {
+    warnings.push(`Pattern Discovery error: ${patternDisc.error}`);
+  }
+  // Check for standing orders past their expires_at that are still active
+  try {
+    const staleRow = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM standing_orders WHERE status = 'active' AND expires_at < NOW()");
+    const staleSo = parseInt(staleRow?.cnt) || 0;
+    if (staleSo > 0) warnings.push(`${staleSo} standing orders past their expires_at`);
+  } catch { /* non-critical */ }
+
+  const cycleReport = {
+    cycle_id: cycleNumber,
+    completed_at: new Date().toISOString(),
+    duration_ms: Date.now() - cycleStart,
+    regime: {
+      classification: regimeData.regime || 'unknown',
+      confidence: regimeData.confidence || 0,
+    },
+    knowledge_agents: knowledgeReport,
+    synthesizer: {
+      proposals: strategy.proposals.length,
+      standing_orders: strategy.standing_orders?.length || 0,
+      no_action_reasons: synthOutput.no_action_reasons || [],
+      market_assessment: typeof synthOutput.market_assessment === 'string'
+        ? synthOutput.market_assessment
+        : synthOutput.market_assessment?.summary || '',
+    },
+    risk_manager: {
+      approved: strategy.approved?.length || 0,
+      rejected: strategy.rejected?.length || 0,
+      rejection_reasons: rejectionReasons,
+    },
+    position_manager: {
+      held: posActions.hold || 0,
+      closed: posActions.close || 0,
+      tightened: posActions.tighten || 0,
+    },
+    performance_analyst: {
+      status: !perfAnalyst ? 'skipped' : perfAnalyst.status === 'fulfilled' ? 'ok' : 'error',
+      error: perfAnalyst?.error || null,
+    },
+    pattern_discovery: {
+      status: !patternDisc ? 'skipped' : patternDisc.status === 'fulfilled' ? 'ok' : 'error',
+      error: patternDisc?.error || null,
+      signals_found: patternDisc?.decision?.output_json?.anti_patterns?.length || 0,
+    },
+    standing_orders: {
+      active: soActive,
+      expired_this_cycle: soExpiredThisCycle,
+      triggered_this_cycle: strategy.trades?.length || 0,
+    },
+    warnings,
+  };
+
+  // Persist cycle report
+  try {
+    await cycleReportsDb.save(cycleNumber, cycleReport);
+    console.log(`[ORCHESTRATOR] Cycle report saved for cycle ${cycleNumber}`);
+  } catch (err) {
+    console.error('[ORCHESTRATOR] Cycle report save failed:', err.message);
+  }
+
   // Broadcast to WebSocket clients
   if (broadcast) {
+    broadcast('cycle_report', cycleReport);
     broadcast('cycle_complete', {
       cycleNumber,
       agents: knowledge.map(k => ({

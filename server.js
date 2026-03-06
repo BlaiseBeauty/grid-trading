@@ -146,6 +146,7 @@ async function registerRoutes() {
   fastify.register(require('./api/standing-orders'), { prefix: '/api' });
   fastify.register(require('./api/events'), { prefix: '/api' });
   fastify.register(require('./api/calibration'), { prefix: '/api' });
+  fastify.register(require('./api/cycle-reports'), { prefix: '/api' });
 
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
@@ -338,6 +339,14 @@ const cron = require('node-cron');
 
 function setupCron() {
   const orchestrator = require('./agents/orchestrator');
+  const standingOrdersDb = require('./db/queries/standing-orders');
+  const signalsDb = require('./db/queries/signals');
+  const equityDb = require('./db/queries/equity');
+  const portfolioDb = require('./db/queries/portfolio');
+  const { fetchAll } = require('./agents/external-data-fetcher');
+  const { computeCorrelations } = require('./agents/correlation-calculator');
+  const { runCalibration } = require('./agents/calibration-worker');
+  const { queryOne: queryOneDb } = require('./db/connection');
 
   // 4-hour agent cycle
   cron.schedule('0 */4 * * *', async () => {
@@ -393,8 +402,10 @@ function setupCron() {
     }
     console.log('[CRON] Monitoring standing orders...');
     try {
+      // Expire old standing orders (runs even when cycle isn't active)
+      const expired = await standingOrdersDb.expireOld();
+      if (expired.rowCount > 0) console.log(`[CRON] Expired ${expired.rowCount} standing orders`);
       // Retry orders that failed due to transient errors (15-min cooldown)
-      const standingOrdersDb = require('./db/queries/standing-orders');
       await standingOrdersDb.retryPending();
       await orchestrator.checkStandingOrders(broadcast);
     } catch (err) {
@@ -405,7 +416,6 @@ function setupCron() {
   // Clean expired signals every hour
   cron.schedule('0 * * * *', async () => {
     try {
-      const signalsDb = require('./db/queries/signals');
       await signalsDb.cleanExpired();
       console.log('[CRON] Cleaned expired signals');
     } catch (err) {
@@ -426,7 +436,6 @@ function setupCron() {
   });
 
   // Fetch external data every 30 minutes
-  const { fetchAll } = require('./agents/external-data-fetcher');
   cron.schedule('*/30 * * * *', async () => {
     try { await fetchAll(); }
     catch (err) { console.error('[CRON] External data fetch failed:', err.message); }
@@ -462,13 +471,10 @@ function setupCron() {
   });
 
   // Hourly equity snapshot for drawdown tracking (independent of agent cycles)
-  const equityDb = require('./db/queries/equity');
-  const portfolioDb = require('./db/queries/portfolio');
   cron.schedule('15 * * * *', async () => {
     try {
       const pv = await portfolioDb.getPortfolioValue();
-      const { queryOne: qo } = require('./db/connection');
-      const openCountRow = await qo("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
+      const openCountRow = await queryOneDb("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
       const openCount = parseInt(openCountRow?.cnt) || 0;
       await equityDb.insert({
         cycleNumber: -1, // -1 indicates hourly snapshot, not a cycle
@@ -484,7 +490,6 @@ function setupCron() {
   });
 
   // Correlation matrix recomputation every 6 hours
-  const { computeCorrelations } = require('./agents/correlation-calculator');
   cron.schedule('0 */6 * * *', async () => {
     console.log('[CRON] Recomputing correlation matrix...');
     try {
@@ -497,7 +502,6 @@ function setupCron() {
   });
 
   // Daily confidence calibration at 00:00 UTC
-  const { runCalibration } = require('./agents/calibration-worker');
   cron.schedule('0 0 * * *', async () => {
     console.log('[CRON] Running daily confidence calibration...');
     try {
@@ -510,7 +514,6 @@ function setupCron() {
   });
 
   // Broadcast live prices every 10 seconds
-  const { queryOne: queryOnePrice } = require('./db/connection');
 
   setInterval(async () => {
     for (const symbol of CANDLE_SYMBOLS) {
@@ -518,7 +521,7 @@ function setupCron() {
         const result = await fetchLivePrice(symbol);
         if (!result) continue;
 
-        const old24h = await queryOnePrice(
+        const old24h = await queryOneDb(
           `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
           [symbol]
         );

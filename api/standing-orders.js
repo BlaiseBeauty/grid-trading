@@ -3,14 +3,18 @@ const { queryAll, queryOne, query } = require('../db/connection');
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
 
-  // GET /api/standing-orders — list standing orders
+  // GET /api/standing-orders — list standing orders (excludes expired by default)
   fastify.get('/standing-orders', async (request) => {
     const { status, symbol } = request.query;
     const conditions = [];
     const params = [];
     let idx = 1;
 
-    if (status) { conditions.push(`status = $${idx++}`); params.push(status); }
+    if (status) {
+      conditions.push(`status = $${idx++}`); params.push(status);
+    } else {
+      conditions.push(`status != 'expired'`);
+    }
     if (symbol) { conditions.push(`symbol = $${idx++}`); params.push(symbol); }
 
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';

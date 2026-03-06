@@ -8,6 +8,7 @@ const NAV = [
   { path: '/agents', label: 'Agents', icon: '◈' },
   { path: '/trades', label: 'Trades', icon: '◇' },
   { path: '/strategy', label: 'Strategy Lab', icon: '△' },
+  { path: '/learnings', label: 'Learnings', icon: '◆' },
   { path: '/analytics', label: 'Analytics', icon: '◎' },
   { path: '/settings', label: 'Settings', icon: '⚙' },
 ];

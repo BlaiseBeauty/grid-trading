@@ -23,17 +23,13 @@ async function getPortfolioState() {
   return { positions: positions || [], ...total };
 }
 
-async function getActiveSignals(symbol = null, maxAge = '24 hours', limit = null) {
+async function getActiveSignals(symbol = null, maxAge = '24 hours', limit = 50) {
   const params = symbol ? [maxAge, symbol] : [maxAge];
-  let limitClause = '';
-  if (limit) {
-    params.push(limit);
-    limitClause = `LIMIT $${params.length}`;
-  }
+  params.push(limit);
+  const limitIdx = params.length;
   return queryAll(`
-    SELECT id, agent_name, symbol, signal_type, signal_category,
-           direction, strength, timeframe, parameters, reasoning,
-           ttl_candles, decay_model, created_at,
+    SELECT id, symbol, signal_type, signal_category,
+           direction, strength, timeframe, reasoning,
            CASE decay_model
              WHEN 'linear' THEN GREATEST(0, strength * (1.0 -
                EXTRACT(EPOCH FROM (NOW() - created_at)) /
@@ -48,7 +44,7 @@ async function getActiveSignals(symbol = null, maxAge = '24 hours', limit = null
     AND created_at > NOW() - $1::interval
     ${symbol ? 'AND symbol = $2' : ''}
     ORDER BY decayed_strength DESC
-    ${limitClause}
+    LIMIT $${limitIdx}
   `, params);
 }
 

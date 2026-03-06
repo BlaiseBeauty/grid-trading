@@ -10,6 +10,7 @@ import MobileDashboard from './pages/MobileDashboard';
 import Agents from './pages/Agents';
 import Trades from './pages/Trades';
 import StrategyLab from './pages/StrategyLab';
+import Learnings from './pages/Learnings';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 
@@ -73,6 +74,7 @@ export default function App() {
           <Route path="/agents" element={<Agents />} />
           <Route path="/trades" element={<Trades />} />
           <Route path="/strategy" element={<StrategyLab />} />
+          <Route path="/learnings" element={<Learnings />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />

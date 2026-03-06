@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useDataStore } from '../stores/data';
+import { useCycleReportStore } from '../stores/cycleReport';
 import { getToken } from '../lib/api';
 
 export function useWebSocket() {
@@ -96,6 +97,9 @@ export function useWebSocket() {
               break;
             case 'scram_cleared':
               s.fetchSystem();
+              break;
+            case 'cycle_report':
+              useCycleReportStore.getState().setLatestReport(msg.data);
               break;
           }
         } catch (err) {

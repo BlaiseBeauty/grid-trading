@@ -7,6 +7,7 @@ import {
 import Chart from '../components/Chart';
 import EquityCurve from '../components/EquityCurve';
 import AgentFeed from '../components/AgentFeed';
+import CycleReport from '../components/CycleReport';
 import TradeDetail from '../components/TradeDetail';
 import EventCalendar from '../components/EventCalendar';
 import { timeAgo } from '../lib/format';
@@ -248,6 +249,11 @@ export default function Dashboard() {
         {/* Agent Activity */}
         <GlowCard className="v2-section v2-feed-section v2-animate-in v2-stagger-5" padding="0">
           <AgentFeed />
+        </GlowCard>
+
+        {/* Last Cycle Report */}
+        <GlowCard className="v2-section v2-animate-in v2-stagger-5" padding="0">
+          <CycleReport />
         </GlowCard>
 
         {/* Market Regime */}
