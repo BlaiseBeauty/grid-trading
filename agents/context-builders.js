@@ -508,14 +508,18 @@ async function buildSentimentContext(trigger) {
 // Savings: signals top-50 + slim fields (~60k), templates drop validation cols (~5k),
 //          recent_trades 10 not 20 (~3k), cooccurrence capped (~2k) = ~70k saved
 async function buildSynthesizerContext(trigger) {
+  // System mode detection — must be before signal fetch (determines limit)
+  const systemMode = trigger.systemMode || 'LEARNED';
+  const isBootstrap = systemMode === 'BOOTSTRAP';
+
   const regime = await getCurrentRegime();
   const portfolio = await getPortfolioState();
   const scram = await getScramState();
   const bootstrap = await getBootstrapPhase();
 
-  // Fetch active signals — already slim (no parameters/decay_model/expires_at) and
-  // capped at 50 ORDER BY decayed_strength DESC from getActiveSignals()
-  const signals = await getActiveSignals(null, '6 hours', CONTEXT_LIMITS.MAX_SIGNALS_RAW);
+  // Fetch active signals — bootstrap gets top 50 by strength, learned gets top 30
+  const signalLimit = isBootstrap ? CONTEXT_LIMITS.MAX_SIGNALS_RAW : 30;
+  const signals = await getActiveSignals(null, '6 hours', signalLimit);
 
   // Active templates — only fields the Synthesizer needs for matching
   const templates = await queryAll(`
@@ -547,16 +551,38 @@ async function buildSynthesizerContext(trigger) {
     FROM anti_patterns WHERE active = true
   `);
 
-  // Active learnings only (stage='active' after lifecycle advancement)
-  const recentLearnings = await queryAll(`
-    SELECT insight_text, learning_type, scope_level,
-           decayed_confidence, regime_breakdown,
-           influenced_trades, influenced_wins, stage
-    FROM learnings
-    WHERE stage = 'active' AND invalidated_at IS NULL
-    ORDER BY decayed_confidence DESC NULLS LAST
-    LIMIT 20
-  `);
+  // Learnings: bootstrap includes ALL stages, learned only active
+  const recentLearnings = isBootstrap
+    ? await queryAll(`
+        SELECT insight_text, learning_type, scope_level,
+               decayed_confidence, regime_breakdown,
+               influenced_trades, influenced_wins, stage
+        FROM learnings
+        WHERE invalidated_at IS NULL
+        ORDER BY decayed_confidence DESC NULLS LAST
+        LIMIT 30
+      `)
+    : await queryAll(`
+        SELECT insight_text, learning_type, scope_level,
+               decayed_confidence, regime_breakdown,
+               influenced_trades, influenced_wins, stage
+        FROM learnings
+        WHERE stage = 'active' AND invalidated_at IS NULL
+        ORDER BY decayed_confidence DESC NULLS LAST
+        LIMIT 20
+      `);
+
+  // Bootstrap: include last 20 closed trades for direct pattern learning
+  let recentClosedTrades = [];
+  if (isBootstrap) {
+    recentClosedTrades = await queryAll(`
+      SELECT symbol, side, entry_price, exit_price, pnl_realised, pnl_pct,
+             opened_at, closed_at, close_reason, confidence
+      FROM trades WHERE status = 'closed'
+      ORDER BY closed_at DESC NULLS LAST
+      LIMIT 20
+    `);
+  }
 
   // Events
   const events = await getUpcomingEvents(48);
@@ -619,16 +645,21 @@ async function buildSynthesizerContext(trigger) {
       active_templates: templates,
       anti_patterns: antiPatterns,
       learnings: recentLearnings,
+      ...(isBootstrap && recentClosedTrades.length > 0 ? { recent_closed_trades: recentClosedTrades } : {}),
       upcoming_events: events,
       calibration_data: calibration,
       scram_state: scram,
       bootstrap_phase: bootstrap,
+      bootstrap_mode: isBootstrap,
+      system_mode: systemMode,
       paper_mode: paperMode,
       hours_since_last_trade: hoursSinceLastTrade,
       forced_exploration: forcedExploration
     },
     section3_memory: memory,
-    section4_task: `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`
+    section4_task: isBootstrap
+      ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating trade volume for the learning system. Match signals against templates. Propose trades at lower confidence thresholds (>=50%). Prefer action over inaction. Full reasoning required.`
+      : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`
   });
   console.log('[SYNTH] context length:', JSON.stringify(context).length);
   return warnIfLarge('strategy_synthesizer', context);
@@ -636,18 +667,16 @@ async function buildSynthesizerContext(trigger) {
 
 
 async function buildRiskManagerContext(trigger) {
-  const { parentDecision } = trigger;
+  const proposals = trigger._riskContext?.proposals || [];
   const portfolio = await getPortfolioState();
   const scram = await getScramState();
   const bootstrap = await getBootstrapPhase();
   const events = await getUpcomingEvents(24);
 
-  // Correlation matrix
+  // Correlation matrix — include both held positions and proposed symbols
   const heldSymbols = (portfolio.positions || []).map(p => p.symbol);
-  if (parentDecision?.actions) {
-    parentDecision.actions.forEach(a => {
-      if (a.symbol && !heldSymbols.includes(a.symbol)) heldSymbols.push(a.symbol);
-    });
+  for (const p of proposals) {
+    if (p.symbol && !heldSymbols.includes(p.symbol)) heldSymbols.push(p.symbol);
   }
 
   let correlations = [];
@@ -692,7 +721,21 @@ async function buildRiskManagerContext(trigger) {
 
   const context = formatUserMessage({
     section1_market_data: {
-      proposal: parentDecision,
+      proposals: proposals.map(p => ({
+        symbol: p.symbol,
+        direction: p.direction,
+        confidence: p.confidence,
+        entry_price: p.entry_price,
+        tp_price: p.tp_price ?? p.exit_plan?.take_profit,
+        sl_price: p.sl_price ?? p.exit_plan?.stop_loss,
+        position_size_suggestion_pct: p.position_size_suggestion_pct,
+        exploration: p.exploration || false,
+        template_id: p.template_id,
+        thesis: p.thesis,
+        matching_signal_ids: p.matching_signal_ids,
+        effective_independence: p.effective_independence,
+        complexity_score: p.complexity_score,
+      })),
       trigger_type: trigger.trigger
     },
     section2_context: {

@@ -63,6 +63,28 @@ const tradesDb = require('../db/queries/trades');
 
 const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
 
+/**
+ * Detect system operating mode: BOOTSTRAP or LEARNED.
+ * BOOTSTRAP: <50 closed trades or <5 active learnings — Synthesizer must generate trade volume.
+ * LEARNED: sufficient data exists for full confidence-based trading.
+ */
+async function getSystemMode() {
+  const tradeCount = await dbQueryOne(
+    'SELECT COUNT(*) as count FROM trades WHERE status = $1',
+    ['closed']
+  );
+  const activeLearnings = await dbQueryOne(
+    'SELECT COUNT(*) as count FROM learnings WHERE stage = $1',
+    ['active']
+  );
+
+  const trades = parseInt(tradeCount.count);
+  const active = parseInt(activeLearnings.count);
+
+  if (trades < 50 || active < 5) return { mode: 'BOOTSTRAP', trades, active };
+  return { mode: 'LEARNED', trades, active };
+}
+
 let cycleNumber = 0;
 let cycleRunning = false;
 let cycleStartedAt = null;
@@ -579,7 +601,7 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality) {
 /**
  * Run the strategy layer: Regime → Synthesizer → Risk Manager → Execute.
  */
-async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false) {
+async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false, systemMode = 'LEARNED') {
   console.log(`[ORCHESTRATOR] Running strategy layer (cycle ${cycleNum})${quietMarket ? ' [QUIET MARKET]' : ''}...`);
 
   // Step 1: Classify market regime
@@ -679,6 +701,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       broadcast,
       hoursSinceLastTrade,
       forcedExploration,
+      systemMode,
     });
     // [SYNTH_DEBUG] Log raw synthesizer output for diagnostics
     const outputJson = synthDecision?.output_json || {};
@@ -786,10 +809,9 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       proposals,
       broadcast,
     });
-    const rawApproved = riskDecision?.approved || riskDecision?.output_json?.approved || [];
-    // Normalize approved trades: ensure tp_price/sl_price at top level
+    // Risk Manager returns { approved, rejected, decision } — use directly
     riskResult = {
-      approved: rawApproved.map(t => ({
+      approved: (riskDecision?.approved || []).map(t => ({
         ...t,
         tp_price: t.tp_price ?? t.exit_plan?.take_profit ?? t.take_profit,
         sl_price: t.sl_price ?? t.exit_plan?.stop_loss ?? t.stop_loss,
@@ -844,12 +866,16 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       // Check daily loss limit
       if (dailyLossBreached) {
         console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — daily loss limit breached`);
+        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'daily_loss_limit', $5, NOW())`,
+          [cycleNum, trade.symbol, trade.direction, trade.confidence, `Daily loss limit breached (max ${currentLimits.MAX_DAILY_LOSS_PCT}%)`]);
         continue;
       }
 
       // Check MAX_OPEN_POSITIONS limit
       if (currentOpenCount >= maxPos) {
         console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — ${currentOpenCount} open positions (max ${maxPos})`);
+        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'position_limit_reached', $5, NOW())`,
+          [cycleNum, trade.symbol, trade.direction, trade.confidence, `max_positions_reached (${currentOpenCount}/${maxPos})`]);
         continue;
       }
 
@@ -860,6 +886,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       );
       if (existingOpen) {
         console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — open trade #${existingOpen.id} already exists`);
+        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'duplicate_symbol_open', $5, NOW())`,
+          [cycleNum, trade.symbol, trade.direction, trade.confidence, `open trade #${existingOpen.id} already exists`]);
         continue;
       }
 
@@ -871,6 +899,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
           const rrRatio = reward / risk;
           if (rrRatio < currentLimits.MIN_RISK_REWARD_RATIO) {
             console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — risk/reward ratio ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO}`);
+            await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'low_risk_reward', $5, NOW())`,
+              [cycleNum, trade.symbol, trade.direction, trade.confidence, `R:R ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO}`]);
             continue;
           }
         }
@@ -887,6 +917,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         const proposedSizePct = trade.approved_size_pct || 1.0;
         if (existingExposurePct + proposedSizePct > currentLimits.MAX_CORRELATED_EXPOSURE_PCT) {
           console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — correlated exposure ${(existingExposurePct + proposedSizePct).toFixed(1)}% > max ${currentLimits.MAX_CORRELATED_EXPOSURE_PCT}%`);
+          await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'correlated_exposure', $5, NOW())`,
+            [cycleNum, trade.symbol, trade.direction, trade.confidence, `correlated exposure ${(existingExposurePct + proposedSizePct).toFixed(1)}% > max ${currentLimits.MAX_CORRELATED_EXPOSURE_PCT}%`]);
           continue;
         }
       } catch (err) {
@@ -1438,6 +1470,10 @@ async function runCycle({ broadcast } = {}) {
   const cycleStart = Date.now();
   console.log(`\n[ORCHESTRATOR] ═══ Starting cycle ${cycleNumber} ═══`);
 
+  // Detect system operating mode (BOOTSTRAP vs LEARNED)
+  const { mode: systemMode, trades: closedTrades, active: activeLearnings } = await getSystemMode();
+  console.log(`[ORCHESTRATOR] System mode: ${systemMode} (${closedTrades} closed trades, ${activeLearnings} active learnings)`);
+
   // Broadcast cycle start
   if (broadcast) {
     broadcast('cycle_start', {
@@ -1516,7 +1552,7 @@ async function runCycle({ broadcast } = {}) {
   // Always run strategy layer — even in quiet markets, the Synthesizer should evaluate
   // existing standing orders and check for opportunistic entries
   try {
-    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket);
+    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket, systemMode);
   } catch (err) {
     console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
@@ -1709,5 +1745,6 @@ module.exports = {
   monitorPositions,
   checkStandingOrders,
   runCycle,
+  getSystemMode,
   isCycleRunning: () => cycleRunning,
 };

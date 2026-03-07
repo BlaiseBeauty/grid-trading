@@ -43,29 +43,58 @@ class RiskManagerAgent extends BaseAgent {
       _riskContext: { proposals: passed, systemState, codeRejected },
     });
 
-    // Parse Claude's risk assessment — handle both single-proposal and multi-proposal formats
-    let assessment = result?.output_json || { approved: [], rejected: [] };
+    // Parse Claude's risk assessment
+    const assessment = result?.output_json || {};
+    let approved = [];
+    let rejected = [];
 
-    // If AI returned single-proposal format {decision, original_proposal, modifications},
-    // normalize to multi-proposal format {approved: [], rejected: []}
-    if (assessment.decision && !assessment.approved) {
-      const proposal = passed[0]; // single proposal that was evaluated
-      if (assessment.decision === 'approve' || assessment.decision === 'modify') {
-        const modifications = assessment.modifications || {};
-        assessment = {
-          approved: [{ ...proposal, ...modifications, approved_size_pct: modifications.position_size_pct || proposal.position_size_suggestion_pct }],
-          rejected: [],
-        };
-      } else {
-        assessment = {
-          approved: [],
-          rejected: [{ ...proposal, reason: assessment.risk_assessment?.reason || 'risk_manager_rejected', detail: assessment.warnings?.join('; ') }],
-        };
+    if (Array.isArray(assessment.decisions)) {
+      // New per-proposal decisions[] format
+      for (const dec of assessment.decisions) {
+        const proposal = passed.find(p => p.symbol === dec.symbol) || passed[0];
+        if (!proposal) continue;
+
+        if (dec.action === 'approve' || dec.action === 'modify') {
+          const mods = dec.modifications || {};
+          approved.push({
+            ...proposal,
+            ...mods,
+            approved_size_pct: dec.position_size_pct || mods.position_size_pct || proposal.position_size_suggestion_pct,
+            risk_notes: dec.risk_notes || null,
+          });
+        } else {
+          rejected.push({
+            ...proposal,
+            reason: dec.rejection_reason || 'risk_manager_rejected',
+            detail: dec.risk_notes || null,
+          });
+        }
       }
+    } else if (assessment.decision && !assessment.approved) {
+      // Legacy single-decision format — backward compat
+      if (assessment.decision === 'approve' || assessment.decision === 'modify') {
+        const mods = assessment.modifications || {};
+        approved = passed.map(p => ({
+          ...p,
+          ...mods,
+          approved_size_pct: mods.position_size_pct || p.position_size_suggestion_pct,
+          risk_notes: assessment.warnings?.join('; ') || null,
+        }));
+      } else {
+        rejected = passed.map(p => ({
+          ...p,
+          reason: assessment.risk_assessment?.reason || 'risk_manager_rejected',
+          detail: assessment.warnings?.join('; '),
+        }));
+      }
+    } else {
+      // Direct approved/rejected arrays
+      approved = assessment.approved || [];
+      rejected = assessment.rejected || [];
     }
 
     // Store Claude-rejected opportunities
-    for (const rej of (assessment.rejected || [])) {
+    for (const rej of rejected) {
       await this.storeRejection(cycleNumber, {
         symbol: rej.symbol,
         direction: rej.direction,
@@ -76,8 +105,8 @@ class RiskManagerAgent extends BaseAgent {
     }
 
     return {
-      approved: assessment.approved || [],
-      rejected: [...codeRejected, ...(assessment.rejected || [])],
+      approved,
+      rejected: [...codeRejected, ...rejected],
       decision: result,
     };
   }
