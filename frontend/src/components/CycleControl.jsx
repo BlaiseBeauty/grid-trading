@@ -15,7 +15,7 @@ function formatElapsed(seconds) {
 
 function formatCost(usd) {
   if (usd == null || usd === 0) return '--';
-  return `$${usd.toFixed(2)}`;
+  return `$${Number(usd).toFixed(2)}`;
 }
 
 function formatDuration(ms) {

@@ -116,7 +116,7 @@ export default function Analytics() {
           </GlowCard>
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-7">
             <div className="v2-kpi-label">Max Drawdown</div>
-            <span className="v2-kpi-big v2-loss">{maxDrawdown != null ? `${maxDrawdown.toFixed(2)}%` : '\u2014'}</span>
+            <span className="v2-kpi-big v2-loss">{maxDrawdown != null ? `${Number(maxDrawdown).toFixed(2)}%` : '\u2014'}</span>
           </GlowCard>
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-8" glowColor="magenta">
             <div className="v2-kpi-label">AI Cost</div>

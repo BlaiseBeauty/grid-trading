@@ -68,7 +68,7 @@ export default function CalibrationChart() {
       <div className="v2-cal-header">
         <span className="v2-cal-title">Confidence Calibration</span>
         <div className="v2-cal-badge" style={{ borderColor: scoreColor, color: scoreColor }}>
-          {calibration_score !== null ? calibration_score.toFixed(0) : '--'}
+          {calibration_score !== null ? Number(calibration_score).toFixed(0) : '--'}
         </div>
       </div>
 

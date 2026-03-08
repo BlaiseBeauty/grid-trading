@@ -19,7 +19,7 @@ export default function CycleReport() {
   }
 
   const r = report;
-  const durationSec = (r.duration_ms / 1000).toFixed(1);
+  const durationSec = r.duration_ms != null ? (Number(r.duration_ms) / 1000).toFixed(1) : '—';
 
   return (
     <div className="cr-panel">

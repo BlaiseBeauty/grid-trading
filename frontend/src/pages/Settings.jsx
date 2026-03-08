@@ -613,7 +613,7 @@ function CorrelationMatrix({ correlations }) {
                   background: isDiag ? 'transparent' : corrBg(val),
                 }}
               >
-                {val !== null ? val.toFixed(2) : '--'}
+                {val !== null ? Number(val).toFixed(2) : '--'}
               </div>
             );
           }

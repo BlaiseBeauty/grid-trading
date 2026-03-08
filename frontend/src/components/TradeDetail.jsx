@@ -65,7 +65,7 @@ export default function TradeDetail({ trade, open, onClose }) {
           {explanation ? (
             <>
               <div className="v2-td-reasoning">{explanation.text}</div>
-              <div className="v2-td-explain-meta">haiku · ${explanation.cost?.toFixed(4)}</div>
+              <div className="v2-td-explain-meta">haiku · ${Number(explanation.cost || 0).toFixed(4)}</div>
             </>
           ) : (
             <button

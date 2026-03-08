@@ -235,7 +235,7 @@ export default function Backtest() {
               <div className="bt-progress-fill" style={{ width: `${progress.progress_pct || 0}%` }} />
             </div>
             <span className="bt-progress-text">
-              {progress.progress_pct?.toFixed(0)}% &middot; {progress.trades_so_far || 0} trades &middot; {progress.current_date?.slice(0, 10) || ''}
+              {Number(progress.progress_pct || 0).toFixed(0)}% &middot; {progress.trades_so_far || 0} trades &middot; {progress.current_date?.slice(0, 10) || ''}
             </span>
           </div>
         )}
@@ -390,7 +390,7 @@ export default function Backtest() {
                     </div>
                     <span className="bt-mono bt-breakdown-stat">{data.trades} trades</span>
                     <span className={`bt-mono bt-breakdown-stat ${data.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                      {data.win_rate.toFixed(1)}%
+                      {Number(data.win_rate).toFixed(1)}%
                     </span>
                   </div>
                 ))}
@@ -414,13 +414,13 @@ export default function Backtest() {
                         <span className="bt-col" style={{ flex: 2 }} title={name}>{name.slice(0, 25)}</span>
                         <span className="bt-col bt-mono">{data.trades}</span>
                         <span className={`bt-col bt-mono ${data.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                          {data.win_rate?.toFixed(1)}%
+                          {Number(data.win_rate || 0).toFixed(1)}%
                         </span>
-                        <span className={`bt-col bt-mono ${data.avg_return >= 0 ? 'profit' : 'loss'}`}>
-                          {data.avg_return >= 0 ? '+' : ''}{data.avg_return?.toFixed(2)}%
+                        <span className={`bt-col bt-mono ${Number(data.avg_return || 0) >= 0 ? 'profit' : 'loss'}`}>
+                          {Number(data.avg_return || 0) >= 0 ? '+' : ''}{Number(data.avg_return || 0).toFixed(2)}%
                         </span>
-                        <span className={`bt-col bt-mono ${(data.sharpe || 0) >= 1 ? 'profit' : (data.sharpe || 0) >= 0.5 ? 'warn' : 'loss'}`}>
-                          {data.sharpe?.toFixed(2) ?? '\u2014'}
+                        <span className={`bt-col bt-mono ${(Number(data.sharpe) || 0) >= 1 ? 'profit' : (Number(data.sharpe) || 0) >= 0.5 ? 'warn' : 'loss'}`}>
+                          {data.sharpe != null ? Number(data.sharpe).toFixed(2) : '\u2014'}
                         </span>
                       </div>
                     ))}
@@ -436,20 +436,20 @@ export default function Backtest() {
                       <div className="bt-comp-header" style={{ color: '#b39ddb' }}>IN-SAMPLE</div>
                       <div className="bt-comp-stat">{sc.in_sample.trades} trades</div>
                       <div className={`bt-comp-stat ${sc.in_sample.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                        {sc.in_sample.win_rate.toFixed(1)}% win rate
+                        {Number(sc.in_sample.win_rate).toFixed(1)}% win rate
                       </div>
-                      <div className={`bt-comp-stat ${sc.in_sample.avg_return >= 0 ? 'profit' : 'loss'}`}>
-                        {sc.in_sample.avg_return >= 0 ? '+' : ''}{sc.in_sample.avg_return.toFixed(2)}% avg
+                      <div className={`bt-comp-stat ${Number(sc.in_sample.avg_return) >= 0 ? 'profit' : 'loss'}`}>
+                        {Number(sc.in_sample.avg_return) >= 0 ? '+' : ''}{Number(sc.in_sample.avg_return).toFixed(2)}% avg
                       </div>
                     </div>
                     <div className="bt-comp-col">
                       <div className="bt-comp-header" style={{ color: '#4fc3f7' }}>OUT-OF-SAMPLE</div>
                       <div className="bt-comp-stat">{sc.out_of_sample.trades} trades</div>
                       <div className={`bt-comp-stat ${sc.out_of_sample.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                        {sc.out_of_sample.win_rate.toFixed(1)}% win rate
+                        {Number(sc.out_of_sample.win_rate).toFixed(1)}% win rate
                       </div>
-                      <div className={`bt-comp-stat ${sc.out_of_sample.avg_return >= 0 ? 'profit' : 'loss'}`}>
-                        {sc.out_of_sample.avg_return >= 0 ? '+' : ''}{sc.out_of_sample.avg_return.toFixed(2)}% avg
+                      <div className={`bt-comp-stat ${Number(sc.out_of_sample.avg_return) >= 0 ? 'profit' : 'loss'}`}>
+                        {Number(sc.out_of_sample.avg_return) >= 0 ? '+' : ''}{Number(sc.out_of_sample.avg_return).toFixed(2)}% avg
                       </div>
                     </div>
                   </div>

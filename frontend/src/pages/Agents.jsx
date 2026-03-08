@@ -124,7 +124,7 @@ export default function Agents() {
                     )}
                     {stats.totalCost > 0 && (
                       <span className="v2-ac-cost" title="Last cycle cost">
-                        ${stats.totalCost.toFixed(3)}
+                        ${Number(stats.totalCost).toFixed(3)}
                       </span>
                     )}
                     <span className={`v2-ac-model ${a.model === 'opus' ? 'v2-ac-model--opus' : ''}`}>
