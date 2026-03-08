@@ -673,6 +673,42 @@ async function buildSynthesizerContext(trigger) {
   const forcedExploration = trigger.forcedExploration || false;
   const paperMode = process.env.LIVE_TRADING_ENABLED !== 'true';
 
+  // ── Oracle thesis injection (reads from intelligence bus) ────────────────
+  let oracleThesisContext = null;
+  try {
+    const bus = require('../../../shared/intelligence-bus');
+    const signalSymbols = [...new Set(signals.map(s => s.symbol))];
+    const allTheses = [];
+    for (const sym of signalSymbols) {
+      const theses = await bus.getActiveThesesForSymbol(sym);
+      for (const t of theses) {
+        if (!allTheses.find(x => x.payload?.thesis_id === t.payload?.thesis_id)) {
+          allTheses.push(t);
+        }
+      }
+    }
+    if (allTheses.length > 0) {
+      oracleThesisContext = allTheses.map(t => {
+        const dir = t.direction === 'bull' ? 'BULLISH' :
+                    t.direction === 'bear' ? 'BEARISH' : 'NEUTRAL';
+        return {
+          direction: dir,
+          time_horizon: t.time_horizon,
+          conviction: t.conviction,
+          name: t.payload?.name || 'Unnamed thesis',
+          summary: t.payload?.summary || '',
+          affected_assets: t.affected_assets || [],
+        };
+      });
+    }
+  } catch (err) {
+    console.warn('[SYNTH] Failed to fetch Oracle thesis context:', err.message);
+  }
+
+  const oracleInstruction = oracleThesisContext
+    ? `\nORACLE MACRO INTELLIGENCE: Consider the active theses in oracle_theses when evaluating proposals. A thesis with matching direction and high conviction (8+) should boost your confidence. A thesis with opposing direction on the same time horizon should reduce confidence and position size.`
+    : '';
+
   const context = formatUserMessage({
     section1_market_data: {
       active_signals: signals,
@@ -696,12 +732,13 @@ async function buildSynthesizerContext(trigger) {
       system_mode: systemMode,
       paper_mode: paperMode,
       hours_since_last_trade: hoursSinceLastTrade,
-      forced_exploration: forcedExploration
+      forced_exploration: forcedExploration,
+      oracle_theses: oracleThesisContext,
     },
     section3_memory: memory,
-    section4_task: isBootstrap
+    section4_task: (isBootstrap
       ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating trade volume for the learning system. Match signals against templates. Propose trades at lower confidence thresholds (>=50%). Prefer action over inaction. Full reasoning required.`
-      : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`
+      : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`) + oracleInstruction
   });
   console.log('[SYNTH] context length:', JSON.stringify(context).length);
   return warnIfLarge('strategy_synthesizer', context);
@@ -863,6 +900,23 @@ async function buildRegimeContext(trigger) {
     FROM market_regime ORDER BY created_at DESC LIMIT 10
   `);
 
+  // Oracle macro regime context (if available)
+  let oracleMacroRegime = null;
+  try {
+    const oracleRegime = await queryOne(
+      `SELECT payload FROM intelligence_bus
+       WHERE event_type = 'macro_regime_update'
+         AND source_system = 'oracle'
+         AND (expires_at IS NULL OR expires_at > NOW())
+       ORDER BY created_at DESC LIMIT 1`
+    );
+    if (oracleRegime?.payload) {
+      oracleMacroRegime = typeof oracleRegime.payload === 'string'
+        ? JSON.parse(oracleRegime.payload)
+        : oracleRegime.payload;
+    }
+  } catch {}
+
   const context = formatUserMessage({
     section1_market_data: {
       price_data_30d: priceData,
@@ -873,10 +927,12 @@ async function buildRegimeContext(trigger) {
       correlations
     },
     section2_context: {
-      regime_history: regimeHistory
+      regime_history: regimeHistory,
+      oracle_macro_regime: oracleMacroRegime,
     },
     section3_memory: null,
-    section4_task: `Classify current market regime. The intraday_24h section contains the most recent price action (1h candles + 24h change %) — weigh this heavily alongside the 30-day daily data. Estimate transition probabilities for next 7 days. Include MVRV cycle overlay.`
+    section4_task: `Classify current market regime. The intraday_24h section contains the most recent price action (1h candles + 24h change %) — weigh this heavily alongside the 30-day daily data. Estimate transition probabilities for next 7 days. Include MVRV cycle overlay.` +
+      (oracleMacroRegime ? `\nORACLE MACRO REGIME: ${oracleMacroRegime.overall || 'unknown'} — ${oracleMacroRegime.dominant_narrative || ''}. Factor this macro backdrop into your regime classification.` : '')
   });
   return warnIfLarge('regime_classifier', context);
 }

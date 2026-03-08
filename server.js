@@ -157,6 +157,9 @@ async function registerRoutes() {
   // GRID performance digest API
   fastify.register(require('./systems/grid/api/performance-digest'), { prefix: '/api' });
 
+  // ORACLE API routes
+  fastify.register(require('./systems/oracle/api/theses'), { prefix: '/api/oracle' });
+
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
     fastify.get('/ws', { websocket: true }, (socket, req) => {
@@ -459,6 +462,16 @@ function setupCron() {
     } catch (err) {
       console.error('[CRON] Bus cleanup failed:', err.message);
     }
+    // Purge processed oracle raw feed items older than 30 days
+    try {
+      const { query: rawQ } = require('./db/connection');
+      const purged = await rawQ(
+        `DELETE FROM oracle_raw_feed WHERE processed = TRUE AND created_at < NOW() - INTERVAL '30 days'`
+      );
+      if (purged.rowCount > 0) console.log(`[CRON] Oracle raw feed purge: ${purged.rowCount} items`);
+    } catch (err) {
+      console.error('[CRON] Oracle raw feed purge failed:', err.message);
+    }
   });
 
   // ── GRID: weekly performance digest — every Monday at 06:00 ──────────────────
@@ -588,9 +601,29 @@ function setupCron() {
   // cron.schedule('0 */2 * * *', async () => { /* COMPASS: allocation review every 2h */ });
   // cron.schedule('*/10 * * * *', async () => { /* COMPASS: risk state monitor every 10m */ });
 
-  // --- ORACLE cron stubs (Phase 2) ---
-  // cron.schedule('0 */6 * * *', async () => { /* ORACLE: thesis generation every 6h */ });
-  // cron.schedule('0 * * * *', async () => { /* ORACLE: data ingestion hourly */ });
+  // --- ORACLE cron ---
+  const { runIngestion } = require('./systems/oracle/ingestion/orchestrator');
+
+  // ORACLE ingestion — runs at :00 of 0,6,12,18 (30 min BEFORE agent cycle)
+  cron.schedule('0 0,6,12,18 * * *', async () => {
+    console.log('[CRON] Starting ORACLE ingestion...');
+    try {
+      await runIngestion();
+    } catch (err) {
+      console.error('[CRON] ORACLE ingestion failed:', err.message);
+    }
+  });
+
+  // ORACLE agent cycle — runs at :30 of 0,6,12,18 (after ingestion)
+  cron.schedule('30 0,6,12,18 * * *', async () => {
+    console.log('[CRON] Starting ORACLE cycle...');
+    try {
+      const oracleOrchestrator = require('./systems/oracle/agents/orchestrator');
+      await oracleOrchestrator.runCycle({ broadcast });
+    } catch (err) {
+      console.error('[CRON] ORACLE cycle failed:', err.message);
+    }
+  });
 }
 
 // ---------- Boot ----------

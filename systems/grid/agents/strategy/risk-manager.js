@@ -8,6 +8,7 @@ const riskLimitsConfig = require('../../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
 const { queryOne, queryAll, query } = require('../../../../db/connection');
 const { getLatestCorrelations } = require('../correlation-calculator');
+const { resolveProposal } = require('../../../../shared/conflict-resolver');
 
 class RiskManagerAgent extends BaseAgent {
   constructor() {
@@ -102,6 +103,21 @@ class RiskManagerAgent extends BaseAgent {
         rejection_reason: rej.reason || 'risk_manager_rejected',
         rejection_detail: rej.detail,
       });
+    }
+
+    // Apply Oracle conflict resolver to approved proposals (adjusts sizing)
+    for (let i = 0; i < approved.length; i++) {
+      try {
+        approved[i] = await resolveProposal(approved[i]);
+        if (approved[i].size_multiplier && approved[i].size_multiplier !== 1.0) {
+          const sizePct = approved[i].approved_size_pct || approved[i].position_size_suggestion_pct || 0;
+          approved[i].approved_size_pct = Math.round(sizePct * approved[i].size_multiplier * 100) / 100;
+          console.log(`[RISK_MANAGER] Oracle adjustment: ${approved[i].symbol} ` +
+            `size ×${approved[i].size_multiplier} → ${approved[i].approved_size_pct}%`);
+        }
+      } catch (err) {
+        console.warn('[RISK_MANAGER] Conflict resolver failed (non-critical):', err.message);
+      }
     }
 
     return {
