@@ -492,6 +492,16 @@ In paper mode, your primary goal is GENERATING LEARNING DATA, not capital preser
 HARD DIRECTIONAL RULE:
 You MUST NOT propose a SHORT or SELL trade when the current regime is trending_up or bullish. If all available templates are bearish and the regime is bullish, respond with action: 'hold' and explain why no valid template matches current conditions. This rule is absolute and overrides signal confluence.
 
+SIGNAL CONSENSUS GUARD (MANDATORY):
+Before proposing ANY directional trade, you MUST perform a consensus check across the 8 knowledge agent domains (trend, momentum, volatility, volume, pattern, orderflow, macro, sentiment). For each domain, determine its net directional lean by comparing the number and average strength of its bearish vs bullish signals for the target symbol.
+- Count how many domains lean BEARISH, BULLISH, or NEUTRAL for your proposed direction.
+- If 5 or more of the 8 domains lean OPPOSITE to your proposed direction or are NEUTRAL, you MUST NOT propose the trade. Cherry-picking 2-3 high-strength signals while ignoring that the majority of domains disagree is explicitly forbidden.
+- If exactly 4 domains oppose: you MAY propose but MUST cap confidence at 50% and label it exploration-only.
+- A domain with no signals for the symbol counts as NEUTRAL (opposing).
+- A domain where bullish and bearish signals are within 10 strength points of each other counts as NEUTRAL.
+- Include the consensus tally (e.g., "Consensus: 3 bearish, 3 bullish, 2 neutral") in every proposal thesis.
+This rule prevents overriding a genuinely mixed or opposing signal environment with selective evidence.
+
 REGIME-SPECIFIC STRATEGIES:
 Your direction bias MUST follow the regime. Do NOT default to short or long — follow the signals.
 

@@ -65,11 +65,11 @@ async function createFromSynthesizer({ agentName, agentDecisionId, symbol, side,
     INSERT INTO standing_orders (
       created_by_agent, agent_decision_id, symbol, asset_class, side,
       conditions, execution_params, confidence,
-      risk_validated_at, expires_at
+      expires_at
     ) VALUES (
       $1, $2, $3, 'crypto', $4,
       $5, $6, $7,
-      NOW(), NOW() + make_interval(hours => $8)
+      NOW() + make_interval(hours => $8)
     )
   `, [agentName, agentDecisionId, symbol, side,
       JSON.stringify(conditions), JSON.stringify(executionParams),

@@ -6,21 +6,22 @@
  */
 
 const http = require('http');
-const decisionsDb = require('../db/queries/decisions');
-const costsDb = require('../db/queries/costs');
-const signalsDb = require('../db/queries/signals');
-const portfolioDb = require('../db/queries/portfolio');
-const standingOrdersDb = require('../db/queries/standing-orders');
-const indicatorCacheDb = require('../db/queries/indicator-cache');
-const equityDb = require('../db/queries/equity');
-const cycleReportsDb = require('../db/queries/cycle-reports');
-const positionReviewsDb = require('../db/queries/position-reviews');
-const marketDataDb = require('../db/queries/market-data');
-const { queryOne: dbQueryOne, queryAll: dbQueryAll, query: dbQuery } = require('../db/connection');
-const { notifications } = require('../services/notifications');
-const logger = require('../services/logger');
-const { symbols: trackedSymbols, timeframes } = require('../config/symbols');
-const { getRiskLimits, BOOTSTRAP } = require('../config/risk-limits');
+const decisionsDb = require('../../../db/queries/decisions');
+const costsDb = require('../../../db/queries/costs');
+const signalsDb = require('../../../db/queries/signals');
+const portfolioDb = require('../../../db/queries/portfolio');
+const standingOrdersDb = require('../../../db/queries/standing-orders');
+const indicatorCacheDb = require('../../../db/queries/indicator-cache');
+const equityDb = require('../../../db/queries/equity');
+const cycleReportsDb = require('../../../db/queries/cycle-reports');
+const positionReviewsDb = require('../../../db/queries/position-reviews');
+const marketDataDb = require('../../../db/queries/market-data');
+const { queryOne: dbQueryOne, queryAll: dbQueryAll, query: dbQuery } = require('../../../db/connection');
+const { notifications } = require('../../../services/notifications');
+const logger = require('../../../services/logger');
+const { symbols: trackedSymbols, timeframes } = require('../../../config/symbols');
+const { getRiskLimits, BOOTSTRAP, SCRAM: SCRAM_OVERRIDES } = require('../config/risk-limits');
+const { getLatestCorrelations } = require('./correlation-calculator');
 
 // Knowledge agents (8 total — all run in parallel)
 const TrendAgent = require('./knowledge/trend');
@@ -59,7 +60,7 @@ const riskManager = new RiskManagerAgent();
 const performanceAnalyst = new PerformanceAnalystAgent();
 const patternDiscovery = new PatternDiscoveryAgent();
 
-const tradesDb = require('../db/queries/trades');
+const tradesDb = require('../../../db/queries/trades');
 
 const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
 
@@ -252,10 +253,15 @@ async function checkStandingOrders(broadcast) {
     const cond = typeof order.conditions === 'string' ? JSON.parse(order.conditions) : (order.conditions || {});
     let shouldTrigger = false;
 
-    if (cond.price_below != null && currentPrice <= cond.price_below) {
-      shouldTrigger = true;
-    } else if (cond.price_above != null && currentPrice >= cond.price_above) {
-      shouldTrigger = true;
+    if (cond.price_above != null && cond.price_below != null) {
+      // Range condition: price must be WITHIN [price_above, price_below]
+      shouldTrigger = currentPrice >= cond.price_above && currentPrice <= cond.price_below;
+    } else if (cond.price_below != null) {
+      // Single lower boundary: trigger when price drops to or below
+      shouldTrigger = currentPrice <= cond.price_below;
+    } else if (cond.price_above != null) {
+      // Single upper boundary: trigger when price rises to or above
+      shouldTrigger = currentPrice >= cond.price_above;
     }
 
     if (!shouldTrigger) continue;
@@ -281,35 +287,122 @@ async function checkStandingOrders(broadcast) {
         continue;
       }
 
-      // Check MAX_OPEN_POSITIONS limit (respects bootstrap phase)
+      // --- Comprehensive risk pre-flight (mirrors risk-manager.js preflightCheck) ---
       const limits = getRiskLimits();
       let maxPositions = limits.MAX_OPEN_POSITIONS;
       let minConfidence = limits.MIN_CONFIDENCE_TO_TRADE;
+      let scramOverrides = null;
+      let bootstrapPhase = null;
       try {
         const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
-        const phase = bootstrapRow?.phase;
-        if (phase && BOOTSTRAP[phase]?.MAX_OPEN_POSITIONS != null) {
-          maxPositions = BOOTSTRAP[phase].MAX_OPEN_POSITIONS;
+        bootstrapPhase = bootstrapRow?.phase;
+        if (bootstrapPhase && BOOTSTRAP[bootstrapPhase]?.MAX_OPEN_POSITIONS != null) {
+          maxPositions = BOOTSTRAP[bootstrapPhase].MAX_OPEN_POSITIONS;
         }
-        if (phase && BOOTSTRAP[phase]?.MIN_CONFIDENCE_TO_TRADE != null) {
-          minConfidence = BOOTSTRAP[phase].MIN_CONFIDENCE_TO_TRADE;
+        if (bootstrapPhase && BOOTSTRAP[bootstrapPhase]?.MIN_CONFIDENCE_TO_TRADE != null) {
+          minConfidence = BOOTSTRAP[bootstrapPhase].MIN_CONFIDENCE_TO_TRADE;
         }
       } catch { /* use default */ }
 
-      // Confidence gate: standing orders must meet MIN_CONFIDENCE_TO_TRADE at trigger time
+      const rejectReasons = [];
+
+      // SCRAM check — block all new positions during crisis/emergency
+      try {
+        const activeScram = await dbQueryOne("SELECT level FROM scram_events WHERE cleared_at IS NULL ORDER BY activated_at DESC LIMIT 1");
+        if (activeScram) {
+          scramOverrides = SCRAM_OVERRIDES?.[activeScram.level];
+          if (scramOverrides?.NO_NEW_POSITIONS) {
+            rejectReasons.push(`scram_active (${activeScram.level})`);
+          }
+          if (scramOverrides?.MAX_OPEN_POSITIONS != null) {
+            maxPositions = Math.min(maxPositions, scramOverrides.MAX_OPEN_POSITIONS);
+          }
+        }
+      } catch { /* proceed without scram check */ }
+
+      // Drawdown check — block if max drawdown exceeded
+      try {
+        const hwmRow = await dbQueryOne('SELECT MAX(total_value) as high_water_mark FROM equity_snapshots');
+        const highWaterMark = parseFloat(hwmRow?.high_water_mark);
+        if (highWaterMark > 0) {
+          const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
+          const [realisedRow, unrealisedRow] = await Promise.all([
+            dbQueryOne("SELECT COALESCE(SUM(pnl_realised), 0) as total FROM trades WHERE status = 'closed'"),
+            dbQueryOne('SELECT COALESCE(SUM(unrealised_pnl), 0) as total FROM portfolio_state'),
+          ]);
+          const currentEquity = startingCapital + parseFloat(realisedRow?.total || 0) + parseFloat(unrealisedRow?.total || 0);
+          if (currentEquity < highWaterMark) {
+            const drawdownPct = ((highWaterMark - currentEquity) / highWaterMark) * 100;
+            if (drawdownPct >= limits.MAX_DRAWDOWN_PCT) {
+              rejectReasons.push(`max_drawdown_exceeded (${drawdownPct.toFixed(1)}% >= ${limits.MAX_DRAWDOWN_PCT}%)`);
+            }
+          }
+        }
+      } catch { /* proceed without drawdown check */ }
+
+      // Daily loss limit check
+      try {
+        const dailyPnl = await dbQueryOne(`
+          SELECT COALESCE(SUM(pnl_realised), 0) as daily_pnl
+          FROM trades WHERE status = 'closed' AND closed_at > CURRENT_DATE
+        `);
+        const portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
+        const dailyLossPct = Math.abs(Math.min(0, (parseFloat(dailyPnl?.daily_pnl) / portfolioValue) * 100));
+        if (dailyLossPct >= limits.MAX_DAILY_LOSS_PCT) {
+          rejectReasons.push(`daily_loss_limit (${dailyLossPct.toFixed(1)}% >= ${limits.MAX_DAILY_LOSS_PCT}%)`);
+        }
+      } catch { /* proceed without daily loss check */ }
+
+      // Confidence gate
       if ((order.confidence || 0) < minConfidence) {
-        console.log(`[MONITOR] Skipping standing order #${order.id} — confidence ${order.confidence} < ${minConfidence}`);
-        await standingOrdersDb.markFailed(order.id, `low_confidence (${order.confidence} < ${minConfidence})`)
+        rejectReasons.push(`low_confidence (${order.confidence} < ${minConfidence})`);
+      }
+
+      // Correlated exposure check
+      try {
+        const openTrades = await dbQueryAll("SELECT symbol, side, entry_price, quantity FROM trades WHERE status = 'open'");
+        if (openTrades.length > 0) {
+          let correlations;
+          try { correlations = await getLatestCorrelations(); } catch { correlations = { BTC_ETH: 0.85, BTC_SOL: 0.85, ETH_SOL: 0.85 }; }
+          const portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
+          const newSymbol = (order.symbol || '').split('/')[0];
+          const newSign = order.side === 'sell' ? -1 : 1;
+          const newSizePct = 3; // default standing order size
+          let correlatedSum = newSizePct;
+          for (const trade of openTrades) {
+            const tradeSymbol = (trade.symbol || '').split('/')[0];
+            if (tradeSymbol === newSymbol) continue;
+            const pairKey1 = `${newSymbol}_${tradeSymbol}`;
+            const pairKey2 = `${tradeSymbol}_${newSymbol}`;
+            const corr = correlations[pairKey1] ?? correlations[pairKey2] ?? 0;
+            if (Math.abs(corr) <= 0.5) continue;
+            const existingSizePct = (parseFloat(trade.entry_price) * parseFloat(trade.quantity) / portfolioValue) * 100;
+            const existingSign = trade.side === 'sell' ? -1 : 1;
+            if (corr * newSign * existingSign > 0) correlatedSum += existingSizePct * Math.abs(corr);
+          }
+          if (correlatedSum > limits.MAX_CORRELATED_EXPOSURE_PCT) {
+            rejectReasons.push(`correlated_exposure (${correlatedSum.toFixed(1)}% > ${limits.MAX_CORRELATED_EXPOSURE_PCT}%)`);
+          }
+        }
+      } catch { /* proceed without correlation check */ }
+
+      // Max open positions check
+      const openCount = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
+      if ((openCount?.cnt || 0) >= maxPositions) {
+        rejectReasons.push(`max_positions_reached (${openCount.cnt}/${maxPositions})`);
+      }
+
+      // If any risk check failed, reject the order
+      if (rejectReasons.length > 0) {
+        const reason = rejectReasons.join('; ');
+        console.log(`[MONITOR] Standing order #${order.id} rejected by risk pre-flight: ${reason}`);
+        await standingOrdersDb.markFailed(order.id, reason.slice(0, 200))
           .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
         continue;
       }
 
-      const openCount = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
-      if ((openCount?.cnt || 0) >= maxPositions) {
-        console.log(`[MONITOR] Skipping standing order #${order.id} — ${openCount.cnt} open positions (max ${maxPositions})`);
-        await standingOrdersDb.revertToActive(order.id).catch(() => {});
-        continue;
-      }
+      // Mark risk validated NOW (after passing all checks)
+      await dbQuery('UPDATE standing_orders SET risk_validated_at = NOW() WHERE id = $1', [order.id]).catch(() => {});
 
       // Parse execution params for TP/SL
       const exec = typeof order.execution_params === 'string' ? JSON.parse(order.execution_params) : (order.execution_params || {});

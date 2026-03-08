@@ -8,13 +8,13 @@
 // These are called by base-agent.js: CONTEXT_BUILDERS[promptKey](trigger)
 // ============================================================================
 
-const { queryAll, queryOne } = require('../db/connection');
+const { queryAll, queryOne } = require('../../../db/connection');
 const { getRelevantMemory } = require('./memory-injection');
 const {
   getCurrentRegime, getPortfolioState, getActiveSignals,
   getRecentTrades, getUpcomingEvents, getScramState,
   getBootstrapPhase, getExternalData,
-} = require('../db/queries/context');
+} = require('../../../db/queries/context');
 
 
 // ============================================================================
@@ -417,6 +417,17 @@ async function buildMacroContext(trigger) {
     crossAsset._note = `Macro cross-asset data (${missingMacro.join(', ')}): NOT FETCHED. Base macro analysis on crypto-internal signals only.`;
   }
 
+  // Data quality assessment — count how many external feeds have actual data
+  const hasGlassnode = glassnode && Object.values(glassnode).some(v => v?.data && v.data !== null && v.data?.error !== 'unavailable');
+  const hasCryptoquant = cryptoquant && Object.values(cryptoquant).some(v => v?.data && v.data !== null && v.data?.error !== 'unavailable');
+  const hasFred = fred && Object.values(fred).some(v => v?.data && v.data !== null && v.data?.error !== 'unavailable');
+  const hasCrossAsset = missingMacro.length < 3; // at least 1 of SPY/GLD/DXY
+  const feedsAvailable = [hasGlassnode, hasCryptoquant, hasFred, hasCrossAsset].filter(Boolean).length;
+  let macroDataQuality = 'good';
+  if (feedsAvailable === 0) macroDataQuality = 'critical';
+  else if (feedsAvailable <= 1) macroDataQuality = 'degraded';
+  else if (feedsAvailable <= 2) macroDataQuality = 'partial';
+
   // Upcoming events
   const events = await getUpcomingEvents(72);
 
@@ -434,8 +445,16 @@ async function buildMacroContext(trigger) {
     signalCategories: ['macro', 'on_chain']
   }));
 
+  const dataQualityWarning = macroDataQuality === 'critical'
+    ? 'CRITICAL DATA WARNING: ALL external macro data feeds are unavailable (Glassnode, CryptoQuant, FRED, SPY/GLD/DXY). You are operating blind on macro. Limit signal output to LOW STRENGTH (≤40) observations derived from crypto price structure only. Do NOT emit high-confidence directional macro signals without external data to support them.'
+    : macroDataQuality === 'degraded'
+    ? 'DEGRADED DATA WARNING: Most external macro feeds are unavailable. Cap signal strength at ≤55 for any signal that would normally require external data confirmation.'
+    : null;
+
   const context = formatUserMessage({
     section1_market_data: {
+      data_quality: macroDataQuality,
+      ...(dataQualityWarning ? { data_quality_warning: dataQualityWarning } : {}),
       glassnode, cryptoquant, fred,
       cross_asset_prices: crossAsset,
       upcoming_events: events,
@@ -447,7 +466,9 @@ async function buildMacroContext(trigger) {
       transition_probabilities: regime.transition_probabilities
     },
     section3_memory: memory,
-    section4_task: `Analyse macro environment and on-chain data. Assess DXY, yields, VIX, MVRV cycle position, exchange flows, and upcoming events. Output signals in JSON.`
+    section4_task: macroDataQuality === 'critical'
+      ? `Analyse macro environment. CRITICAL: All external data feeds are unavailable. You MUST NOT emit high-strength signals based on assumptions. Only emit signals with strength ≤40 derived from crypto price structure. State data limitations explicitly in every signal reasoning. Output signals in JSON.`
+      : `Analyse macro environment and on-chain data. Assess DXY, yields, VIX, MVRV cycle position, exchange flows, and upcoming events. Output signals in JSON.`
   });
   return warnIfLarge('macro_agent', context);
 }
@@ -480,13 +501,32 @@ async function buildSentimentContext(trigger) {
     fearGreed = { fear_greed_index: { data: null, note: 'Fear & Greed Index: DATA UNAVAILABLE — do not assume any value. Treat sentiment as unknown.' } };
   }
 
+  // Data quality assessment for sentiment feeds
+  const hasSantiment = Object.values(santiment).some(s => s && Object.values(s).some(v => v?.data && v.data !== null && v.data?.error !== 'unavailable'));
+  const hasWhaleAlerts = whaleAlerts?.whale_alerts?.data && !whaleAlerts.whale_alerts.data?.error;
+  const hasOnChain = onChain && Object.values(onChain).some(v => v?.data && v.data !== null && v.data?.error !== 'unavailable');
+  const hasFearGreed = fearGreed?.fear_greed_index?.data && fearGreed.fear_greed_index.data !== null;
+  const sentimentFeedsAvailable = [hasSantiment, hasWhaleAlerts, hasOnChain, hasFearGreed].filter(Boolean).length;
+  let sentimentDataQuality = 'good';
+  if (sentimentFeedsAvailable === 0) sentimentDataQuality = 'critical';
+  else if (sentimentFeedsAvailable === 1) sentimentDataQuality = 'degraded';
+  else if (sentimentFeedsAvailable <= 2) sentimentDataQuality = 'partial';
+
   const memory = truncateLearnings(await getRelevantMemory('sentimentAgent', {
     symbols, assetClasses: [assetClass], regime: regime.regime,
     signalCategories: ['sentiment']
   }));
 
+  const sentimentDataWarning = sentimentDataQuality === 'critical'
+    ? 'CRITICAL DATA WARNING: ALL sentiment feeds are unavailable. Do NOT emit signals. Return empty signals array.'
+    : sentimentDataQuality === 'degraded'
+    ? 'DEGRADED DATA WARNING: Most sentiment feeds are unavailable. Cap signal strength at ≤50 and note data limitations in reasoning.'
+    : null;
+
   const context = formatUserMessage({
     section1_market_data: {
+      data_quality: sentimentDataQuality,
+      ...(sentimentDataWarning ? { data_quality_warning: sentimentDataWarning } : {}),
       fear_greed: fearGreed,
       per_asset_sentiment: santiment,
       whale_alerts: whaleAlerts?.whale_alerts?.data || [],
@@ -494,7 +534,9 @@ async function buildSentimentContext(trigger) {
     },
     section2_context: { regime: regime.regime, regime_confidence: regime.confidence },
     section3_memory: memory,
-    section4_task: `Analyse sentiment data for ${symbols.join(', ')}. Identify emotional extremes, social volume spikes, sentiment divergences, whale activity, and on-chain signals (SOPR, exchange flows, active addresses, supply in profit). Output signals in JSON.`
+    section4_task: sentimentDataQuality === 'critical'
+      ? `Analyse sentiment data for ${symbols.join(', ')}. CRITICAL: All sentiment data feeds are unavailable. Return empty signals array. Do not fabricate sentiment signals without data.`
+      : `Analyse sentiment data for ${symbols.join(', ')}. Identify emotional extremes, social volume spikes, sentiment divergences, whale activity, and on-chain signals (SOPR, exchange flows, active addresses, supply in profit). Output signals in JSON.`
   });
   return warnIfLarge('sentiment_agent', context);
 }
