@@ -1,8 +1,10 @@
-const { queryOne, queryAll, query } = require('../db/connection');
+const { queryOne, queryAll, query } = require('../../../db/connection');
 const riskLimitsConfig = require('../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
-const { notifications } = require('../services/notifications');
+const { notifications } = require('../../../services/notifications');
 const { checkLiveTradingReadiness } = require('../agents/readiness-check');
+const bus = require('../../../shared/intelligence-bus');
+const platformNotifications = require('../../../shared/notifications');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -111,6 +113,10 @@ async function routes(fastify) {
     `, [level]);
     fastify.broadcast('scram_activated', { level });
     notifications.scramActivated(level).catch(() => {});
+    try {
+      await bus.publish({ source: 'grid', eventType: 'scram_triggered', payload: { level, trigger: 'manual' } });
+      await platformNotifications.notifyScram(level);
+    } catch (e) { /* best-effort */ }
     return result;
   });
 

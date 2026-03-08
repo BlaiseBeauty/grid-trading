@@ -4,8 +4,8 @@
  * Results are stored in the correlation_matrix table.
  */
 
-const { queryAll, query } = require('../db/connection');
-const { symbols: trackedSymbols } = require('../config/symbols');
+const { queryAll, query } = require('../../../db/connection');
+const { symbols: trackedSymbols } = require('../../../config/symbols');
 
 const LOOKBACK_DAYS = 30;
 const SYMBOL_NAMES = trackedSymbols.map(s => s.symbol);

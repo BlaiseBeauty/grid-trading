@@ -1,5 +1,5 @@
-const { queryAll, queryOne, query } = require('../db/connection');
-const { notify, TIERS } = require('../services/notifications');
+const { queryAll, queryOne, query } = require('../../../db/connection');
+const { notify, TIERS } = require('../../../services/notifications');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

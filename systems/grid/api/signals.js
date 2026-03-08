@@ -1,4 +1,4 @@
-const signalsDb = require('../db/queries/signals');
+const signalsDb = require('../../../db/queries/signals');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

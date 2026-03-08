@@ -3,8 +3,8 @@
 // agents/external-data-fetcher.js
 // ============================================================================
 
-const { query } = require('../db/connection');
-const { fetchGlassnode } = require('../data-sources/glassnode');
+const { query } = require('../../../db/connection');
+const { fetchGlassnode } = require('../../../data-sources/glassnode');
 
 const COINGLASS_API_KEY  = process.env.COINGLASS_API_KEY  || null;
 

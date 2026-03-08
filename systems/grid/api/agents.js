@@ -1,6 +1,6 @@
-const decisionsDb = require('../db/queries/decisions');
+const decisionsDb = require('../../../db/queries/decisions');
 const orchestrator = require('../agents/orchestrator');
-const { queryAll, queryOne } = require('../db/connection');
+const { queryAll, queryOne } = require('../../../db/connection');
 
 const AGENT_REGISTRY = {
   knowledge: [

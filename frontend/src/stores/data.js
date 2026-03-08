@@ -47,6 +47,10 @@ export const useDataStore = create((set, get) => ({
   lastCycle: null,
   cycleStatus: null, // { running, cycleNumber, agents, completed[] }
 
+  // Intelligence bus events (ring buffer, max 50)
+  busEvents: [],
+  unreadBusCount: 0,
+
   // Trade execution flash
   tradeFlash: false,
   setTradeFlash: (val) => set({ tradeFlash: val }),

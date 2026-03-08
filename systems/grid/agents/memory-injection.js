@@ -4,8 +4,8 @@
  * token budgets per agent tier.
  */
 
-const learningsDb = require('../db/queries/learnings');
-const { queryAll } = require('../db/connection');
+const learningsDb = require('../../../db/queries/learnings');
+const { queryAll } = require('../../../db/connection');
 
 const TOKEN_BUDGETS = {
   trendAgent: 500,

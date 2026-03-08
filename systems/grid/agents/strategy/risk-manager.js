@@ -6,12 +6,12 @@
 const BaseAgent = require('../base-agent');
 const riskLimitsConfig = require('../../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
-const { queryOne, queryAll, query } = require('../../db/connection');
+const { queryOne, queryAll, query } = require('../../../../db/connection');
 const { getLatestCorrelations } = require('../correlation-calculator');
 
 class RiskManagerAgent extends BaseAgent {
   constructor() {
-    super({ name: 'risk_manager', layer: 'strategy', model: 'claude-sonnet-4-6' });
+    super({ name: 'risk_manager', layer: 'strategy', model: 'claude-sonnet-4-6', costTier: 'grid_risk_manager' });
   }
 
   /**

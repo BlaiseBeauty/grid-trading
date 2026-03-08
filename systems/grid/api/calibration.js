@@ -3,7 +3,7 @@
  * GET /api/calibration — full calibration table + calibration_score
  */
 
-const { queryAll } = require('../db/connection');
+const { queryAll } = require('../../../db/connection');
 const { runCalibration } = require('../agents/calibration-worker');
 const { getLatestCorrelations } = require('../agents/correlation-calculator');
 

@@ -1,5 +1,5 @@
-const templatesDb = require('../db/queries/templates');
-const { queryAll, queryOne } = require('../db/connection');
+const templatesDb = require('../../../db/queries/templates');
+const { queryAll, queryOne } = require('../../../db/connection');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

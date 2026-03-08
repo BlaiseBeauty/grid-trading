@@ -1,7 +1,18 @@
-const { queryAll, queryOne } = require('../db/connection');
+const { queryAll, queryOne } = require('../../../db/connection');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
+
+  // GET /api/market-data — list available symbols
+  fastify.get('/market-data', async () => {
+    return queryAll(`
+      SELECT DISTINCT symbol, timeframe, COUNT(*)::int as candles,
+             MIN(timestamp) as earliest, MAX(timestamp) as latest
+      FROM market_data
+      GROUP BY symbol, timeframe
+      ORDER BY symbol, timeframe
+    `);
+  });
 
   // GET /api/market-data/:symbol?timeframe=4h&limit=100
   fastify.get('/market-data/:symbol', async (request) => {

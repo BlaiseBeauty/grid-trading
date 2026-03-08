@@ -7,17 +7,18 @@
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
-const decisionsDb = require('../db/queries/decisions');
-const signalsDb = require('../db/queries/signals');
-const costsDb = require('../db/queries/costs');
-const learningsDb = require('../db/queries/learnings');
+const decisionsDb = require('../../../db/queries/decisions');
+const signalsDb = require('../../../db/queries/signals');
+const costsDb = require('../../../db/queries/costs');
+const learningsDb = require('../../../db/queries/learnings');
 const AGENT_PROMPTS = require('../config/agent-prompts');
 const { CONTEXT_BUILDERS } = require('./context-builders');
-const logger = require('../services/logger');
+const logger = require('../../../services/logger');
+const aiCosts = require('../../../shared/ai-costs');
 
 const client = new Anthropic();
 
-// Model pricing (per 1M tokens)
+// Model pricing (per 1M tokens) — used for local cost calculation
 const PRICING = {
   'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
   'claude-opus-4-6': { input: 15.0, output: 75.0 },
@@ -42,10 +43,11 @@ const AGENT_NAME_TO_PROMPT_KEY = {
 };
 
 class BaseAgent {
-  constructor({ name, layer = 'knowledge', model = 'claude-sonnet-4-6' }) {
+  constructor({ name, layer = 'knowledge', model = 'claude-sonnet-4-6', costTier = 'grid_knowledge' }) {
     this.name = name;
     this.layer = layer;
     this.model = model;
+    this.costTier = costTier;
     this.promptKey = AGENT_NAME_TO_PROMPT_KEY[name] || name;
   }
 
@@ -102,7 +104,8 @@ class BaseAgent {
     let inputTokens = 0, outputTokens = 0, costUsd = 0;
     try {
       // Call Claude with retry on rate limit (streaming for long requests)
-      const maxTokens = this.promptKey === 'strategySynthesizer' ? 32000 : 8192;
+      const rawMaxTokens = this.promptKey === 'strategySynthesizer' ? 32000 : 8192;
+      const maxTokens = aiCosts.clampMaxTokens(this.costTier, rawMaxTokens);
       let response;
       let outputText = '';
       for (let attempt = 0; attempt < 3; attempt++) {
@@ -223,7 +226,7 @@ class BaseAgent {
         }
       }
 
-      // Track cost
+      // Track cost (legacy table)
       await costsDb.record({
         service: 'anthropic',
         agent_name: this.name,
@@ -233,6 +236,16 @@ class BaseAgent {
         cost_usd: costUsd,
         cycle_number: cycleNumber,
       });
+
+      // Record to platform_ai_costs (unified cross-system tracking)
+      aiCosts.recordUsage({
+        source_system: 'grid',
+        agent_name: this.name,
+        model: this.model,
+        cycle_id: cycleNumber || null,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
+      }).catch(err => console.error('[AI-COSTS] recordUsage failed:', err.message));
 
       console.log(`[${this.name.toUpperCase()}] Completed in ${durationMs}ms — ${storedCount}/${parsed.signals?.length || 0} signals stored, $${costUsd.toFixed(4)}`);
 

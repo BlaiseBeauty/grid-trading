@@ -3,7 +3,7 @@
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
-const { query, queryOne, queryAll } = require('../db/connection');
+const { query, queryOne, queryAll } = require('../../../db/connection');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -29,11 +29,11 @@ async function routes(fastify) {
     const runId = result.rows[0].id;
 
     // Spawn Python backtest engine as background process
-    const pythonPath = path.join(__dirname, '..', 'trading', 'venv', 'bin', 'python');
-    const scriptPath = path.join(__dirname, '..', 'trading', 'backtest_engine.py');
+    const pythonPath = path.join(__dirname, '..', '..', '..', 'trading', 'venv', 'bin', 'python');
+    const scriptPath = path.join(__dirname, '..', '..', '..', 'trading', 'backtest_engine.py');
 
     const child = spawn(pythonPath, [scriptPath, '--run-id', String(runId)], {
-      cwd: path.join(__dirname, '..', 'trading'),
+      cwd: path.join(__dirname, '..', '..', '..', 'trading'),
       env: { ...process.env },
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe'],

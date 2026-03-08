@@ -1,4 +1,4 @@
-const cycleReportsDb = require('../db/queries/cycle-reports');
+const cycleReportsDb = require('../../../db/queries/cycle-reports');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

@@ -5,13 +5,13 @@
  */
 
 const BaseAgent = require('../base-agent');
-const signalsDb = require('../../db/queries/signals');
-const templatesDb = require('../../db/queries/templates');
-const { queryAll } = require('../../db/connection');
+const signalsDb = require('../../../../db/queries/signals');
+const templatesDb = require('../../../../db/queries/templates');
+const { queryAll } = require('../../../../db/connection');
 
 class SynthesizerAgent extends BaseAgent {
   constructor() {
-    super({ name: 'synthesizer', layer: 'strategy', model: 'claude-opus-4-6' });
+    super({ name: 'synthesizer', layer: 'strategy', model: 'claude-opus-4-6', costTier: 'grid_synthesizer' });
   }
 
   /**

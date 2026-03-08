@@ -82,7 +82,7 @@ function scheduleCalibration() {
   calibrationTimer = setTimeout(async () => {
     calibrationTimer = null;
     try {
-      const { runCalibration } = require('./agents/calibration-worker');
+      const { runCalibration } = require('./systems/grid/agents/calibration-worker');
       const result = await runCalibration();
       broadcast('calibration_update', result);
     } catch (err) {
@@ -131,23 +131,31 @@ async function registerRoutes() {
     return prices;
   });
 
-  // Protected API routes
-  fastify.register(require('./api/portfolio'), { prefix: '/api' });
-  fastify.register(require('./api/trades'), { prefix: '/api' });
-  fastify.register(require('./api/agents'), { prefix: '/api' });
-  fastify.register(require('./api/market-data'), { prefix: '/api' });
-  fastify.register(require('./api/signals'), { prefix: '/api' });
-  fastify.register(require('./api/templates'), { prefix: '/api' });
-  fastify.register(require('./api/learnings'), { prefix: '/api' });
-  fastify.register(require('./api/costs'), { prefix: '/api' });
-  fastify.register(require('./api/system'), { prefix: '/api' });
-  fastify.register(require('./api/analytics'), { prefix: '/api' });
-  fastify.register(require('./api/notifications'), { prefix: '/api' });
-  fastify.register(require('./api/standing-orders'), { prefix: '/api' });
-  fastify.register(require('./api/events'), { prefix: '/api' });
-  fastify.register(require('./api/calibration'), { prefix: '/api' });
-  fastify.register(require('./api/cycle-reports'), { prefix: '/api' });
-  fastify.register(require('./api/backtest'), { prefix: '/api' });
+  // Protected API routes (GRID system)
+  fastify.register(require('./systems/grid/api/portfolio'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/trades'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/agents'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/market-data'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/signals'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/templates'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/learnings'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/costs'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/system'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/analytics'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/notifications'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/standing-orders'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/events'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/calibration'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/cycle-reports'), { prefix: '/api' });
+  fastify.register(require('./systems/grid/api/backtest'), { prefix: '/api' });
+
+  // Platform API routes (shared across systems)
+  fastify.register(require('./api/platform/notifications'), { prefix: '/api/platform' });
+  fastify.register(require('./api/platform/health'), { prefix: '/api/platform' });
+  fastify.register(require('./api/platform/costs'), { prefix: '/api/platform' });
+
+  // GRID performance digest API
+  fastify.register(require('./systems/grid/api/performance-digest'), { prefix: '/api' });
 
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
@@ -339,29 +347,52 @@ async function refreshCandles({ backfill = false } = {}) {
 const cron = require('node-cron');
 
 function setupCron() {
-  const orchestrator = require('./agents/orchestrator');
+  const orchestrator = require('./systems/grid/agents/orchestrator');
   const standingOrdersDb = require('./db/queries/standing-orders');
   const signalsDb = require('./db/queries/signals');
   const equityDb = require('./db/queries/equity');
   const portfolioDb = require('./db/queries/portfolio');
-  const { fetchAll } = require('./agents/external-data-fetcher');
-  const { computeCorrelations } = require('./agents/correlation-calculator');
-  const { runCalibration } = require('./agents/calibration-worker');
+  const { fetchAll } = require('./systems/grid/agents/external-data-fetcher');
+  const { computeCorrelations } = require('./systems/grid/agents/correlation-calculator');
+  const { runCalibration } = require('./systems/grid/agents/calibration-worker');
   const { queryOne: queryOneDb } = require('./db/connection');
+  const bus = require('./shared/intelligence-bus');
 
-  // 4-hour agent cycle
+  const { recordHeartbeat } = require('./shared/system-health');
+
+  // --- GRID: 4-hour agent cycle ---
   cron.schedule('0 */4 * * *', async () => {
     console.log('[CRON] 4-hour cycle triggered at', new Date().toISOString());
     console.log('[CRON] Starting agent cycle...');
+    const cycleStart = Date.now();
     try {
       const result = await orchestrator.runCycle({ broadcast });
       if (result?.aborted) {
         console.error(`[CRON] Cycle aborted: ${result.reason}`);
         broadcast('cycle_error', { reason: result.reason });
       }
+
+      // Record successful heartbeat
+      await recordHeartbeat({
+        system_name:       'grid',
+        status:            'healthy',
+        last_cycle_at:     new Date(cycleStart),
+        next_cycle_at:     new Date(cycleStart + 4 * 60 * 60 * 1000),
+        cycle_duration_ms: Date.now() - cycleStart,
+        agents_succeeded:  result?.agentsRun || null,
+        agents_failed:     result?.agentsFailed || 0,
+      });
     } catch (err) {
       console.error('[CRON] Agent cycle failed:', err.message);
       broadcast('cycle_error', { error: err.message });
+
+      await recordHeartbeat({
+        system_name:       'grid',
+        status:            'down',
+        last_cycle_at:     new Date(cycleStart),
+        cycle_duration_ms: Date.now() - cycleStart,
+        error_message:     err.message,
+      });
     }
   });
 
@@ -414,13 +445,31 @@ function setupCron() {
     }
   });
 
-  // Clean expired signals every hour
+  // Clean expired signals + intelligence bus every hour
   cron.schedule('0 * * * *', async () => {
     try {
       await signalsDb.cleanExpired();
       console.log('[CRON] Cleaned expired signals');
     } catch (err) {
       console.error('[CRON] Signal cleanup failed:', err.message);
+    }
+    try {
+      const cleaned = await bus.cleanup();
+      if (cleaned.deleted > 0) console.log(`[CRON] Bus cleanup: removed ${cleaned.deleted} expired events`);
+    } catch (err) {
+      console.error('[CRON] Bus cleanup failed:', err.message);
+    }
+  });
+
+  // ── GRID: weekly performance digest — every Monday at 06:00 ──────────────────
+  // Runs BEFORE ORACLE's Monday cycle so ORACLE has fresh data immediately
+  const { buildDigest } = require('./systems/grid/agents/performance-digest');
+  cron.schedule('0 6 * * 1', async () => {
+    console.log('[CRON] Building weekly performance digest...');
+    try {
+      await buildDigest();
+    } catch (err) {
+      console.error('[CRON] Digest build failed:', err.message);
     }
   });
 
@@ -534,6 +583,14 @@ function setupCron() {
       }
     }
   }, 10_000);
+
+  // --- COMPASS cron stubs (Phase 1) ---
+  // cron.schedule('0 */2 * * *', async () => { /* COMPASS: allocation review every 2h */ });
+  // cron.schedule('*/10 * * * *', async () => { /* COMPASS: risk state monitor every 10m */ });
+
+  // --- ORACLE cron stubs (Phase 2) ---
+  // cron.schedule('0 */6 * * *', async () => { /* ORACLE: thesis generation every 6h */ });
+  // cron.schedule('0 * * * *', async () => { /* ORACLE: data ingestion hourly */ });
 }
 
 // ---------- Boot ----------
@@ -563,12 +620,16 @@ async function start() {
     // Make broadcast available to route handlers
     fastify.decorate('broadcast', broadcast);
 
+    // Inject broadcast into intelligence bus so it can fan out WS events
+    const bus = require('./shared/intelligence-bus');
+    bus.init(broadcast);
+
     // Start cron
     setupCron();
 
     // Live trading readiness gate — block startup if conditions not met
     if (process.env.LIVE_TRADING_ENABLED === 'true') {
-      const { checkLiveTradingReadiness } = require('./agents/readiness-check');
+      const { checkLiveTradingReadiness } = require('./systems/grid/agents/readiness-check');
       const r = await checkLiveTradingReadiness();
       if (!r.ready) {
         console.error('[GRID] LIVE TRADING BLOCKED — CONDITIONS NOT MET:');
@@ -581,7 +642,7 @@ async function start() {
     }
 
     // One-time boot cycle — confirm orchestrator works on this deployment
-    const orchestrator = require('./agents/orchestrator');
+    const orchestrator = require('./systems/grid/agents/orchestrator');
     setTimeout(() => {
       console.log('[BOOT] Firing one-time cycle 10s after startup...');
       orchestrator.runCycle({ broadcast }).catch(err => {
@@ -610,7 +671,7 @@ async function start() {
     }
 
     // Fetch external data + fresh candles on boot
-    const { fetchAll } = require('./agents/external-data-fetcher');
+    const { fetchAll } = require('./systems/grid/agents/external-data-fetcher');
     fetchAll().catch(err => console.error('[BOOT] External data fetch failed:', err.message));
     refreshCandles({ backfill: true }).then(() => console.log('[BOOT] Candle refresh complete')).catch(err => console.error('[BOOT] Candle refresh failed:', err.message));
 

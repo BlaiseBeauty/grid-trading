@@ -4,11 +4,11 @@
  */
 
 const BaseAgent = require('../base-agent');
-const { queryOne, queryAll, query } = require('../../db/connection');
+const { queryOne, queryAll, query } = require('../../../../db/connection');
 
 class RegimeClassifierAgent extends BaseAgent {
   constructor() {
-    super({ name: 'regime_classifier', layer: 'strategy', model: 'claude-sonnet-4-6' });
+    super({ name: 'regime_classifier', layer: 'strategy', model: 'claude-sonnet-4-6', costTier: 'grid_knowledge' });
   }
 
   /**

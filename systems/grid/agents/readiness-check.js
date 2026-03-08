@@ -6,7 +6,7 @@
  * and exposed via GET /api/system/readiness for the Settings UI.
  */
 
-const { queryOne } = require('../db/connection');
+const { queryOne } = require('../../../db/connection');
 
 async function checkLiveTradingReadiness() {
   const conditions = [];

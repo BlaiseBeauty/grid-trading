@@ -1,4 +1,4 @@
-const portfolioDb = require('../db/queries/portfolio');
+const portfolioDb = require('../../../db/queries/portfolio');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

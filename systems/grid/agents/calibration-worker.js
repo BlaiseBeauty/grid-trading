@@ -3,7 +3,7 @@
  * scores predict actual win rates. Populates confidence_calibration table.
  */
 
-const { queryAll, query } = require('../db/connection');
+const { queryAll, query } = require('../../../db/connection');
 
 const BUCKETS = [
   { lower: 50, upper: 55, label: '50-55' },

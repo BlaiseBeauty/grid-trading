@@ -1,8 +1,9 @@
-const tradesDb = require('../db/queries/trades');
-const { queryAll, queryOne } = require('../db/connection');
-const costsDb = require('../db/queries/costs');
+const tradesDb = require('../../../db/queries/trades');
+const { queryAll, queryOne } = require('../../../db/connection');
+const costsDb = require('../../../db/queries/costs');
 const Anthropic = require('@anthropic-ai/sdk');
 const anthropic = new Anthropic();
+const bus = require('../../../shared/intelligence-bus');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -65,6 +66,13 @@ async function routes(fastify) {
   }, async (request, reply) => {
     const trade = await tradesDb.create(request.body);
     fastify.broadcast('trade', trade);
+    try {
+      await bus.publish({
+        source: 'grid', eventType: 'trade_executed',
+        payload: { trade_id: trade.id, symbol: trade.symbol, side: trade.side, entry_price: trade.entry_price, quantity: trade.quantity, mode: trade.mode },
+        affectedAssets: [trade.symbol], direction: trade.side === 'buy' ? 'long' : 'short',
+      });
+    } catch (e) { /* best-effort */ }
     return reply.code(201).send(trade);
   });
 
@@ -182,6 +190,13 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
     const trade = await tradesDb.closeTrade(request.params.id, request.body);
     if (!trade) return reply.code(404).send({ error: 'Trade not found or already closed' });
     fastify.broadcast('trade_closed', trade);
+    try {
+      await bus.publish({
+        source: 'grid', eventType: 'trade_closed',
+        payload: { trade_id: trade.id, symbol: trade.symbol, side: trade.side, exit_price: trade.exit_price, pnl_realised: trade.pnl_realised, pnl_pct: trade.pnl_pct },
+        affectedAssets: [trade.symbol],
+      });
+    } catch (e) { /* best-effort */ }
     return trade;
   });
 }

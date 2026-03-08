@@ -4,12 +4,12 @@
  */
 
 const BaseAgent = require('../base-agent');
-const { queryAll, queryOne } = require('../../db/connection');
-const learningsDb = require('../../db/queries/learnings');
+const { queryAll, queryOne } = require('../../../../db/connection');
+const learningsDb = require('../../../../db/queries/learnings');
 
 class PerformanceAnalystAgent extends BaseAgent {
   constructor() {
-    super({ name: 'performance_analyst', layer: 'analysis', model: 'claude-opus-4-6' });
+    super({ name: 'performance_analyst', layer: 'analysis', model: 'claude-opus-4-6', costTier: 'grid_performance' });
   }
 
   /**

@@ -5,12 +5,12 @@
  */
 
 const BaseAgent = require('../base-agent');
-const { queryAll, queryOne, query } = require('../../db/connection');
-const templatesDb = require('../../db/queries/templates');
+const { queryAll, queryOne, query } = require('../../../../db/connection');
+const templatesDb = require('../../../../db/queries/templates');
 
 class PatternDiscoveryAgent extends BaseAgent {
   constructor() {
-    super({ name: 'pattern_discovery', layer: 'analysis', model: 'claude-opus-4-6' });
+    super({ name: 'pattern_discovery', layer: 'analysis', model: 'claude-opus-4-6', costTier: 'grid_pattern' });
   }
 
   /**

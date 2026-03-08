@@ -126,6 +126,22 @@ export function useWebSocket() {
             case 'backtest_failed':
               s.setBacktestProgress({ ...msg.data, failed: true });
               break;
+            case 'bus_event': {
+              const busEvent = msg.data;
+              // Ring buffer — keep last 50 events
+              const notifyTypes = [
+                'trade_closed', 'scram_triggered', 'thesis_created',
+                'thesis_conviction_updated', 'performance_digest',
+              ];
+              const shouldNotify = notifyTypes.includes(busEvent.event_type);
+              useDataStore.setState(state => ({
+                busEvents: [busEvent, ...state.busEvents].slice(0, 50),
+                unreadBusCount: shouldNotify
+                  ? state.unreadBusCount + 1
+                  : state.unreadBusCount,
+              }));
+              break;
+            }
           }
         } catch (err) {
           console.error('[WS] Message handling error:', err);

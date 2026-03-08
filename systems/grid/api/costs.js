@@ -1,4 +1,4 @@
-const costsDb = require('../db/queries/costs');
+const costsDb = require('../../../db/queries/costs');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);

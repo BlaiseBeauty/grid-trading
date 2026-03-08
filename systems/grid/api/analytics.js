@@ -1,7 +1,12 @@
-const { queryAll, queryOne } = require('../db/connection');
+const { queryAll, queryOne } = require('../../../db/connection');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
+
+  // GET /api/analytics — overview of available analytics endpoints
+  fastify.get('/analytics', async () => {
+    return { endpoints: ['pnl', 'drawdown', 'by-agent', 'by-template', 'signal-accuracy', 'costs-over-time', 'summary'] };
+  });
 
   // GET /api/analytics/pnl — daily P&L breakdown
   fastify.get('/analytics/pnl', async (request) => {
