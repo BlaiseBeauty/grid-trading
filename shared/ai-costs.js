@@ -8,7 +8,7 @@ const { query, queryOne } = require('../db/connection');
 const TOKEN_BUDGETS = {
   // GRID
   grid_knowledge:    { max_input: 8000,  max_output: 1200 },
-  grid_synthesizer:  { max_input: 12000, max_output: 2000 },
+  grid_synthesizer:  { max_input: 32000, max_output: 4000 },
   grid_risk_manager: { max_input: 6000,  max_output: 800  },
   grid_performance:  { max_input: 10000, max_output: 2000 },
   grid_pattern:      { max_input: 10000, max_output: 2000 },

@@ -28,8 +28,8 @@ exclusively through the intelligence bus. Systems never import each other.
 | System  | Role         | Time Horizon    | Status      |
 |---------|--------------|-----------------|-------------|
 | GRID    | Execution    | Minutes → Hours | Live        |
-| COMPASS | Navigation   | Days → Weeks    | Skeleton    |
-| ORACLE  | Intelligence | Weeks → Years   | Skeleton    |
+| COMPASS | Navigation   | Days → Weeks    | Live        |
+| ORACLE  | Intelligence | Weeks → Years   | Live        |
 
 ### Folder Structure
 
@@ -39,12 +39,19 @@ systems/
     agents/     ← 13 agents (orchestrator, base-agent, all specialists)
     api/        ← all GRID API route handlers
     config/     ← agent-prompts.js, risk-limits.js
-  compass/      ← COMPASS skeleton (Phase 3)
-  oracle/       ← ORACLE skeleton (Phase 2)
+  compass/      ← COMPASS portfolio navigation + risk
+    agents/     ← base-agent, portfolio-agent, risk-assessor, correlation-tracker, orchestrator
+    api/        ← COMPASS API route handlers (portfolio, risk, allocations)
+    db/         ← (reserved for future COMPASS persistence)
+  oracle/       ← ORACLE macro intelligence system
+    agents/     ← base-agent, 6 domain agents, synthesis, orchestrator
+    api/        ← Oracle API route handlers (theses, evidence, etc.)
+    db/         ← thesis persistence (upsert, retire, query)
+    ingestion/  ← FRED, RSS, GDELT data ingestion pipeline
 shared/
   intelligence-bus.js   ← ONLY cross-system communication channel
   notifications.js      ← unified notification system
-  conflict-resolver.js  ← thesis vs signal conflict rules (stub)
+  conflict-resolver.js  ← thesis vs signal conflict rules (live)
   ai-costs.js           ← token budget + cost tracking
   system-health.js      ← heartbeat recording
 api/
@@ -58,7 +65,7 @@ config/
 db/
   connection.js         ← query(), queryOne(), queryAll()
   migrate.js
-  migrations/           ← 025 migrations total
+  migrations/           ← 027 migrations total
 trading/
   engine.py             ← Python Flask + CCXT, port 5100
 server.js               ← entry point, routes, cron, WebSocket
@@ -125,13 +132,61 @@ Performance Analyst, Pattern Discovery
 
 ### Cost Tiers (shared/ai-costs.js TOKEN_BUDGETS)
 - grid_knowledge:    8k input / 1.2k output
-- grid_synthesizer:  12k input / 2k output
+- grid_synthesizer:  32k input / 4k output
 - grid_risk_manager: 6k input / 800 output
 - grid_performance:  10k input / 2k output
 - grid_pattern:      10k input / 2k output
+- oracle_domain:     10k input / 2.5k output
+- oracle_synthesis:  15k input / 4k output
+- oracle_graveyard:  20k input / 3k output
+- compass_portfolio: 12k input / 2k output
+- compass_risk:      8k input / 1.5k output
 
 Every agent must set: this.costTier = 'grid_knowledge' (or appropriate tier)
 Cost is recorded automatically by base-agent after every API call.
+
+---
+
+## ORACLE Agent Pipeline
+
+### Ingestion (every 6h at :00, no AI cost)
+FRED macro data → RSS news feeds → GDELT geopolitical events
+All stored in oracle_evidence + oracle_raw_feed
+
+### Domain Agents (every 6h at :30, 6 agents, Sonnet, batches of 2)
+macro-economist, geopolitical-analyst, tech-disruption,
+commodity-specialist, equity-sector, crypto-analyst
+
+### Synthesis (Opus, runs after domain agents)
+Cross-thesis confluence/conflict detection → Opportunity Map → Bus events
+
+### Conflict Resolver (runs on every GRID Risk Manager approval)
+Adjusts GRID position sizing based on Oracle thesis alignment:
+- Confluence (2+ theses same direction): size x1.3
+- Single high-conviction confluence (8+): size x1.15
+- Strategic conflict (7+ conviction): size x0.6
+- Structural conflict (9+ conviction): size x0.5
+
+---
+
+## COMPASS Agent Pipeline
+
+### Portfolio Agent (Opus, runs every 6h at :15 of 1,7,13,19)
+Reads ORACLE theses + GRID performance → produces risk posture + allocation weights.
+Performance guardrails: drawdown >= 8% forces CASH, drawdown >= 5% or winRate < 40% forces DEFENSIVE.
+
+### Risk Assessor (Opus, runs after Portfolio Agent)
+Computes risk score (0–10) + hard limits GRID must operate within.
+Hard constraints enforced in code: max_total <= $20k, max_single <= $10k, max_positions <= 6, scram >= 5%.
+
+### Correlation Tracker (no AI, runs before agents)
+Calculates pairwise trade-outcome correlation between GRID symbols (30-day rolling).
+Stores snapshots in compass_correlation_snapshots.
+
+### COMPASS → GRID Integration
+Risk Manager reads COMPASS limits via bus.getRiskState() before approving positions.
+Falls back to config/risk-limits.js if COMPASS unavailable. COMPASS only caps sizes — never increases.
+Direction bias: if COMPASS allocation opposes proposal direction, size reduced 25%.
 
 ---
 
@@ -140,11 +195,11 @@ Cost is recorded automatically by base-agent after every API call.
 ```
 0 */4 * * *         GRID 4h cycle (00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
 */15 * * * *        Position monitor
-0 * * * *           Hourly cleanup (signals + bus purge)
+0 * * * *           Hourly cleanup (signals + bus purge + oracle raw feed)
 0 6 * * 1           Weekly performance digest (Monday 06:00)
-─────────────────── STUBBED (uncomment when system is built) ────────────────
-30 0,6,12,18 * * *  ORACLE 6h cycle
-15 1,7,13,19 * * *  COMPASS 6h cycle (reads ORACLE output)
+0 0,6,12,18 * * *   ORACLE ingestion (runs 30min before agents)
+30 0,6,12,18 * * *  ORACLE agent cycle (6 domain + synthesis)
+15 1,7,13,19 * * *  COMPASS 6h cycle (45min after ORACLE)
 ```
 
 Stagger logic: ORACLE runs at :30 → COMPASS at :15 next hour → GRID reads
@@ -167,8 +222,8 @@ COMPASS guidance at its next :00 cycle. Full pipeline completes in order.
 | compass_*   | COMPASS | portfolios, allocations, etc.       |
 | oracle_*    | ORACLE  | theses, evidence, graveyard, etc.   |
 
-Current migration count: 025
-Latest migration: 025_performance_digest.sql
+Current migration count: 027
+Latest migration: 027_compass_schema.sql
 
 ---
 
@@ -200,6 +255,26 @@ GET  /api/platform/health
 GET  /api/platform/costs/summary
 GET  /api/platform/costs/daily
 GET  /api/platform/costs/budget
+
+### ORACLE (prefix: /api/oracle)
+GET  /api/oracle/theses
+GET  /api/oracle/theses/:id
+GET  /api/oracle/opportunity-map
+GET  /api/oracle/macro-regime
+GET  /api/oracle/graveyard
+GET  /api/oracle/evidence
+POST /api/oracle/theses/:id/retire
+POST /api/oracle/cycle/run
+
+### COMPASS (prefix: /api/compass)
+GET  /api/compass/portfolio
+GET  /api/compass/portfolio/history
+GET  /api/compass/allocations
+GET  /api/compass/risk
+GET  /api/compass/risk/history
+GET  /api/compass/rebalance
+POST /api/compass/rebalance/:id/acknowledge
+POST /api/compass/cycle/run
 
 ### Auth (prefix: /api/auth)
 POST /api/auth/login
@@ -237,6 +312,7 @@ JWT_REFRESH_SECRET=...
 ADMIN_EMAIL=...
 ADMIN_PASSWORD=...
 LIVE_TRADING_ENABLED=false
+FRED_API_KEY=       (optional — get free at fred.stlouisfed.org)
 ```
 
 ---
@@ -269,8 +345,36 @@ LIVE_TRADING_ENABLED=false
 |-------|------------------------------------------|-----------|
 | 0     | Federated monolith foundation            | COMPLETE  |
 | 1     | AI costs, digest, WebSocket, docs        | COMPLETE  |
-| 2     | ORACLE core — thesis agents + bus        | NEXT      |
-| 3     | COMPASS core — portfolio + risk          | PLANNED   |
+| 2     | ORACLE core — thesis agents + bus        | COMPLETE  |
+| 3     | COMPASS core — portfolio + risk          | COMPLETE  |
 | 4     | Platform shell frontend + notifications  | PLANNED   |
 | 5     | Learning loop closure + graveyard        | PLANNED   |
 | 6     | Live trading readiness audit             | PLANNED   |
+
+---
+
+## Active Feedback Loops (Phase 3+)
+
+Loop 1: ORACLE → GRID
+  thesis_created/updated events → GRID Synthesizer context
+  High conviction thesis boosts proposal confidence
+  Opposing structural thesis reduces position size
+
+Loop 2: GRID → ORACLE
+  trade_closed events carry thesis_ids (populated Phase 5)
+  Graveyard Auditor correlates trade outcomes to thesis accuracy
+
+Loop 3: COMPASS → GRID
+  portfolio_risk_state → Risk Manager hard limits
+  allocation_guidance → direction bias for position sizing
+
+Loop 4: GRID → COMPASS
+  performance_digest → posture guardrails
+  Drawdown > 8% forces CASH posture
+  Win rate < 40% forces DEFENSIVE posture
+
+Loop 5: ORACLE → COMPASS
+  getAllActiveTheses() → portfolio allocation weights
+  thesis direction bias informs per-symbol max_position_usd
+
+Loops 6 + 7: Phase 5 (Graveyard Auditor + Pattern Discovery)

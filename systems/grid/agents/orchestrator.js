@@ -800,7 +800,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     const outputJson = synthDecision?.output_json || {};
     const noActionReasons = outputJson.no_action_reasons || [];
     const marketAssessment = outputJson.market_assessment || null;
-    console.log(`[SYNTH_DEBUG] Cycle ${cycleNum} | actions: ${(outputJson.actions || []).length} | standing_orders: ${(outputJson.standing_orders || []).length} | no_action_reasons: ${noActionReasons.length > 0 ? noActionReasons.join('; ') : 'none'} | market: ${marketAssessment ? JSON.stringify(marketAssessment).slice(0, 200) : 'N/A'}`);
+    console.log(`[SYNTH_DEBUG] Cycle ${cycleNum} | actions: ${(outputJson.actions || []).length} | standing_orders: ${(outputJson.standing_orders || []).length} | no_action_reasons: ${noActionReasons.length > 0 ? noActionReasons.map(r => typeof r === 'string' ? r : JSON.stringify(r)).join('; ') : 'none'} | market: ${marketAssessment ? JSON.stringify(marketAssessment).slice(0, 200) : 'N/A'}`);
 
     // Synthesizer outputs trade proposals in "actions" array (type: "trade_proposal")
     const rawActions = synthDecision?.output_json?.actions || [];
