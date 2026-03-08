@@ -55,7 +55,7 @@ export default function Login() {
           align-items: center;
           justify-content: center;
           background: var(--v2-bg-primary);
-          background-image: radial-gradient(ellipse at 50% 0%, rgba(0,229,255,0.04) 0%, transparent 60%);
+          background-image: radial-gradient(ellipse at 50% 0%, rgba(79,195,247,0.04) 0%, transparent 60%);
         }
         .v2-login-card {
           background: var(--v2-glass-bg);
@@ -142,8 +142,8 @@ export default function Login() {
           font-family: var(--v2-font-data);
           font-size: 12px;
           padding: var(--v2-space-sm);
-          background: rgba(255,23,68,0.08);
-          border: 1px solid rgba(255,23,68,0.2);
+          background: rgba(239,83,80,0.08);
+          border: 1px solid rgba(239,83,80,0.2);
           border-radius: var(--v2-radius-sm);
         }
       `}</style>

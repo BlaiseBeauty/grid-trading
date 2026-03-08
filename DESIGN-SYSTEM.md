@@ -8,32 +8,32 @@
 
 ```css
 /* Backgrounds — darkest to lightest */
---void: #050608;        /* App background */
---abyss: #090b10;       /* Page background */
---surface: #0d0f15;     /* Card/panel background */
---elevated: #12141c;    /* Hover states, raised panels */
---raised: #171a24;      /* Active states, selected items */
---shelf: #1c1f2c;       /* Highest elevation (modals, dropdowns) */
+--void: #1b1d23;        /* App background (--v2-bg-primary) */
+--abyss: #1f2128;       /* Page background */
+--surface: #25272e;     /* Card/panel background (--v2-bg-secondary: #22242b) */
+--elevated: #2c2e36;    /* Hover states, raised panels (--v2-bg-elevated: #31333c) */
+--raised: #33353e;      /* Active states, selected items */
+--shelf: #3a3d47;       /* Highest elevation (modals, dropdowns) */
 
 /* Semantic — STRICT usage rules */
---cyan: #00e5ff;        /* UI elements ONLY (links, buttons, borders, icons) */
---profit: #00ff88;      /* Profit/positive ONLY — never decorative */
---loss: #ff2d55;        /* Loss/negative ONLY — never decorative */
---warn: #ffb800;        /* Warnings, caution states */
---ai: #a78bfa;          /* AI activity attribution (agent decisions, AI-generated content) */
+--cyan: #4fc3f7;        /* UI elements ONLY (links, buttons, borders, icons) */
+--profit: #66bb6a;      /* Profit/positive ONLY — never decorative */
+--loss: #ef5350;        /* Loss/negative ONLY — never decorative */
+--warn: #ffa726;        /* Warnings, caution states */
+--ai: #b39ddb;          /* AI activity attribution (agent decisions, AI-generated content) */
 
 /* Text hierarchy */
---t1: #f4f5f9;          /* Primary text */
---t2: #b8bdd0;          /* Secondary text, labels */
---t3: #6e7590;          /* Tertiary, muted, timestamps */
---t4: #3d4260;          /* Disabled text */
---t5: #252940;          /* Ghost text, barely visible */
+--t1: #e0e2e7;          /* Primary text (--v2-text-primary) */
+--t2: #8b8e99;          /* Secondary text, labels (--v2-text-secondary) */
+--t3: #5c5f6b;          /* Tertiary, muted, timestamps (--v2-text-muted) */
+--t4: #555868;          /* Disabled text */
+--t5: #3a3d4a;          /* Ghost text, barely visible */
 
 /* Borders */
---border-0: rgba(255,255,255,0.03);   /* Subtle dividers */
---border-1: rgba(255,255,255,0.06);   /* Panel borders */
+--border-0: rgba(255,255,255,0.04);   /* Subtle dividers */
+--border-1: rgba(255,255,255,0.07);   /* Panel borders (--v2-border) */
 --border-2: rgba(255,255,255,0.10);   /* Active borders */
---border-3: rgba(255,255,255,0.16);   /* Focus borders, emphasis */
+--border-3: rgba(255,255,255,0.15);   /* Focus borders, emphasis */
 ```
 
 ### Colour Rules
@@ -116,9 +116,9 @@ function formatMoney(value) {
 --space-2xl: 32px;
 --space-3xl: 48px;
 
---radius-sm: 4px;      /* Badges, small elements */
---radius-md: 8px;      /* Cards, panels */
---radius-lg: 12px;     /* Modals, large containers */
+--radius-sm: 6px;      /* Badges, small elements (--v2-radius-sm) */
+--radius-md: 10px;     /* Cards, panels (--v2-radius-md) */
+--radius-lg: 16px;     /* Modals, large containers (--v2-radius-lg) */
 
 --panel-padding: 16px;
 --panel-gap: 12px;     /* Gap between panels in grid */
@@ -172,12 +172,12 @@ function formatMoney(value) {
 .value-flash-loss { animation: flash-red 600ms ease; }
 
 @keyframes flash-green {
-  0% { background: rgba(0, 255, 136, 0.15); }
+  0% { background: rgba(102, 187, 106, 0.15); }
   100% { background: transparent; }
 }
 
 @keyframes flash-red {
-  0% { background: rgba(255, 45, 85, 0.15); }
+  0% { background: rgba(239, 83, 80, 0.15); }
   100% { background: transparent; }
 }
 ```
@@ -192,28 +192,28 @@ function formatMoney(value) {
          text-transform: uppercase; letter-spacing: 1px; padding: 2px 8px;
          border-radius: var(--radius-sm); }
 
-.badge-profit   { color: var(--profit); background: rgba(0, 255, 136, 0.10); }
-.badge-loss     { color: var(--loss);   background: rgba(255, 45, 85, 0.10); }
-.badge-warn     { color: var(--warn);   background: rgba(255, 184, 0, 0.10); }
-.badge-ai       { color: var(--ai);     background: rgba(167, 139, 250, 0.10); }
+.badge-profit   { color: var(--profit); background: rgba(102, 187, 106, 0.10); }
+.badge-loss     { color: var(--loss);   background: rgba(239, 83, 80, 0.10); }
+.badge-warn     { color: var(--warn);   background: rgba(255, 167, 38, 0.10); }
+.badge-ai       { color: var(--ai);     background: rgba(179, 157, 219, 0.10); }
 .badge-neutral  { color: var(--t3);     background: rgba(255, 255, 255, 0.05); }
 
 /* Bootstrap phases */
-.badge-infant   { color: var(--warn); background: rgba(255, 184, 0, 0.10); }
-.badge-learning { color: var(--warn); background: rgba(255, 184, 0, 0.10); }
-.badge-maturing { color: var(--cyan); background: rgba(0, 229, 255, 0.10); }
-.badge-graduated { color: var(--profit); background: rgba(0, 255, 136, 0.10); }
+.badge-infant   { color: var(--warn); background: rgba(255, 167, 38, 0.10); }
+.badge-learning { color: var(--warn); background: rgba(255, 167, 38, 0.10); }
+.badge-maturing { color: var(--cyan); background: rgba(79, 195, 247, 0.10); }
+.badge-graduated { color: var(--profit); background: rgba(102, 187, 106, 0.10); }
 
 /* SCRAM levels */
-.badge-elevated  { color: var(--warn); background: rgba(255, 184, 0, 0.15); }
-.badge-crisis    { color: var(--loss); background: rgba(255, 45, 85, 0.15); }
-.badge-emergency { color: var(--loss); background: rgba(255, 45, 85, 0.25);
+.badge-elevated  { color: var(--warn); background: rgba(255, 167, 38, 0.15); }
+.badge-crisis    { color: var(--loss); background: rgba(239, 83, 80, 0.15); }
+.badge-emergency { color: var(--loss); background: rgba(239, 83, 80, 0.25);
                    animation: pulse 1s infinite; }
 
 /* Template status */
-.badge-testing  { color: var(--ai); background: rgba(167, 139, 250, 0.10); }
-.badge-active   { color: var(--profit); background: rgba(0, 255, 136, 0.10); }
-.badge-paused   { color: var(--warn); background: rgba(255, 184, 0, 0.10); }
+.badge-testing  { color: var(--ai); background: rgba(179, 157, 219, 0.10); }
+.badge-active   { color: var(--profit); background: rgba(102, 187, 106, 0.10); }
+.badge-paused   { color: var(--warn); background: rgba(255, 167, 38, 0.10); }
 .badge-retired  { color: var(--t3); background: rgba(255, 255, 255, 0.05); }
 ```
 
@@ -225,7 +225,7 @@ function formatMoney(value) {
 .agent-feed-item {
   border-left: 2px solid var(--ai);
   padding: var(--space-sm) var(--space-md);
-  background: rgba(167, 139, 250, 0.03);
+  background: rgba(179, 157, 219, 0.03);
 }
 
 .agent-name {
@@ -251,27 +251,27 @@ function formatMoney(value) {
 ```javascript
 const chartOptions = {
   layout: {
-    background: { color: '#0d0f15' },
-    textColor: '#6e7590',
+    background: { color: '#1b1d23' },
+    textColor: '#5c5f6b',
   },
   grid: {
-    vertLines: { color: 'rgba(255,255,255,0.03)' },
-    horzLines: { color: 'rgba(255,255,255,0.03)' },
+    vertLines: { color: 'rgba(255,255,255,0.04)' },
+    horzLines: { color: 'rgba(255,255,255,0.04)' },
   },
   crosshair: { mode: 0 },
   timeScale: {
-    borderColor: 'rgba(255,255,255,0.06)',
+    borderColor: 'rgba(255,255,255,0.07)',
     timeVisible: true,
   },
 };
 
 const candlestickOptions = {
-  upColor: '#00ff88',
-  downColor: '#ff2d55',
-  borderUpColor: '#00ff88',
-  borderDownColor: '#ff2d55',
-  wickUpColor: '#00ff88',
-  wickDownColor: '#ff2d55',
+  upColor: '#66bb6a',
+  downColor: '#ef5350',
+  borderUpColor: '#66bb6a',
+  borderDownColor: '#ef5350',
+  wickUpColor: '#66bb6a',
+  wickDownColor: '#ef5350',
 };
 ```
 

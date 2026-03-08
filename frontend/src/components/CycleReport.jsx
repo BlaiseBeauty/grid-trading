@@ -120,7 +120,7 @@ function Style() {
         font-family: 'Instrument Sans', sans-serif;
         font-weight: 600;
         font-size: 13px;
-        color: var(--v2-t2, #b8bdd0);
+        color: var(--v2-text-secondary, #8b8e99);
         text-transform: uppercase;
         letter-spacing: 1px;
         margin-bottom: 12px;
@@ -135,13 +135,13 @@ function Style() {
         margin-bottom: 12px;
         font-family: 'Outfit', sans-serif;
         font-size: 13px;
-        color: var(--v2-t2, #b8bdd0);
+        color: var(--v2-text-secondary, #8b8e99);
       }
       .cr-cycle-id {
         font-family: 'IBM Plex Mono', monospace;
         font-weight: 600;
         font-size: 14px;
-        color: var(--v2-t1, #f4f5f9);
+        color: var(--v2-text-primary, #e0e2e7);
       }
       .cr-sep {
         width: 1px;
@@ -156,7 +156,7 @@ function Style() {
         font-variant-numeric: tabular-nums;
       }
       .cr-time {
-        color: var(--v2-t3, #6e7590);
+        color: var(--v2-text-muted, #5c5f6b);
         font-size: 12px;
       }
 
@@ -174,7 +174,7 @@ function Style() {
         text-transform: uppercase;
         letter-spacing: 1px;
         padding: 3px 8px;
-        border-radius: 4px;
+        border-radius: var(--v2-radius-sm);
         display: inline-flex;
         align-items: center;
         gap: 5px;
@@ -183,16 +183,16 @@ function Style() {
         font-variant-numeric: tabular-nums;
       }
       .cr-badge-profit {
-        color: var(--v2-accent-green, #00ff88);
-        background: rgba(0, 255, 136, 0.10);
+        color: var(--v2-accent-green, #66bb6a);
+        background: rgba(102, 187, 106, 0.10);
       }
       .cr-badge-warn {
-        color: var(--v2-accent-amber, #ffb800);
-        background: rgba(255, 184, 0, 0.10);
+        color: var(--v2-accent-amber, #ffa726);
+        background: rgba(255, 167, 38, 0.10);
       }
       .cr-badge-loss {
-        color: var(--v2-accent-red, #ff2d55);
-        background: rgba(255, 45, 85, 0.10);
+        color: var(--v2-accent-red, #ef5350);
+        background: rgba(239, 83, 80, 0.10);
       }
 
       /* Pipeline summary */
@@ -214,13 +214,13 @@ function Style() {
         font-size: 9px;
         text-transform: uppercase;
         letter-spacing: 1px;
-        color: var(--v2-t3, #6e7590);
+        color: var(--v2-text-muted, #5c5f6b);
         margin-bottom: 4px;
       }
       .cr-pipeline-value {
         font-family: 'Outfit', sans-serif;
         font-size: 13px;
-        color: var(--v2-t1, #f4f5f9);
+        color: var(--v2-text-primary, #e0e2e7);
       }
 
       /* Layer 3 */
@@ -242,27 +242,27 @@ function Style() {
         font-size: 9px;
         text-transform: uppercase;
         letter-spacing: 1px;
-        color: var(--v2-t3, #6e7590);
+        color: var(--v2-text-muted, #5c5f6b);
         min-width: 150px;
       }
       .cr-layer3-status {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 11px;
       }
-      .cr-status-ok { color: var(--v2-accent-green, #00ff88); }
-      .cr-status-error { color: var(--v2-accent-red, #ff2d55); }
-      .cr-status-skip { color: var(--v2-t3, #6e7590); }
+      .cr-status-ok { color: var(--v2-accent-green, #66bb6a); }
+      .cr-status-error { color: var(--v2-accent-red, #ef5350); }
+      .cr-status-skip { color: var(--v2-text-muted, #5c5f6b); }
 
       /* Warnings */
       .cr-warnings {
-        border-left: 2px solid var(--v2-accent-amber, #ffb800);
+        border-left: 2px solid var(--v2-accent-amber, #ffa726);
         padding: 8px 12px;
         margin-top: 4px;
       }
       .cr-warning-line {
         font-family: 'Outfit', sans-serif;
         font-size: 12px;
-        color: var(--v2-accent-amber, #ffb800);
+        color: var(--v2-accent-amber, #ffa726);
         line-height: 1.6;
       }
 
@@ -275,7 +275,7 @@ function Style() {
       .cr-shimmer {
         width: 100%;
         height: 100%;
-        background: linear-gradient(90deg, var(--v2-bg-card, #0d0f15) 25%, var(--v2-bg-hover, #12141c) 50%, var(--v2-bg-card, #0d0f15) 75%);
+        background: linear-gradient(90deg, var(--v2-bg-card, rgba(34,36,43,0.85)) 25%, var(--v2-bg-hover, rgba(255,255,255,0.04)) 50%, var(--v2-bg-card, rgba(34,36,43,0.85)) 75%);
         background-size: 200% 100%;
         animation: cr-shimmer 1.5s infinite;
       }

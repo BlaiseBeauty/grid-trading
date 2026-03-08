@@ -9,6 +9,7 @@ export default function Settings() {
   const [scramHistory, setScramHistory] = useState([]);
   const [bootstrapHistory, setBootstrapHistory] = useState([]);
   const [correlations, setCorrelations] = useState(null);
+  const [readiness, setReadiness] = useState(null);
 
   const fetchAll = () => {
     Promise.all([
@@ -18,13 +19,15 @@ export default function Settings() {
       api('/system/scram/history'),
       api('/system/bootstrap/history'),
       api('/correlations').catch(() => null),
-    ]).then(([rl, cfg, h, sh, bh, corr]) => {
+      api('/system/readiness').catch(() => null),
+    ]).then(([rl, cfg, h, sh, bh, corr, rd]) => {
       setRiskLimits(rl);
       setConfig(cfg);
       setHealth(h);
       setScramHistory(sh || []);
       setBootstrapHistory(bh || []);
       setCorrelations(corr);
+      setReadiness(rd);
     }).catch(console.error);
   };
 
@@ -74,6 +77,50 @@ export default function Settings() {
       </div>
 
       <div className="v2-settings-grid">
+        {/* Live Trading Readiness */}
+        <div className="v2-animate-in v2-stagger-1b">
+          <GlowCard glowColor={readiness?.ready ? 'green' : 'red'}>
+            <div className="v2-section-title">Live Trading Readiness</div>
+            {readiness ? (
+              <div className="v2-readiness">
+                <div className={`v2-readiness-banner ${readiness.ready ? 'v2-readiness--pass' : 'v2-readiness--fail'}`}>
+                  <StatusPulse status={readiness.ready ? 'active' : 'error'} size={8} />
+                  <span className="v2-readiness-status">
+                    {readiness.ready
+                      ? 'READY FOR LIVE TRADING'
+                      : `NOT READY — ${readiness.conditions.filter(c => !c.passed).length} CONDITION${readiness.conditions.filter(c => !c.passed).length !== 1 ? 'S' : ''} FAILING`
+                    }
+                  </span>
+                </div>
+                <div className="v2-readiness-checks">
+                  {readiness.conditions.map(c => (
+                    <div key={c.key} className={`v2-readiness-row ${c.passed ? 'v2-readiness-row--pass' : 'v2-readiness-row--fail'}`}>
+                      <span className="v2-readiness-icon">{c.passed ? '\u2713' : '\u2715'}</span>
+                      <span className="v2-readiness-label">{c.label}</span>
+                      <span className="v2-readiness-values">
+                        <span className="v2-readiness-current">{c.current}</span>
+                        <span className="v2-readiness-sep">/</span>
+                        <span className="v2-readiness-required">{c.required}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div
+                  className={`v2-live-toggle ${readiness.ready ? '' : 'v2-live-toggle--disabled'}`}
+                  title={readiness.ready ? '' : 'Complete all readiness conditions first'}
+                >
+                  <span className="v2-live-toggle-label">Live Trading</span>
+                  <span className={`v2-live-toggle-value ${config?.live_trading ? 'v2-live-toggle--on' : ''}`}>
+                    {config?.live_trading ? 'ENABLED' : 'DISABLED'}
+                  </span>
+                </div>
+              </div>
+            ) : (
+              <div className="v2-empty" style={{ padding: 'var(--v2-space-md) 0' }}>Loading readiness data...</div>
+            )}
+          </GlowCard>
+        </div>
+
         {/* SCRAM Controls */}
         <div className="v2-animate-in v2-stagger-2">
           <GlowCard glowColor="red">
@@ -318,13 +365,13 @@ export default function Settings() {
         .v2-scram-controls { display: flex; flex-direction: column; gap: var(--v2-space-md); }
         .v2-scram-active-banner {
           display: flex; justify-content: space-between; align-items: center;
-          padding: var(--v2-space-md); background: rgba(255,23,68,0.08);
-          border: 1px solid rgba(255,23,68,0.25); border-radius: var(--v2-radius-sm);
+          padding: var(--v2-space-md); background: rgba(239,83,80,0.08);
+          border: 1px solid rgba(239,83,80,0.25); border-radius: var(--v2-radius-sm);
           animation: v2-scram-glow 2s ease-in-out infinite;
         }
         @keyframes v2-scram-glow {
-          0%, 100% { box-shadow: 0 0 15px rgba(255,23,68,0.15); }
-          50% { box-shadow: 0 0 30px rgba(255,23,68,0.3); }
+          0%, 100% { box-shadow: 0 0 15px rgba(239,83,80,0.15); }
+          50% { box-shadow: 0 0 30px rgba(239,83,80,0.3); }
         }
         .v2-scram-active-left { display: flex; align-items: center; gap: var(--v2-space-sm); }
         .v2-scram-level-text {
@@ -351,10 +398,10 @@ export default function Settings() {
         .v2-scram-desc { font-size: 9px; font-weight: 400; color: var(--v2-text-muted); }
         .v2-scram-elevated { color: var(--v2-accent-amber); border-color: rgba(255,171,0,0.3); }
         .v2-scram-elevated:hover { background: rgba(255,171,0,0.06); box-shadow: 0 0 20px rgba(255,171,0,0.15); }
-        .v2-scram-crisis { color: var(--v2-accent-red); border-color: rgba(255,23,68,0.3); }
-        .v2-scram-crisis:hover { background: rgba(255,23,68,0.06); box-shadow: 0 0 20px rgba(255,23,68,0.15); }
-        .v2-scram-emergency { color: #ff0040; border-color: rgba(255,0,64,0.4); }
-        .v2-scram-emergency:hover { background: rgba(255,0,64,0.08); box-shadow: 0 0 20px rgba(255,0,64,0.2); }
+        .v2-scram-crisis { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.3); }
+        .v2-scram-crisis:hover { background: rgba(239,83,80,0.06); box-shadow: 0 0 20px rgba(239,83,80,0.15); }
+        .v2-scram-emergency { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.4); }
+        .v2-scram-emergency:hover { background: rgba(239,83,80,0.08); box-shadow: 0 0 20px rgba(239,83,80,0.2); }
         .v2-scram-history { margin-top: var(--v2-space-sm); }
         .v2-scram-history-title {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 600;
@@ -395,7 +442,7 @@ export default function Settings() {
         }
         .v2-bootstrap-step.active .v2-bootstrap-dot {
           background: var(--v2-accent-cyan); border-color: var(--v2-accent-cyan);
-          box-shadow: 0 0 12px rgba(0,229,255,0.5);
+          box-shadow: 0 0 12px rgba(79,195,247,0.5);
         }
         .v2-bootstrap-pulse {
           position: absolute; inset: -4px; border-radius: 50%;
@@ -417,8 +464,74 @@ export default function Settings() {
         .v2-bootstrap-progress-fill {
           height: 100%; background: var(--v2-accent-cyan);
           border-radius: 2px; transition: width 0.5s ease;
-          box-shadow: 0 0 8px rgba(0,229,255,0.4);
+          box-shadow: 0 0 8px rgba(79,195,247,0.4);
         }
+
+        /* Readiness Gate */
+        .v2-readiness { display: flex; flex-direction: column; gap: var(--v2-space-md); }
+        .v2-readiness-banner {
+          display: flex; align-items: center; gap: var(--v2-space-sm);
+          padding: var(--v2-space-md); border-radius: var(--v2-radius-sm);
+        }
+        .v2-readiness--pass {
+          background: rgba(102, 187, 106, 0.08);
+          border: 1px solid rgba(102, 187, 106, 0.25);
+          box-shadow: 0 0 20px rgba(102, 187, 106, 0.1);
+        }
+        .v2-readiness--fail {
+          background: rgba(239, 83, 80, 0.06);
+          border: 1px solid rgba(239, 83, 80, 0.2);
+        }
+        .v2-readiness-status {
+          font-family: var(--v2-font-data); font-size: 12px;
+          font-weight: 700; letter-spacing: 1.5px;
+        }
+        .v2-readiness--pass .v2-readiness-status { color: var(--v2-accent-green); }
+        .v2-readiness--fail .v2-readiness-status { color: var(--v2-accent-red); }
+        .v2-readiness-checks { display: flex; flex-direction: column; gap: 2px; }
+        .v2-readiness-row {
+          display: flex; align-items: center; gap: var(--v2-space-sm);
+          padding: var(--v2-space-sm) var(--v2-space-sm);
+          border-radius: var(--v2-radius-sm);
+        }
+        .v2-readiness-row--pass { }
+        .v2-readiness-row--fail { background: rgba(239, 83, 80, 0.04); }
+        .v2-readiness-icon {
+          font-size: 12px; width: 18px; text-align: center; flex-shrink: 0;
+        }
+        .v2-readiness-row--pass .v2-readiness-icon { color: var(--v2-accent-green); }
+        .v2-readiness-row--fail .v2-readiness-icon { color: var(--v2-accent-red); }
+        .v2-readiness-label {
+          font-size: 12px; color: var(--v2-text-secondary); flex: 1;
+        }
+        .v2-readiness-values {
+          display: flex; align-items: center; gap: 4px;
+          font-family: var(--v2-font-data); font-size: 12px;
+          font-variant-numeric: tabular-nums;
+        }
+        .v2-readiness-row--pass .v2-readiness-current { color: var(--v2-accent-green); font-weight: 600; }
+        .v2-readiness-row--fail .v2-readiness-current { color: var(--v2-accent-red); font-weight: 600; }
+        .v2-readiness-sep { color: var(--v2-text-muted); }
+        .v2-readiness-required { color: var(--v2-text-muted); font-size: 11px; }
+        .v2-live-toggle {
+          display: flex; justify-content: space-between; align-items: center;
+          padding: var(--v2-space-md); border: 1px solid var(--v2-border);
+          border-radius: var(--v2-radius-sm); margin-top: var(--v2-space-xs);
+        }
+        .v2-live-toggle--disabled {
+          opacity: 0.5; cursor: not-allowed;
+        }
+        .v2-live-toggle-label {
+          font-family: var(--v2-font-data); font-size: 11px;
+          font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+          color: var(--v2-text-secondary);
+        }
+        .v2-live-toggle-value {
+          font-family: var(--v2-font-data); font-size: 12px;
+          font-weight: 700; letter-spacing: 1px;
+          color: var(--v2-text-muted);
+        }
+        .v2-live-toggle--on { color: var(--v2-accent-green); }
       `}</style>
     </div>
   );
@@ -466,8 +579,8 @@ function CorrelationMatrix({ correlations }) {
 
   function corrBg(val) {
     if (val === null) return 'transparent';
-    if (val >= 0.9) return 'rgba(255,45,85,0.08)';
-    if (val >= 0.8) return 'rgba(255,184,0,0.06)';
+    if (val >= 0.9) return 'rgba(239,83,80,0.08)';
+    if (val >= 0.8) return 'rgba(255,167,38,0.06)';
     return 'transparent';
   }
 
@@ -525,7 +638,7 @@ function CorrelationMatrix({ correlations }) {
           padding: var(--v2-space-sm);
           font-family: var(--v2-font-data); font-size: 12px;
           font-variant-numeric: tabular-nums; text-align: center;
-          border-radius: 3px;
+          border-radius: var(--v2-radius-sm);
         }
         .v2-corr-header {
           font-weight: 600; font-size: 10px; text-transform: uppercase;

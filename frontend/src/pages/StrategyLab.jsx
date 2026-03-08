@@ -305,19 +305,19 @@ export default function StrategyLab() {
         /* Tags */
         .v2-tag {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
-          padding: 2px 6px; border-radius: 3px;
+          padding: 2px 6px; border-radius: var(--v2-radius-sm);
           background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border);
         }
-        .v2-tag-magenta { color: var(--v2-accent-magenta); border-color: rgba(224,64,251,0.3); background: rgba(224,64,251,0.05); }
+        .v2-tag-magenta { color: var(--v2-accent-magenta); border-color: rgba(179,157,219,0.3); background: rgba(179,157,219,0.05); }
 
         /* Confidence badges */
         .v2-conf-badge {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
-          padding: 2px 6px; border-radius: 3px;
+          padding: 2px 6px; border-radius: var(--v2-radius-sm);
         }
-        .v2-conf-high { color: var(--v2-accent-green); background: rgba(0,230,118,0.08); border: 1px solid rgba(0,230,118,0.2); }
-        .v2-conf-med { color: var(--v2-accent-amber); background: rgba(255,171,0,0.08); border: 1px solid rgba(255,171,0,0.2); }
+        .v2-conf-high { color: var(--v2-accent-green); background: rgba(102,187,106,0.08); border: 1px solid rgba(102,187,106,0.2); }
+        .v2-conf-med { color: var(--v2-accent-amber); background: rgba(255,167,38,0.08); border: 1px solid rgba(255,167,38,0.2); }
         .v2-conf-low { color: var(--v2-text-muted); background: rgba(255,255,255,0.03); border: 1px solid var(--v2-border); }
 
         /* Anti-patterns */
@@ -343,7 +343,7 @@ export default function StrategyLab() {
         .v2-learning-item {
           border-left: 2px solid var(--v2-accent-magenta);
           padding: var(--v2-space-sm) var(--v2-space-md);
-          background: rgba(224,64,251,0.03);
+          background: rgba(179,157,219,0.03);
           border-radius: 0 var(--v2-radius-sm) var(--v2-radius-sm) 0;
         }
         .v2-learning-header {
@@ -398,14 +398,14 @@ export default function StrategyLab() {
         .v2-so-cancel-btn {
           width: 100%; margin-top: var(--v2-space-md);
           padding: var(--v2-space-sm) var(--v2-space-md);
-          border: 1px solid rgba(255,23,68,0.3); border-radius: var(--v2-radius-sm);
+          border: 1px solid rgba(239,83,80,0.3); border-radius: var(--v2-radius-sm);
           background: transparent; color: var(--v2-accent-red);
           font-family: var(--v2-font-data); font-size: 10px; font-weight: 600;
           text-transform: uppercase; letter-spacing: 1px;
           cursor: pointer; transition: all var(--v2-duration-fast);
         }
         .v2-so-cancel-btn:hover {
-          background: rgba(255,23,68,0.08);
+          background: rgba(239,83,80,0.08);
           border-color: var(--v2-accent-red);
         }
         .v2-so-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }

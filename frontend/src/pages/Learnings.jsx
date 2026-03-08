@@ -12,12 +12,12 @@ const STAGES = ['candidate', 'provisional', 'active', 'decaying'];
 const STAGE_COLORS = {
   candidate: 'var(--v2-accent-amber)',
   provisional: 'var(--v2-accent-cyan)',
-  active: '#a78bfa',
+  active: 'var(--v2-accent-magenta)',
   decaying: 'var(--v2-accent-red)',
 };
 const EVENT_COLORS = {
   referenced: 'var(--v2-text-muted)',
-  cited: '#a78bfa',
+  cited: 'var(--v2-accent-magenta)',
   trade_won: 'var(--v2-accent-green)',
   trade_lost: 'var(--v2-accent-red)',
 };
@@ -156,7 +156,7 @@ export default function Learnings() {
       {/* ── KPI Strip ── */}
       <div className="ln-kpi-strip">
         <KpiTile label="TOTAL LEARNINGS" value={stats?.total} stagger={1} />
-        <KpiTile label="ACTIVE" value={stats?.by_stage?.active} color="#a78bfa" stagger={2} />
+        <KpiTile label="ACTIVE" value={stats?.by_stage?.active} color="var(--v2-accent-magenta)" stagger={2} />
         <KpiTile label="PROVISIONAL" value={stats?.by_stage?.provisional} color="var(--v2-accent-amber)" stagger={3} />
         <KpiTile label="CANDIDATES" value={stats?.by_stage?.candidate} color="var(--v2-text-muted)" stagger={4} />
         <KpiTile
@@ -492,7 +492,7 @@ function ConfidenceDecayBar({ original, decayed }) {
     <div className="ln-decay">
       <div className="ln-decay-labels">
         <span className="ln-decay-label">Original: <span className="num">{origPct}%</span></span>
-        <span className="ln-decay-label">Current: <span className="num" style={{ color: '#a78bfa' }}>{decPct}%</span></span>
+        <span className="ln-decay-label">Current: <span className="num" style={{ color: 'var(--v2-accent-magenta)' }}>{decPct}%</span></span>
       </div>
       <div className="ln-decay-track">
         <div className="ln-decay-original" style={{ width: `${origPct}%` }} />
@@ -525,7 +525,7 @@ const STYLES = `
     font-weight: 800;
     font-size: 20px;
     letter-spacing: 6px;
-    color: #a78bfa;
+    color: var(--v2-accent-magenta);
     margin: 0;
   }
   .ln-subtitle {
@@ -602,8 +602,8 @@ const STYLES = `
   }
   .ln-tab:hover { color: var(--v2-text-secondary); }
   .ln-tab.active {
-    color: #a78bfa;
-    border-bottom-color: #a78bfa;
+    color: var(--v2-accent-magenta);
+    border-bottom-color: var(--v2-accent-magenta);
   }
 
   /* ── Pipeline (Kanban) ── */
@@ -667,8 +667,8 @@ const STYLES = `
     border-color: var(--v2-border-hover);
   }
   .ln-card--glow {
-    border-color: rgba(167,139,250,0.4);
-    box-shadow: 0 0 0 1px rgba(167,139,250,0.4), 0 0 12px rgba(167,139,250,0.15);
+    border-color: rgba(179,157,219,0.4);
+    box-shadow: 0 0 0 1px rgba(179,157,219,0.4), 0 0 12px rgba(179,157,219,0.15);
   }
   .ln-card-conflict-icon {
     position: absolute;
@@ -690,15 +690,15 @@ const STYLES = `
     letter-spacing: 1px;
     text-transform: uppercase;
     padding: 2px 6px;
-    border-radius: 3px;
+    border-radius: var(--v2-radius-sm);
     border: 1px solid var(--v2-border);
     color: var(--v2-text-secondary);
     white-space: nowrap;
   }
   .ln-badge--type {
-    color: #a78bfa;
-    border-color: rgba(167,139,250,0.3);
-    background: rgba(167,139,250,0.08);
+    color: var(--v2-accent-magenta);
+    border-color: rgba(179,157,219,0.3);
+    background: rgba(179,157,219,0.08);
   }
   .ln-badge--scope {
     color: var(--v2-accent-cyan);
@@ -761,12 +761,12 @@ const STYLES = `
     flex: 1;
     height: 4px;
     background: rgba(255,255,255,0.06);
-    border-radius: 2px;
+    border-radius: var(--v2-radius-sm);
     overflow: hidden;
   }
   .ln-progress-fill {
     height: 100%;
-    border-radius: 2px;
+    border-radius: var(--v2-radius-sm);
     transition: width 0.5s var(--v2-ease-out);
   }
   .ln-progress-label {
@@ -803,7 +803,7 @@ const STYLES = `
     color: var(--v2-accent-red);
     background: rgba(239,83,80,0.08);
     border: 1px solid rgba(239,83,80,0.2);
-    border-radius: 3px;
+    border-radius: var(--v2-radius-sm);
     padding: 3px 8px;
     cursor: pointer;
     transition: all var(--v2-duration-fast);
@@ -903,15 +903,15 @@ const STYLES = `
     color: var(--v2-text-secondary);
     background: var(--v2-bg-elevated);
     border: 1px solid var(--v2-border);
-    border-radius: 4px;
+    border-radius: var(--v2-radius-sm);
     padding: 5px 10px;
     cursor: pointer;
     transition: all var(--v2-duration-fast);
   }
   .ln-resolve-btn:hover {
-    color: #a78bfa;
-    border-color: rgba(167,139,250,0.4);
-    background: rgba(167,139,250,0.08);
+    color: var(--v2-accent-magenta);
+    border-color: rgba(179,157,219,0.4);
+    background: rgba(179,157,219,0.08);
   }
   .ln-resolve-btn--wide {
     flex-basis: 100%;
@@ -969,7 +969,7 @@ const STYLES = `
     background: var(--v2-bg-hover);
   }
   .ln-audit-row.active {
-    border-left-color: #a78bfa;
+    border-left-color: var(--v2-accent-magenta);
     background: var(--v2-bg-elevated);
   }
   .ln-audit-text {
@@ -1062,12 +1062,12 @@ const STYLES = `
     flex: 1;
     height: 6px;
     background: rgba(255,255,255,0.06);
-    border-radius: 3px;
+    border-radius: var(--v2-radius-sm);
     overflow: hidden;
   }
   .ln-regime-bar-fill {
     height: 100%;
-    border-radius: 3px;
+    border-radius: var(--v2-radius-sm);
     transition: width 0.5s var(--v2-ease-out);
   }
   .ln-regime-stat {
@@ -1112,7 +1112,7 @@ const STYLES = `
     top: 0;
     left: 0;
     height: 100%;
-    background: rgba(167,139,250,0.15);
+    background: rgba(179,157,219,0.15);
     border-radius: 4px;
   }
   .ln-decay-current {
@@ -1120,7 +1120,7 @@ const STYLES = `
     top: 0;
     left: 0;
     height: 100%;
-    background: #a78bfa;
+    background: var(--v2-accent-magenta);
     border-radius: 4px;
     transition: width 0.5s var(--v2-ease-out);
   }
@@ -1144,7 +1144,7 @@ const STYLES = `
     letter-spacing: 0.5px;
     padding: 2px 6px;
     border: 1px solid;
-    border-radius: 3px;
+    border-radius: var(--v2-radius-sm);
     white-space: nowrap;
   }
   .ln-event-cycle {

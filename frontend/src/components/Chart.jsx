@@ -3,6 +3,7 @@ import { createChart, CandlestickSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
 import { useDataStore } from '../stores/data';
 import { StatusPulse, TickingNumber } from './ui';
+import { CHART_OPTIONS, CANDLESTICK_OPTIONS, PRICE_LINE_OPTIONS } from '../lib/chartConfig';
 
 const SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
 
@@ -17,44 +18,17 @@ function MiniChart({ symbol }) {
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
-      layout: {
-        background: { color: 'transparent' },
-        textColor: 'var(--v2-text-muted)',
-        fontFamily: "var(--v2-font-data)",
-        fontSize: 10,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.04)' },
-      },
-      crosshair: { mode: 0 },
-      timeScale: {
-        borderColor: 'var(--v2-border)',
-        timeVisible: true,
-        secondsVisible: false,
-      },
-      rightPriceScale: {
-        borderColor: 'var(--v2-border)',
-      },
-      handleScale: { mouseWheel: true, pinch: true },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      ...CHART_OPTIONS,
     });
 
     const series = chart.addSeries(CandlestickSeries, {
-      upColor: '#66bb6a',
-      downColor: '#ef5350',
-      borderUpColor: '#66bb6a',
-      borderDownColor: '#ef5350',
-      wickUpColor: '#66bb6a',
-      wickDownColor: '#ef5350',
+      ...CANDLESTICK_OPTIONS,
     });
 
     series.applyOptions({
       lastValueVisible: true,
       priceLineVisible: true,
-      priceLineColor: '#4fc3f7',
-      priceLineStyle: 2,
-      priceLineWidth: 1,
+      ...PRICE_LINE_OPTIONS,
     });
 
     chartRef.current = chart;

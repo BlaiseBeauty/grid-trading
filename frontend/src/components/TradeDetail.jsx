@@ -156,7 +156,7 @@ export default function TradeDetail({ trade, open, onClose }) {
         }
         .v2-explain-btn {
           font-family: var(--v2-font-data); font-size: 11px; font-weight: 500;
-          padding: 6px 14px; border-radius: 4px; cursor: pointer;
+          padding: 6px 14px; border-radius: var(--v2-radius-sm); cursor: pointer;
           background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border); transition: all 0.15s;
         }
@@ -170,7 +170,7 @@ export default function TradeDetail({ trade, open, onClose }) {
         .v2-td-tags { display: flex; gap: var(--v2-space-xs); flex-wrap: wrap; }
         .v2-tag {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
-          padding: 2px 6px; border-radius: 3px;
+          padding: 2px 6px; border-radius: var(--v2-radius-sm);
           background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border);
         }

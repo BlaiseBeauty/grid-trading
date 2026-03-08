@@ -338,7 +338,7 @@ export default function MobileDashboard() {
       <style>{`
         .mob-container {
           min-height: 100vh;
-          background: var(--v2-bg-primary, var(--void));
+          background: var(--v2-bg-primary);
           padding: 16px;
           padding-top: 12px;
           overflow-y: auto;
@@ -355,7 +355,7 @@ export default function MobileDashboard() {
         .mob-pull-spinner {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-size: 12px;
-          color: var(--cyan);
+          color: var(--v2-accent-cyan);
           text-transform: uppercase;
           letter-spacing: 1px;
         }
@@ -372,7 +372,7 @@ export default function MobileDashboard() {
         .mob-hero-label {
           font-family: var(--v2-font-body, 'Outfit', sans-serif);
           font-size: 12px;
-          color: var(--t3);
+          color: var(--v2-text-muted);
           text-transform: uppercase;
           letter-spacing: 1px;
           margin-bottom: 4px;
@@ -380,10 +380,10 @@ export default function MobileDashboard() {
         .mob-hero-value {
           font-size: 32px;
           font-weight: 500;
-          color: var(--t1);
+          color: var(--v2-text-primary);
         }
         .mob-hero-value .v2-ticking-number {
-          color: var(--t1) !important;
+          color: var(--v2-text-primary) !important;
         }
         .mob-hero-pnl {
           display: flex;
@@ -395,7 +395,7 @@ export default function MobileDashboard() {
         }
         .mob-hero-pnl-label {
           font-size: 11px;
-          color: var(--t3);
+          color: var(--v2-text-muted);
           text-transform: uppercase;
         }
         .mob-hero-ring {
@@ -408,7 +408,7 @@ export default function MobileDashboard() {
         .mob-hero-ring-label {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-size: 11px;
-          color: var(--t3);
+          color: var(--v2-text-muted);
         }
 
         /* ── Price Strip ── */
@@ -431,7 +431,7 @@ export default function MobileDashboard() {
           font-family: var(--v2-font-heading, 'Instrument Sans', sans-serif);
           font-weight: 600;
           font-size: 13px;
-          color: var(--t2);
+          color: var(--v2-text-secondary);
           letter-spacing: 1px;
           margin-bottom: 4px;
         }
@@ -451,7 +451,7 @@ export default function MobileDashboard() {
           font-family: var(--v2-font-heading, 'Instrument Sans', sans-serif);
           font-weight: 600;
           font-size: 12px;
-          color: var(--t3);
+          color: var(--v2-text-muted);
           text-transform: uppercase;
           letter-spacing: 1px;
           margin-bottom: 10px;
@@ -459,9 +459,9 @@ export default function MobileDashboard() {
 
         /* ── Position Cards ── */
         .mob-position-card {
-          background: var(--surface);
-          border: 1px solid var(--border-1);
-          border-radius: var(--radius-md);
+          background: var(--v2-bg-secondary);
+          border: 1px solid var(--v2-border);
+          border-radius: var(--v2-radius-md);
           padding: 12px;
           margin-bottom: 8px;
           cursor: pointer;
@@ -482,7 +482,7 @@ export default function MobileDashboard() {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-weight: 600;
           font-size: 15px;
-          color: var(--t1);
+          color: var(--v2-text-primary);
         }
         .mob-side-badge {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
@@ -491,10 +491,10 @@ export default function MobileDashboard() {
           text-transform: uppercase;
           letter-spacing: 0.5px;
           padding: 2px 6px;
-          border-radius: var(--radius-sm);
+          border-radius: var(--v2-radius-sm);
         }
-        .mob-side-buy { color: var(--profit); background: rgba(0,255,136,0.10); }
-        .mob-side-sell { color: var(--loss); background: rgba(255,45,85,0.10); }
+        .mob-side-buy { color: var(--v2-accent-green); background: var(--v2-tint-green); }
+        .mob-side-sell { color: var(--v2-accent-red); background: var(--v2-tint-red); }
         .mob-position-right {
           display: flex;
           align-items: center;
@@ -508,7 +508,7 @@ export default function MobileDashboard() {
         .mob-position-detail {
           margin-top: 10px;
           padding-top: 10px;
-          border-top: 1px solid var(--border-1);
+          border-top: 1px solid var(--v2-border);
         }
         .mob-detail-row {
           display: flex;
@@ -518,7 +518,7 @@ export default function MobileDashboard() {
           font-size: 13px;
         }
         .mob-detail-label {
-          color: var(--t3);
+          color: var(--v2-text-muted);
           font-size: 12px;
         }
 
@@ -531,7 +531,7 @@ export default function MobileDashboard() {
         .mob-btn {
           flex: 1;
           min-height: 44px;
-          border-radius: var(--radius-md);
+          border-radius: var(--v2-radius-md);
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-weight: 600;
           font-size: 13px;
@@ -542,13 +542,13 @@ export default function MobileDashboard() {
         .mob-btn:active { opacity: 0.7; }
         .mob-btn:disabled { opacity: 0.4; }
         .mob-btn-primary {
-          background: var(--cyan);
-          color: var(--void);
+          background: var(--v2-accent-cyan);
+          color: var(--v2-bg-primary);
         }
         .mob-btn-outline {
           background: transparent;
-          border: 1px solid var(--border-2);
-          color: var(--t2);
+          border: 1px solid var(--v2-border-hover);
+          color: var(--v2-text-secondary);
         }
         .mob-btn-loading {
           display: inline-flex;
@@ -562,7 +562,7 @@ export default function MobileDashboard() {
           align-items: center;
           gap: 8px;
           padding: 8px 0;
-          border-bottom: 1px solid var(--border-0);
+          border-bottom: 1px solid var(--v2-border);
           font-size: 13px;
         }
         .mob-feed-type {
@@ -571,15 +571,15 @@ export default function MobileDashboard() {
           font-weight: 600;
           text-transform: uppercase;
           letter-spacing: 0.5px;
-          color: var(--cyan);
-          background: rgba(0,229,255,0.10);
+          color: var(--v2-accent-cyan);
+          background: var(--v2-tint-cyan);
           padding: 2px 6px;
-          border-radius: var(--radius-sm);
+          border-radius: var(--v2-radius-sm);
           flex-shrink: 0;
         }
         .mob-feed-msg {
           flex: 1;
-          color: var(--t2);
+          color: var(--v2-text-secondary);
           overflow: hidden;
           text-overflow: ellipsis;
           white-space: nowrap;
@@ -587,11 +587,11 @@ export default function MobileDashboard() {
         .mob-feed-time {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-size: 10px;
-          color: var(--t4);
+          color: var(--v2-text-muted);
           flex-shrink: 0;
         }
         .mob-empty {
-          color: var(--t4);
+          color: var(--v2-text-muted);
           font-size: 13px;
           padding: 12px 0;
         }
@@ -606,7 +606,7 @@ export default function MobileDashboard() {
         .mob-cycle-stats {
           font-family: var(--v2-font-data, 'IBM Plex Mono', monospace);
           font-size: 10px;
-          color: var(--t3);
+          color: var(--v2-text-muted);
         }
 
         /* ── System ── */

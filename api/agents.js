@@ -53,9 +53,15 @@ async function routes(fastify) {
   fastify.post('/agents/cycle', {
     schema: { body: { type: 'object', properties: {} } },
   }, async (request, reply) => {
+    // Guard: reject if a cycle is already running
+    if (orchestrator.isCycleRunning()) {
+      return reply.code(409).send({ error: 'Cycle already running' });
+    }
+
     // Run async — don't block the response
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);
+      fastify.broadcast('cycle_error', { error: err.message });
     });
 
     return { message: 'Cycle started', status: 'running' };

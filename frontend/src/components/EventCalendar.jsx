@@ -135,8 +135,8 @@ export default function EventCalendar() {
         }
         .v2-ec-blackout-badge {
           font-size: 9px; font-weight: 700; padding: 2px 6px;
-          background: rgba(255,23,68,0.15); color: var(--v2-accent-red);
-          border: 1px solid rgba(255,23,68,0.3); border-radius: 3px;
+          background: rgba(239,83,80,0.15); color: var(--v2-accent-red);
+          border: 1px solid rgba(239,83,80,0.3); border-radius: var(--v2-radius-sm);
         }
         .v2-ec-add {
           font-size: 18px; color: var(--v2-text-muted);
@@ -155,23 +155,23 @@ export default function EventCalendar() {
           font-family: var(--v2-font-data); font-size: 11px;
           padding: 4px 6px; max-width: 140px;
           background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border);
-          color: var(--v2-text-primary); border-radius: 4px;
+          color: var(--v2-text-primary); border-radius: var(--v2-radius-sm);
         }
         .v2-ec-submit {
           font-family: var(--v2-font-data); font-size: 10px; font-weight: 600;
           color: var(--v2-accent-cyan); cursor: pointer; padding: 4px 8px;
-          border: 1px solid var(--v2-accent-cyan); border-radius: 4px;
-          background: rgba(0,229,255,0.05);
+          border: 1px solid var(--v2-accent-cyan); border-radius: var(--v2-radius-sm);
+          background: rgba(79,195,247,0.05);
           transition: background var(--v2-duration-fast);
         }
-        .v2-ec-submit:hover { background: rgba(0,229,255,0.1); }
+        .v2-ec-submit:hover { background: rgba(79,195,247,0.1); }
         .v2-ec-list { display: flex; flex-direction: column; }
         .v2-ec-row {
           display: flex; align-items: center; gap: var(--v2-space-sm);
           padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border);
         }
         .v2-ec-row--blackout {
-          background: rgba(255,23,68,0.04);
+          background: rgba(239,83,80,0.04);
           border-left: 2px solid var(--v2-accent-red);
           padding-left: var(--v2-space-sm);
         }

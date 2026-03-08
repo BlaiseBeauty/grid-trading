@@ -16,10 +16,10 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (
-        <div style={{ color: '#ff2d55', padding: 40, fontFamily: 'monospace', fontSize: 14 }}>
-          <h1 style={{ color: '#00e5ff' }}>GRID — React Error</h1>
+        <div style={{ color: '#ef5350', padding: 40, fontFamily: 'monospace', fontSize: 14 }}>
+          <h1 style={{ color: '#4fc3f7' }}>GRID — React Error</h1>
           <pre style={{ whiteSpace: 'pre-wrap', marginTop: 20 }}>{this.state.error.message}</pre>
-          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 10, color: '#6e7590', fontSize: 11 }}>{this.state.error.stack}</pre>
+          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 10, color: '#5c5f6b', fontSize: 11 }}>{this.state.error.stack}</pre>
         </div>
       );
     }

@@ -3,6 +3,7 @@ import { createChart, AreaSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
 import { formatMoney, formatPct } from '../lib/format';
 import { GlowCard, TickingNumber, ProgressRing } from '../components/ui';
+import { CHART_OPTIONS, EQUITY_AREA_OPTIONS, DRAWDOWN_AREA_OPTIONS } from '../lib/chartConfig';
 
 export default function Analytics() {
   const [summary, setSummary] = useState(null);
@@ -29,27 +30,11 @@ export default function Analytics() {
   useEffect(() => {
     if (!equityRef.current || !drawdownRef.current) return;
 
-    const chartOpts = {
-      layout: { background: { color: 'transparent' }, textColor: '#55575e', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.07)', timeVisible: true },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.07)' },
-      crosshair: { mode: 0 },
-      handleScale: { mouseWheel: true },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
-    };
+    const eqChart = createChart(equityRef.current, CHART_OPTIONS);
+    const eqSeries = eqChart.addSeries(AreaSeries, EQUITY_AREA_OPTIONS);
 
-    const eqChart = createChart(equityRef.current, chartOpts);
-    const eqSeries = eqChart.addSeries(AreaSeries, {
-      topColor: 'rgba(79, 195, 247, 0.20)', bottomColor: 'rgba(79, 195, 247, 0.01)',
-      lineColor: '#4fc3f7', lineWidth: 2,
-    });
-
-    const ddChart = createChart(drawdownRef.current, chartOpts);
-    const ddSeries = ddChart.addSeries(AreaSeries, {
-      topColor: 'rgba(239, 83, 80, 0.01)', bottomColor: 'rgba(239, 83, 80, 0.15)',
-      lineColor: '#ef5350', lineWidth: 2, invertFilledArea: true,
-    });
+    const ddChart = createChart(drawdownRef.current, CHART_OPTIONS);
+    const ddSeries = ddChart.addSeries(AreaSeries, DRAWDOWN_AREA_OPTIONS);
 
     Promise.all([
       api('/system/equity'),
@@ -283,7 +268,7 @@ export default function Analytics() {
         .v2-panel-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--v2-space-md); }
         .v2-period-pills { display: flex; gap: 2px; }
         .v2-pill-sm { padding: 3px 8px; font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; color: var(--v2-text-muted); background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border); border-radius: var(--v2-radius-sm); cursor: pointer; transition: all var(--v2-duration-fast); }
-        .v2-pill-sm.active { color: var(--v2-accent-cyan); background: rgba(0,229,255,0.08); border-color: rgba(0,229,255,0.2); }
+        .v2-pill-sm.active { color: var(--v2-accent-cyan); background: rgba(79,195,247,0.08); border-color: rgba(79,195,247,0.2); }
 
         .v2-table { overflow-x: auto; }
         .v2-tbl-header, .v2-tbl-row { display: flex; gap: var(--v2-space-sm); align-items: center; padding: var(--v2-space-xs) 0; }
@@ -297,8 +282,8 @@ export default function Analytics() {
         .v2-acc-row { display: flex; align-items: center; gap: var(--v2-space-sm); padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border); font-size: 12px; }
         .v2-acc-cat { font-family: var(--v2-font-data); font-size: 9px; color: var(--v2-accent-magenta); text-transform: uppercase; min-width: 60px; }
         .v2-acc-type { color: var(--v2-text-secondary); flex: 1; font-size: 11px; }
-        .v2-acc-bar-track { width: 60px; height: 4px; background: var(--v2-border); border-radius: 2px; overflow: hidden; }
-        .v2-acc-bar-fill { height: 100%; border-radius: 2px; transition: width var(--v2-duration-normal); }
+        .v2-acc-bar-track { width: 60px; height: 4px; background: var(--v2-border); border-radius: var(--v2-radius-sm); overflow: hidden; }
+        .v2-acc-bar-fill { height: 100%; border-radius: var(--v2-radius-sm); transition: width var(--v2-duration-normal); }
 
         .v2-cost-kpi-row { display: flex; gap: var(--v2-space-md); margin-bottom: var(--v2-space-md); }
         .v2-cost-kpi { display: flex; flex-direction: column; gap: 2px; }

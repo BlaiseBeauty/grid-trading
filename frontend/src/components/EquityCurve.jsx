@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { createChart, AreaSeries } from 'lightweight-charts';
+import { CHART_OPTIONS, EQUITY_AREA_OPTIONS } from '../lib/chartConfig';
 
 export default function EquityCurve({ data }) {
   const containerRef = useRef(null);
@@ -10,33 +11,12 @@ export default function EquityCurve({ data }) {
     if (!containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
-      layout: {
-        background: { color: 'transparent' },
-        textColor: 'var(--v2-text-muted)',
-        fontFamily: "var(--v2-font-data)",
-        fontSize: 11,
-      },
-      grid: {
-        vertLines: { color: 'rgba(255,255,255,0.04)' },
-        horzLines: { color: 'rgba(255,255,255,0.04)' },
-      },
-      timeScale: {
-        borderColor: 'var(--v2-border)',
-        timeVisible: true,
-      },
-      rightPriceScale: {
-        borderColor: 'var(--v2-border)',
-      },
-      crosshair: { mode: 0 },
-      handleScale: { mouseWheel: true },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
+      ...CHART_OPTIONS,
+      layout: { ...CHART_OPTIONS.layout, fontSize: 11 },
     });
 
     const areaSeries = chart.addSeries(AreaSeries, {
-      topColor: 'rgba(79, 195, 247, 0.20)',
-      bottomColor: 'rgba(79, 195, 247, 0.02)',
-      lineColor: '#4fc3f7',
-      lineWidth: 2,
+      ...EQUITY_AREA_OPTIONS,
     });
 
     chartRef.current = { chart, areaSeries };

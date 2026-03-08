@@ -68,6 +68,10 @@ export const useDataStore = create((set, get) => ({
 
   setCycleStatus: (status) => set({ cycleStatus: status }),
 
+  // Backtest progress (WebSocket)
+  backtestProgress: null,
+  setBacktestProgress: (data) => set({ backtestProgress: data }),
+
   addCompletedAgent: (data) => set(s => {
     if (!s.cycleStatus) return {};
     return { cycleStatus: { ...s.cycleStatus, completed: [...s.cycleStatus.completed, data] } };

@@ -10,6 +10,7 @@ const NAV = [
   { path: '/strategy', label: 'Strategy Lab', icon: '△' },
   { path: '/learnings', label: 'Learnings', icon: '◆' },
   { path: '/analytics', label: 'Analytics', icon: '◎' },
+  { path: '/backtest', label: 'Backtest', icon: '◑' },
   { path: '/settings', label: 'Settings', icon: '⚙' },
 ];
 

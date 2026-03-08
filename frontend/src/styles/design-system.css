@@ -22,6 +22,20 @@
   --v2-accent-amber: #ffa726;
   --v2-accent-magenta: #b39ddb;
 
+  /* ── Tint Backgrounds (subtle) ── */
+  --v2-tint-cyan: rgba(79, 195, 247, 0.08);
+  --v2-tint-green: rgba(102, 187, 106, 0.08);
+  --v2-tint-red: rgba(239, 83, 80, 0.08);
+  --v2-tint-amber: rgba(255, 167, 38, 0.08);
+  --v2-tint-magenta: rgba(179, 157, 219, 0.08);
+
+  /* ── Tint Backgrounds (strong) ── */
+  --v2-tint-cyan-strong: rgba(79, 195, 247, 0.15);
+  --v2-tint-green-strong: rgba(102, 187, 106, 0.15);
+  --v2-tint-red-strong: rgba(239, 83, 80, 0.15);
+  --v2-tint-amber-strong: rgba(255, 167, 38, 0.15);
+  --v2-tint-magenta-strong: rgba(179, 157, 219, 0.15);
+
   /* ── Text ── */
   --v2-text-primary: #e0e2e7;
   --v2-text-secondary: #8b8e99;

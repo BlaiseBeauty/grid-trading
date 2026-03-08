@@ -37,7 +37,6 @@ export default function Dashboard() {
   const fetchSystem = useDataStore(s => s.fetchSystem);
   const fetchPrices = useDataStore(s => s.fetchPrices);
   const fetchEquity = useDataStore(s => s.fetchEquity);
-  const triggerCycle = useDataStore(s => s.triggerCycle);
   const refreshData = useDataStore(s => s.refreshData);
   const signals = useDataStore(s => s.signals);
   const regime = useDataStore(s => s.regime);
@@ -50,7 +49,6 @@ export default function Dashboard() {
   const tradeStats = useDataStore(s => s.tradeStats);
   const costs = useDataStore(s => s.costs);
   const equity = useDataStore(s => s.equity);
-  const cycleStatus = useDataStore(s => s.cycleStatus);
   const tradeFlash = useDataStore(s => s.tradeFlash);
   const setTradeFlash = useDataStore(s => s.setTradeFlash);
   const [selectedTrade, setSelectedTrade] = useState(null);
@@ -122,16 +120,13 @@ export default function Dashboard() {
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
 
   return (
-    <div className={`v2-dashboard ${cycleStatus?.running ? 'v2-cycle-active' : ''}`}>
+    <div className="v2-dashboard">
       {/* ── Header ── */}
       <div className="v2-header v2-animate-in">
         <h1 className="v2-title">COMMAND CENTRE</h1>
         <div className="v2-header-actions">
           <button className="v2-btn" onClick={() => refreshData().catch(() => {})}>
             Refresh
-          </button>
-          <button className="v2-btn v2-btn--primary" onClick={() => triggerCycle().catch(() => {})}>
-            Run Cycle
           </button>
         </div>
       </div>
@@ -170,11 +165,6 @@ export default function Dashboard() {
           <CountdownTimer targetTime={nextCycle} />
         </GlowCard>
       </div>
-
-      {/* ── Cycle Pipeline ── */}
-      {cycleStatus?.running && (
-        <CyclePipeline cycleStatus={cycleStatus} />
-      )}
 
       {/* ── Market Row ── */}
       <div className="v2-market-row">
@@ -399,13 +389,6 @@ export default function Dashboard() {
           gap: var(--v2-space-sm);
           transition: border-color var(--v2-duration-normal);
         }
-        .v2-dashboard.v2-cycle-active {
-          border: 1px solid rgba(0, 229, 255, 0.15);
-          border-radius: var(--v2-radius-lg);
-          padding: var(--v2-space-md);
-          animation: v2-pulse-glow 2s ease-in-out infinite;
-        }
-
         /* ── Header ── */
         .v2-header {
           display: flex;
@@ -591,7 +574,7 @@ export default function Dashboard() {
         }
         .v2-position:hover {
           border-color: var(--v2-border-hover);
-          background: rgba(255,255,255,0.04);
+          background: var(--v2-bg-hover);
         }
         .v2-pos-header {
           display: flex;
@@ -744,12 +727,12 @@ export default function Dashboard() {
           flex: 1;
           height: 4px;
           background: var(--v2-border);
-          border-radius: 2px;
+          border-radius: var(--v2-radius-sm);
           overflow: hidden;
         }
         .v2-agent-bar-fill {
           height: 100%;
-          border-radius: 2px;
+          border-radius: var(--v2-radius-sm);
           transition: width var(--v2-duration-slow) var(--v2-ease-out);
         }
         .v2-agent-bar-count {
@@ -785,57 +768,6 @@ export default function Dashboard() {
           color: var(--v2-text-primary);
         }
 
-        /* ── Cycle Pipeline ── */
-        .v2-pipeline {
-          padding: var(--v2-space-sm) 0;
-        }
-        .v2-pipeline-stages {
-          display: flex;
-          justify-content: space-between;
-          margin-bottom: var(--v2-space-xs);
-        }
-        .v2-pipeline-stage {
-          display: flex;
-          align-items: center;
-          gap: var(--v2-space-xs);
-        }
-        .v2-pipeline-dot {
-          width: 6px; height: 6px;
-          border-radius: 50%;
-          background: var(--v2-text-muted);
-          transition: all var(--v2-duration-normal);
-        }
-        .v2-pipeline-stage.v2-pipe-done .v2-pipeline-dot {
-          background: var(--v2-accent-cyan);
-          box-shadow: 0 0 6px rgba(0,229,255,0.4);
-        }
-        .v2-pipeline-stage.v2-pipe-active .v2-pipeline-dot {
-          background: var(--v2-accent-cyan);
-          animation: v2-status-pulse 1.5s ease-in-out infinite;
-        }
-        .v2-pipeline-label {
-          font-family: var(--v2-font-data);
-          font-size: 9px;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          color: var(--v2-text-muted);
-        }
-        .v2-pipeline-stage.v2-pipe-done .v2-pipeline-label { color: var(--v2-accent-cyan); }
-        .v2-pipeline-stage.v2-pipe-active .v2-pipeline-label { color: var(--v2-text-secondary); }
-        .v2-pipeline-track {
-          height: 2px;
-          background: var(--v2-border);
-          border-radius: 1px;
-          overflow: hidden;
-        }
-        .v2-pipeline-fill {
-          height: 100%;
-          background: var(--v2-accent-cyan);
-          border-radius: 1px;
-          transition: width 0.5s var(--v2-ease-out);
-          box-shadow: 0 0 8px rgba(0,229,255,0.3);
-        }
-
         /* ── Responsive ── */
         @media (max-width: 768px) {
           .v2-kpi-strip { flex-wrap: nowrap; }
@@ -846,53 +778,6 @@ export default function Dashboard() {
           .v2-cycle-strategy { grid-template-columns: repeat(2, 1fr); }
         }
       `}</style>
-    </div>
-  );
-}
-
-const PIPELINE_STAGES = ['knowledge', 'regime', 'synthesizer', 'risk_manager', 'execution'];
-const STRATEGY_AGENTS = ['regime_classifier', 'synthesizer', 'risk_manager'];
-
-function CyclePipeline({ cycleStatus }) {
-  const completed = cycleStatus.completed || [];
-  const knowledgeAgents = cycleStatus.agents || [];
-
-  const statuses = [];
-  for (let i = 0; i < PIPELINE_STAGES.length; i++) {
-    const stage = PIPELINE_STAGES[i];
-    if (stage === 'knowledge') {
-      const knowledgeDone = completed.filter(c => !STRATEGY_AGENTS.includes(c.agent_name)).length;
-      statuses.push(knowledgeDone >= knowledgeAgents.length ? 'done' : knowledgeDone > 0 ? 'active' : 'pending');
-    } else if (stage === 'execution') {
-      statuses.push(completed.some(c => c.agent_name === 'risk_manager') ? 'done' : statuses[i - 1] === 'done' ? 'active' : 'pending');
-    } else {
-      const agentName = stage === 'regime' ? 'regime_classifier' : stage;
-      if (completed.some(c => c.agent_name === agentName)) {
-        statuses.push('done');
-      } else {
-        statuses.push(statuses[i - 1] === 'done' ? 'active' : 'pending');
-      }
-    }
-  }
-
-  const doneCount = statuses.filter(s => s === 'done').length;
-  const progress = (doneCount / PIPELINE_STAGES.length) * 100;
-
-  const labels = { knowledge: 'knowledge', regime: 'regime', synthesizer: 'synth', risk_manager: 'risk', execution: 'exec' };
-
-  return (
-    <div className="v2-pipeline v2-animate-in">
-      <div className="v2-pipeline-stages">
-        {PIPELINE_STAGES.map((stage, i) => (
-          <div key={stage} className={`v2-pipeline-stage v2-pipe-${statuses[i]}`}>
-            <div className="v2-pipeline-dot" />
-            <span className="v2-pipeline-label">{labels[stage]}</span>
-          </div>
-        ))}
-      </div>
-      <div className="v2-pipeline-track">
-        <div className="v2-pipeline-fill" style={{ width: `${progress}%` }} />
-      </div>
     </div>
   );
 }

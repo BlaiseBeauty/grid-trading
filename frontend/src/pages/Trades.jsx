@@ -283,8 +283,8 @@ export default function Trades() {
         .v2-pill:hover { border-color: var(--v2-border-hover); color: var(--v2-text-secondary); }
         .v2-pill.active {
           color: var(--v2-accent-cyan); border-color: var(--v2-accent-cyan);
-          background: rgba(0,229,255,0.06);
-          box-shadow: 0 0 12px rgba(0,229,255,0.15);
+          background: rgba(79,195,247,0.06);
+          box-shadow: 0 0 12px rgba(79,195,247,0.15);
         }
 
         .v2-kpi-strip { display: flex; gap: var(--v2-space-sm); overflow-x: auto; scrollbar-width: none; }
@@ -325,9 +325,9 @@ export default function Trades() {
           text-transform: uppercase; letter-spacing: 1px;
           padding: 2px 8px; border-radius: var(--v2-radius-full); border: 1px solid;
         }
-        .v2-status--open { color: var(--v2-accent-cyan); border-color: rgba(0,229,255,0.3); background: rgba(0,229,255,0.06); }
-        .v2-status--win { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); background: rgba(0,230,118,0.06); }
-        .v2-status--loss { color: var(--v2-accent-red); border-color: rgba(255,23,68,0.3); background: rgba(255,23,68,0.06); }
+        .v2-status--open { color: var(--v2-accent-cyan); border-color: rgba(79,195,247,0.3); background: rgba(79,195,247,0.06); }
+        .v2-status--win { color: var(--v2-accent-green); border-color: rgba(102,187,106,0.3); background: rgba(102,187,106,0.06); }
+        .v2-status--loss { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.3); background: rgba(239,83,80,0.06); }
         .v2-trade-time { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-muted); }
         .v2-trade-duration { font-family: 'IBM Plex Mono', var(--v2-font-data), monospace; font-size: 10px; color: var(--v2-text-muted); letter-spacing: 0.5px; }
 

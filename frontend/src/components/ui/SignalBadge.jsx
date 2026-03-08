@@ -7,12 +7,12 @@
  */
 
 const BADGE_CONFIG = {
-  long:    { label: 'LONG',    arrow: '\u25B2', color: 'var(--v2-accent-green)', bg: 'rgba(0,230,118,0.12)' },
-  bullish: { label: 'BULLISH', arrow: '\u25B2', color: 'var(--v2-accent-green)', bg: 'rgba(0,230,118,0.12)' },
-  short:   { label: 'SHORT',   arrow: '\u25BC', color: 'var(--v2-accent-red)',   bg: 'rgba(255,23,68,0.12)' },
-  bearish: { label: 'BEARISH', arrow: '\u25BC', color: 'var(--v2-accent-red)',   bg: 'rgba(255,23,68,0.12)' },
-  hold:    { label: 'HOLD',    arrow: '\u2014', color: 'var(--v2-accent-amber)', bg: 'rgba(255,171,0,0.12)' },
-  neutral: { label: 'NEUTRAL', arrow: '\u2014', color: 'var(--v2-accent-amber)', bg: 'rgba(255,171,0,0.12)' },
+  long:    { label: 'LONG',    arrow: '\u25B2', color: 'var(--v2-accent-green)', bg: 'rgba(102,187,106,0.12)' },
+  bullish: { label: 'BULLISH', arrow: '\u25B2', color: 'var(--v2-accent-green)', bg: 'rgba(102,187,106,0.12)' },
+  short:   { label: 'SHORT',   arrow: '\u25BC', color: 'var(--v2-accent-red)',   bg: 'rgba(239,83,80,0.12)' },
+  bearish: { label: 'BEARISH', arrow: '\u25BC', color: 'var(--v2-accent-red)',   bg: 'rgba(239,83,80,0.12)' },
+  hold:    { label: 'HOLD',    arrow: '\u2014', color: 'var(--v2-accent-amber)', bg: 'rgba(255,167,38,0.12)' },
+  neutral: { label: 'NEUTRAL', arrow: '\u2014', color: 'var(--v2-accent-amber)', bg: 'rgba(255,167,38,0.12)' },
 };
 
 export default function SignalBadge({ direction = 'neutral', size = 'sm' }) {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useDataStore } from '../stores/data';
 import { useCycleReportStore } from '../stores/cycleReport';
+import { useCycleStore } from '../stores/cycle';
 import { getToken } from '../lib/api';
 
 export function useWebSocket() {
@@ -38,12 +39,16 @@ export function useWebSocket() {
             s.addFeedItem({ type: msg.type, ...msg.data });
           }
 
+          const cs = useCycleStore.getState();
+
           switch (msg.type) {
             case 'cycle_start':
               s.setCycleStatus({ running: true, cycleNumber: msg.data.cycleNumber, agents: msg.data.agents, completed: [] });
+              cs.onCycleStart(msg.data);
               break;
             case 'agent_complete':
               s.addCompletedAgent(msg.data);
+              cs.onAgentComplete(msg.data);
               break;
             case 'cycle_complete':
               s.setLastCycle(msg.data);
@@ -54,11 +59,21 @@ export function useWebSocket() {
               s.fetchAgents();
               s.fetchSystem();
               s.fetchEquity();
+              cs.onCycleComplete(msg.data);
+              break;
+            case 'cycle_aborted':
+              s.setCycleStatus(null);
+              cs.onCycleAborted(msg.data);
+              break;
+            case 'cycle_error':
+              s.setCycleStatus(null);
+              cs.onCycleError(msg.data);
               break;
             case 'trades_executed':
               s.fetchTrades();
               s.fetchPortfolio();
               s.setTradeFlash(true);
+              cs.onTradesExecuted();
               break;
             case 'positions_closed':
               s.fetchTrades();
@@ -100,6 +115,16 @@ export function useWebSocket() {
               break;
             case 'cycle_report':
               useCycleReportStore.getState().setLatestReport(msg.data);
+              cs.onCycleReport(msg.data);
+              break;
+            case 'backtest_progress':
+              s.setBacktestProgress(msg.data);
+              break;
+            case 'backtest_complete':
+              s.setBacktestProgress(null);
+              break;
+            case 'backtest_failed':
+              s.setBacktestProgress({ ...msg.data, failed: true });
               break;
           }
         } catch (err) {

@@ -147,6 +147,7 @@ async function registerRoutes() {
   fastify.register(require('./api/events'), { prefix: '/api' });
   fastify.register(require('./api/calibration'), { prefix: '/api' });
   fastify.register(require('./api/cycle-reports'), { prefix: '/api' });
+  fastify.register(require('./api/backtest'), { prefix: '/api' });
 
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
@@ -564,6 +565,20 @@ async function start() {
 
     // Start cron
     setupCron();
+
+    // Live trading readiness gate — block startup if conditions not met
+    if (process.env.LIVE_TRADING_ENABLED === 'true') {
+      const { checkLiveTradingReadiness } = require('./agents/readiness-check');
+      const r = await checkLiveTradingReadiness();
+      if (!r.ready) {
+        console.error('[GRID] LIVE TRADING BLOCKED — CONDITIONS NOT MET:');
+        r.conditions.filter(c => !c.passed).forEach(c =>
+          console.error(`  ✗ ${c.label}: ${c.current} / ${c.required}`)
+        );
+        process.exit(1);
+      }
+      console.log('[GRID] Live trading readiness verified ✓');
+    }
 
     // One-time boot cycle — confirm orchestrator works on this deployment
     const orchestrator = require('./agents/orchestrator');

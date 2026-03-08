@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/auth';
 import { useWebSocket } from './hooks/useWebSocket';
 import useIsMobile from './hooks/useIsMobile';
 import Sidebar from './components/Sidebar';
+import CycleControl from './components/CycleControl';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import MobileDashboard from './pages/MobileDashboard';
@@ -13,6 +14,7 @@ import StrategyLab from './pages/StrategyLab';
 import Learnings from './pages/Learnings';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
+import Backtest from './pages/Backtest';
 
 function Layout({ children }) {
   useWebSocket();
@@ -24,6 +26,7 @@ function Layout({ children }) {
     return (
       <div style={{ minHeight: '100vh', background: 'var(--v2-bg-primary)' }}>
         {children}
+        <CycleControl />
       </div>
     );
   }
@@ -56,6 +59,8 @@ function Layout({ children }) {
           {children}
         </div>
       </main>
+
+      <CycleControl />
     </div>
   );
 }
@@ -76,6 +81,7 @@ export default function App() {
           <Route path="/strategy" element={<StrategyLab />} />
           <Route path="/learnings" element={<Learnings />} />
           <Route path="/analytics" element={<Analytics />} />
+          <Route path="/backtest" element={<Backtest />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

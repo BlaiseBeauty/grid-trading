@@ -2,6 +2,7 @@ const { queryOne, queryAll, query } = require('../db/connection');
 const riskLimitsConfig = require('../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
 const { notifications } = require('../services/notifications');
+const { checkLiveTradingReadiness } = require('../agents/readiness-check');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -261,6 +262,11 @@ async function routes(fastify) {
       FROM market_regime
       ORDER BY asset_class, created_at DESC
     `);
+  });
+
+  // GET /api/system/readiness — live trading readiness check
+  fastify.get('/system/readiness', async () => {
+    return checkLiveTradingReadiness();
   });
 }
 

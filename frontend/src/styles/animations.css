@@ -7,10 +7,10 @@
    Subtle border glow pulse for active/live elements. */
 @keyframes v2-pulse-glow {
   0%, 100% {
-    box-shadow: 0 0 8px rgba(0, 229, 255, 0.08);
+    box-shadow: 0 0 8px rgba(79, 195, 247, 0.08);
   }
   50% {
-    box-shadow: 0 0 20px rgba(0, 229, 255, 0.2);
+    box-shadow: 0 0 20px rgba(79, 195, 247, 0.2);
   }
 }
 
@@ -44,7 +44,7 @@
    Brief background highlight when a value changes. */
 @keyframes v2-number-flash {
   0% {
-    background-color: rgba(0, 229, 255, 0.2);
+    background-color: rgba(79, 195, 247, 0.2);
   }
   100% {
     background-color: transparent;
@@ -54,7 +54,7 @@
 /* ── Number Flash (positive) ── */
 @keyframes v2-number-flash-green {
   0% {
-    background-color: rgba(0, 230, 118, 0.2);
+    background-color: rgba(102, 187, 106, 0.2);
   }
   100% {
     background-color: transparent;
@@ -64,7 +64,7 @@
 /* ── Number Flash (negative) ── */
 @keyframes v2-number-flash-red {
   0% {
-    background-color: rgba(255, 23, 68, 0.2);
+    background-color: rgba(239, 83, 80, 0.2);
   }
   100% {
     background-color: transparent;
@@ -130,18 +130,18 @@
 
 /* ── Border Pulse (position P&L direction) ── */
 @keyframes v2-border-pulse-green {
-  0% { border-color: rgba(0, 230, 118, 0.6); box-shadow: 0 0 12px rgba(0, 230, 118, 0.2); }
+  0% { border-color: rgba(102, 187, 106, 0.6); box-shadow: 0 0 12px rgba(102, 187, 106, 0.2); }
   100% { border-color: var(--v2-border); box-shadow: none; }
 }
 
 @keyframes v2-border-pulse-red {
-  0% { border-color: rgba(255, 23, 68, 0.6); box-shadow: 0 0 12px rgba(255, 23, 68, 0.2); }
+  0% { border-color: rgba(239, 83, 80, 0.6); box-shadow: 0 0 12px rgba(239, 83, 80, 0.2); }
   100% { border-color: var(--v2-border); box-shadow: none; }
 }
 
 /* ── Trade Execution Flash ── */
 @keyframes v2-border-flash-cyan {
-  0% { border-color: rgba(0, 229, 255, 0.8); box-shadow: 0 0 20px rgba(0, 229, 255, 0.3); }
+  0% { border-color: rgba(79, 195, 247, 0.8); box-shadow: 0 0 20px rgba(79, 195, 247, 0.3); }
   100% { border-color: var(--v2-border); box-shadow: none; }
 }
 
