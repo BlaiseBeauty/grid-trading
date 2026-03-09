@@ -57,14 +57,14 @@ export default function Sidebar({ open, onClose }) {
       <style>{`
         .v2-sidebar {
           width: var(--sidebar-width);
-          height: 100vh;
+          height: calc(100vh - var(--shell-total-top));
           background: var(--v2-bg-primary);
           border-right: 1px solid var(--v2-border);
           display: flex;
           flex-direction: column;
           position: fixed;
           left: 0;
-          top: 0;
+          top: var(--shell-total-top);
           z-index: 10;
         }
         .v2-sidebar-brand {
