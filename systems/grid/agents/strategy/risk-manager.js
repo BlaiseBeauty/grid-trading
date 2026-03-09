@@ -9,6 +9,7 @@ const { getRiskLimits } = riskLimitsConfig;
 const { queryOne, queryAll, query } = require('../../../../db/connection');
 const { getLatestCorrelations } = require('../correlation-calculator');
 const { resolveProposal } = require('../../../../shared/conflict-resolver');
+const bus = require('../../../../shared/intelligence-bus');
 
 class RiskManagerAgent extends BaseAgent {
   constructor() {
@@ -119,6 +120,9 @@ class RiskManagerAgent extends BaseAgent {
         console.warn('[RISK_MANAGER] Conflict resolver failed (non-critical):', err.message);
       }
     }
+
+    // Apply COMPASS limits — caps position sizes, never increases them
+    await this.applyCompassLimits(approved);
 
     return {
       approved,
@@ -444,6 +448,86 @@ class RiskManagerAgent extends BaseAgent {
       };
     } finally {
       this.promptKey = originalPromptKey;
+    }
+  }
+
+  /**
+   * Apply COMPASS limits to approved proposals.
+   * Reads risk state and allocation guidance from the intelligence bus.
+   * Falls back gracefully if COMPASS is unavailable.
+   */
+  async applyCompassLimits(approved) {
+    if (approved.length === 0) return;
+
+    // Read COMPASS risk state for hard limits
+    let compassLimits = null;
+    try {
+      const compassRisk = await bus.getRiskState();
+      if (compassRisk?.payload) {
+        const p = typeof compassRisk.payload === 'string'
+          ? JSON.parse(compassRisk.payload) : compassRisk.payload;
+        if (p?.limits) {
+          compassLimits = p.limits;
+          console.log(
+            `[RISK_MANAGER] Using COMPASS limits: ` +
+            `max_position=$${p.limits.max_single_position_usd}, ` +
+            `risk_score=${p.risk_score}/10`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('[RISK_MANAGER] COMPASS limits unavailable, using defaults:', err.message);
+    }
+
+    // Read COMPASS allocation guidance for direction bias
+    let compassGuidance = null;
+    try {
+      const allocation = await bus.getLatestAllocationGuidance();
+      if (allocation?.payload) {
+        compassGuidance = typeof allocation.payload === 'string'
+          ? JSON.parse(allocation.payload) : allocation.payload;
+      }
+    } catch { /* non-critical */ }
+
+    for (const proposal of approved) {
+      const sizePct = proposal.approved_size_pct || proposal.position_size_suggestion_pct || 0;
+
+      // Apply COMPASS position size cap (convert USD limit to % of portfolio)
+      if (compassLimits?.max_single_position_usd) {
+        const portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
+        const compassMaxPct = (compassLimits.max_single_position_usd / portfolioValue) * 100;
+        if (sizePct > compassMaxPct) {
+          console.log(
+            `[RISK_MANAGER] COMPASS cap: ${proposal.symbol} ` +
+            `${sizePct.toFixed(1)}% → ${compassMaxPct.toFixed(1)}%`
+          );
+          proposal.approved_size_pct = Math.round(compassMaxPct * 100) / 100;
+        }
+      }
+
+      // Apply COMPASS direction bias — reduce size 25% if opposing
+      if (compassGuidance?.recommended_weights) {
+        const symbolGuidance = compassGuidance.recommended_weights[proposal.symbol];
+        if (symbolGuidance) {
+          const compassDir = symbolGuidance.direction;
+          const proposalDir = proposal.direction === 'long' ? 'long' : 'short';
+          if (compassDir && compassDir !== 'neutral' && compassDir !== proposalDir) {
+            const currentSize = proposal.approved_size_pct || sizePct;
+            proposal.approved_size_pct = Math.round(currentSize * 0.75 * 100) / 100;
+            console.log(
+              `[RISK_MANAGER] COMPASS direction bias (${compassDir}) opposes ` +
+              `proposal (${proposalDir}) — size reduced 25%`
+            );
+          }
+        }
+      }
+
+      // Attach COMPASS metadata
+      proposal.compass_limits_applied = {
+        source:           compassLimits ? 'compass' : 'fallback',
+        max_position_usd: compassLimits?.max_single_position_usd || null,
+        risk_score:       compassLimits ? (compassGuidance?.risk_score || null) : null,
+      };
     }
   }
 

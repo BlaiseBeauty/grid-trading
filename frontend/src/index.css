@@ -45,6 +45,38 @@
   --transition-slow: 400ms ease;
 
   --sidebar-width: 220px;
+
+  /* ── System accent colours ──────────────────────────────────────────────── */
+  --gc: #00e5ff;    /* GRID — execution layer (same as --cyan)                */
+  --cc: #f59e0b;    /* COMPASS — navigation layer                             */
+  --oc: #7c6af7;    /* ORACLE — intelligence layer                            */
+
+  /* System tinted backgrounds — for active system panels */
+  --gc-tint: rgba(0, 229, 255, 0.04);
+  --cc-tint: rgba(245, 158, 11, 0.04);
+  --oc-tint: rgba(124, 106, 247, 0.04);
+
+  /* System tinted borders — for active system switcher tabs */
+  --gc-border: rgba(0, 229, 255, 0.20);
+  --cc-border: rgba(245, 158, 11, 0.20);
+  --oc-border: rgba(124, 106, 247, 0.20);
+
+  /* ── Shell dimensions ───────────────────────────────────────────────────── */
+  --shell-switcher-height: 48px;
+  --shell-god-view-height: 72px;
+  --shell-total-top: 120px;
+  --shell-drawer-width: 360px;
+
+  /* ── Risk score colours ─────────────────────────────────────────────────── */
+  --risk-low:  var(--profit);
+  --risk-med:  var(--warn);
+  --risk-high: var(--loss);
+
+  /* ── Notification urgency ───────────────────────────────────────────────── */
+  --urgency-critical: var(--loss);
+  --urgency-high:     var(--warn);
+  --urgency-normal:   var(--cyan);
+  --urgency-low:      var(--t3);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

@@ -118,4 +118,43 @@ module.exports = async function (fastify) {
       }
     }
   );
+
+  // POST /api/oracle/graveyard/run — manually trigger Graveyard Auditor
+  fastify.post('/graveyard/run', { preHandler: fastify.authenticate },
+    async (request, reply) => {
+      const { runGraveyardAuditor } = require('../agents/graveyard-auditor');
+      const { updateDomainCalibration } = require('../agents/calibration');
+      try {
+        const result = await runGraveyardAuditor();
+        const domains = ['macro', 'geopolitical', 'technology', 'commodity', 'equity', 'crypto'];
+        for (const d of domains) await updateDomainCalibration(d).catch(() => {});
+        return reply.send({ ok: true, ...result });
+      } catch (err) {
+        return reply.code(500).send({ error: err.message });
+      }
+    }
+  );
+
+  // GET /api/oracle/calibration — current domain multipliers and stats
+  fastify.get('/calibration', { preHandler: fastify.authenticate },
+    async (request, reply) => {
+      const { computeMultipliers } = require('../agents/calibration');
+      const [multipliers, stats, learnings] = await Promise.all([
+        computeMultipliers(),
+        queryAll(
+          `SELECT DISTINCT ON (domain)
+             domain, directional_accuracy, trade_win_rate,
+             theses_retired, conviction_multiplier, created_at
+           FROM oracle_calibration
+           ORDER BY domain, created_at DESC`
+        ),
+        queryAll(
+          `SELECT domain, learning_type, summary, adjustment_rule, created_at
+           FROM oracle_calibration_learnings
+           ORDER BY created_at DESC LIMIT 20`
+        ),
+      ]);
+      return reply.send({ multipliers, stats, learnings });
+    }
+  );
 };

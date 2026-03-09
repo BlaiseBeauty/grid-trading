@@ -709,6 +709,29 @@ async function buildSynthesizerContext(trigger) {
     ? `\nORACLE MACRO INTELLIGENCE: Consider the active theses in oracle_theses when evaluating proposals. A thesis with matching direction and high conviction (8+) should boost your confidence. A thesis with opposing direction on the same time horizon should reduce confidence and position size.`
     : '';
 
+  // ── Confirmed pattern injection (reads from grid_signal_patterns) ─────────
+  let patternContext = '';
+  try {
+    const { getConfirmedPatterns } = require('./pattern-store');
+    const signalSymbols = [...new Set(signals.map(s => s.symbol))];
+    const allPatterns = [];
+    for (const sym of signalSymbols) {
+      const patterns = await getConfirmedPatterns(sym);
+      allPatterns.push(...patterns);
+    }
+    if (allPatterns.length > 0) {
+      const patternLines = allPatterns.map(p =>
+        `  ${p.signal_direction.toUpperCase()} [${p.signal_types.join('+')}] ` +
+        `Win rate ${parseFloat(p.win_rate).toFixed(1)}%: ${p.description}` +
+        (p.conditions ? `\n    Requires: ${p.conditions}` : '')
+      ).join('\n');
+      patternContext = `\nCONFIRMED SIGNAL PATTERNS (from historical trade analysis):\n${patternLines}\n` +
+        `INSTRUCTION: If current signals match a confirmed pattern, note this in your reasoning. Pattern alignment increases confidence. Pattern conflict (opposite direction) reduces confidence.\n`;
+    }
+  } catch (err) {
+    // Pattern injection is non-critical
+  }
+
   const context = formatUserMessage({
     section1_market_data: {
       active_signals: signals,
@@ -738,7 +761,7 @@ async function buildSynthesizerContext(trigger) {
     section3_memory: memory,
     section4_task: (isBootstrap
       ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating trade volume for the learning system. Match signals against templates. Propose trades at lower confidence thresholds (>=50%). Prefer action over inaction. Full reasoning required.`
-      : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`) + oracleInstruction
+      : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`) + oracleInstruction + patternContext
   });
   console.log('[SYNTH] context length:', JSON.stringify(context).length);
   return warnIfLarge('strategy_synthesizer', context);

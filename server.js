@@ -157,8 +157,14 @@ async function registerRoutes() {
   // GRID performance digest API
   fastify.register(require('./systems/grid/api/performance-digest'), { prefix: '/api' });
 
+  // GRID patterns API (Phase 5 — learning loop)
+  fastify.register(require('./systems/grid/api/patterns'), { prefix: '/api' });
+
   // ORACLE API routes
   fastify.register(require('./systems/oracle/api/theses'), { prefix: '/api/oracle' });
+
+  // COMPASS API routes
+  fastify.register(require('./systems/compass/api/portfolio'), { prefix: '/api/compass' });
 
   // WebSocket endpoint — requires JWT token as query parameter
   fastify.register(async function (fastify) {
@@ -597,9 +603,17 @@ function setupCron() {
     }
   }, 10_000);
 
-  // --- COMPASS cron stubs (Phase 1) ---
-  // cron.schedule('0 */2 * * *', async () => { /* COMPASS: allocation review every 2h */ });
-  // cron.schedule('*/10 * * * *', async () => { /* COMPASS: risk state monitor every 10m */ });
+  // --- COMPASS cron ---
+  // COMPASS cycle — runs at :15 past 1,7,13,19 (45min after ORACLE finishes)
+  cron.schedule('15 1,7,13,19 * * *', async () => {
+    console.log('[CRON] Starting COMPASS cycle...');
+    try {
+      const compassOrchestrator = require('./systems/compass/agents/orchestrator');
+      await compassOrchestrator.runCycle({ broadcast });
+    } catch (err) {
+      console.error('[CRON] COMPASS cycle failed:', err.message);
+    }
+  });
 
   // --- ORACLE cron ---
   const { runIngestion } = require('./systems/oracle/ingestion/orchestrator');
@@ -622,6 +636,35 @@ function setupCron() {
       await oracleOrchestrator.runCycle({ broadcast });
     } catch (err) {
       console.error('[CRON] ORACLE cycle failed:', err.message);
+    }
+  });
+
+  // ORACLE: Graveyard Auditor — every Tuesday at 07:00
+  // Runs after Monday's digest (06:00) so trade outcomes are fresh
+  cron.schedule('0 7 * * 2', async () => {
+    console.log('[CRON] Starting Graveyard Auditor...');
+    try {
+      const { runGraveyardAuditor } = require('./systems/oracle/agents/graveyard-auditor');
+      const { updateDomainCalibration } = require('./systems/oracle/agents/calibration');
+
+      const result = await runGraveyardAuditor();
+
+      // Update calibration for each domain that had activity
+      const domains = ['macro', 'geopolitical', 'technology', 'commodity', 'equity', 'crypto'];
+      for (const domain of domains) {
+        try {
+          await updateDomainCalibration(domain);
+        } catch (err) {
+          console.error(`[CRON] Calibration update failed for ${domain}:`, err.message);
+        }
+      }
+
+      console.log(
+        `[CRON] Graveyard Auditor complete: ${result.audited} audited, ` +
+        `${result.learnings?.length || 0} learnings`
+      );
+    } catch (err) {
+      console.error('[CRON] Graveyard Auditor failed:', err.message);
     }
   });
 }

@@ -3,6 +3,7 @@
 const OracleBaseAgent     = require('./base-agent');
 const { getEvidenceSummary } = require('../ingestion/orchestrator');
 const { queryAll }        = require('../../../db/connection');
+const { computeMultipliers, getLearningsForDomain } = require('./calibration');
 
 // ── SHARED CONTEXT BUILDER ────────────────────────────────────────────────────
 
@@ -33,7 +34,9 @@ async function buildEvidenceContext() {
     ? activeTheses.map(t => `- ${t.name} (${t.direction}, ${t.conviction}/10): ${t.summary}`).join('\n')
     : 'No active theses yet.';
 
-  return { evidenceLines, fredLines, thesisLines, activeTheses };
+  const multipliers = await computeMultipliers().catch(() => ({}));
+
+  return { evidenceLines, fredLines, thesisLines, activeTheses, multipliers };
 }
 
 // ── AGENT FACTORY ─────────────────────────────────────────────────────────────
@@ -182,12 +185,43 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
 
         try {
           console.log(`[ORACLE-AGENTS] Running ${config.name}...`);
-          const raw    = await agent.callClaude(systemPrompt, userPrompt);
+
+          // Get domain-specific calibration learnings
+          const learnings = await getLearningsForDomain(config.domain).catch(() => []);
+          const multiplier = context.multipliers?.[config.domain] || 1.0;
+
+          const calibrationContext = [
+            multiplier !== 1.0
+              ? `\nCALIBRATION: Your domain's historical accuracy warrants a conviction multiplier of ×${multiplier}. ` +
+                `${multiplier > 1 ? 'Your theses have been accurate — maintain confidence.' : 'Your theses have underperformed — be more conservative with conviction scores.'}`
+              : '',
+            learnings.length > 0
+              ? `\nRECENT LEARNINGS FOR ${config.domain.toUpperCase()} DOMAIN:\n` +
+                learnings.map(l => `  - ${l.learning_type}: ${l.summary}${l.adjustment_rule ? '\n    Rule: ' + l.adjustment_rule : ''}`).join('\n')
+              : '',
+          ].filter(Boolean).join('\n');
+
+          const finalUserPrompt = userPrompt + calibrationContext;
+          const raw    = await agent.callClaude(systemPrompt, finalUserPrompt);
           const thesis = agent.parseThesis(raw);
 
           if (!thesis) {
             console.error(`[ORACLE-AGENTS] ${config.name} failed to produce valid thesis`);
             return { agent: config.name, thesis: null, error: 'parse_failed' };
+          }
+
+          // Apply calibration multiplier to conviction
+          if (multiplier !== 1.0) {
+            const originalConviction = thesis.conviction;
+            thesis.conviction = Math.max(1, Math.min(10,
+              parseFloat((thesis.conviction * multiplier).toFixed(2))
+            ));
+            if (thesis.conviction !== originalConviction) {
+              console.log(
+                `[ORACLE-AGENTS] ${config.name}: conviction adjusted ` +
+                `${originalConviction} → ${thesis.conviction} (×${multiplier})`
+              );
+            }
           }
 
           // Assign a unique thesis_id if not provided

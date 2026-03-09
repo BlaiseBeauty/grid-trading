@@ -4,6 +4,7 @@ const costsDb = require('../../../db/queries/costs');
 const Anthropic = require('@anthropic-ai/sdk');
 const anthropic = new Anthropic();
 const bus = require('../../../shared/intelligence-bus');
+const { linkTradeToTheses } = require('../../../shared/thesis-linker');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -197,6 +198,17 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
         affectedAssets: [trade.symbol],
       });
     } catch (e) { /* best-effort */ }
+    try {
+      await linkTradeToTheses({
+        id:           trade.id,
+        symbol:       trade.symbol,
+        side:         trade.side,
+        pnl_usd:      trade.pnl_realised,
+        pnl_pct:      trade.pnl_pct,
+        close_reason: 'manual_close',
+        hold_hours:   trade.opened_at ? (Date.now() - new Date(trade.opened_at)) / 3600000 : 0,
+      });
+    } catch (e) { /* thesis linking is non-critical */ }
     return trade;
   });
 }

@@ -54,6 +54,7 @@ shared/
   conflict-resolver.js  ← thesis vs signal conflict rules (live)
   ai-costs.js           ← token budget + cost tracking
   system-health.js      ← heartbeat recording
+  thesis-linker.js      ← trade↔thesis linkage (Loop 2)
 api/
   auth.js               ← JWT auth (shared)
   platform/
@@ -65,10 +66,23 @@ config/
 db/
   connection.js         ← query(), queryOne(), queryAll()
   migrate.js
-  migrations/           ← 027 migrations total
+  migrations/           ← 028 migrations total
 trading/
   engine.py             ← Python Flask + CCXT, port 5100
 server.js               ← entry point, routes, cron, WebSocket
+frontend/
+  src/
+    shell/              ← platform shell chrome (Phase 4)
+      SystemSwitcher.jsx ← 48px fixed tab bar
+      GodView.jsx        ← 72px fixed command strip
+      NotificationDrawer.jsx ← slide-in event feed
+      PlatformShell.jsx  ← wrapper injecting shell into all routes
+    stores/
+      platform.js        ← Zustand: activeSystem, busEvents, drawer, health
+    systems/
+      compass/CompassDashboard.jsx
+      oracle/OracleDashboard.jsx
+      platform/PlatformOverview.jsx
 ```
 
 ---
@@ -200,6 +214,7 @@ Direction bias: if COMPASS allocation opposes proposal direction, size reduced 2
 0 0,6,12,18 * * *   ORACLE ingestion (runs 30min before agents)
 30 0,6,12,18 * * *  ORACLE agent cycle (6 domain + synthesis)
 15 1,7,13,19 * * *  COMPASS 6h cycle (45min after ORACLE)
+0 7 * * 2           Graveyard Auditor + calibration update (Tuesday 07:00)
 ```
 
 Stagger logic: ORACLE runs at :30 → COMPASS at :15 next hour → GRID reads
@@ -222,8 +237,8 @@ COMPASS guidance at its next :00 cycle. Full pipeline completes in order.
 | compass_*   | COMPASS | portfolios, allocations, etc.       |
 | oracle_*    | ORACLE  | theses, evidence, graveyard, etc.   |
 
-Current migration count: 027
-Latest migration: 027_compass_schema.sql
+Current migration count: 028
+Latest migration: 028_learning_tables.sql
 
 ---
 
@@ -246,6 +261,9 @@ GET  /api/performance-digest
 GET  /api/performance-digest/latest
 GET  /api/performance-digest/:id
 POST /api/performance-digest/build
+GET  /api/patterns
+GET  /api/patterns/confirmed
+GET  /api/patterns/:symbol
 
 ### Platform (prefix: /api/platform)
 GET  /api/platform/notifications
@@ -265,6 +283,8 @@ GET  /api/oracle/graveyard
 GET  /api/oracle/evidence
 POST /api/oracle/theses/:id/retire
 POST /api/oracle/cycle/run
+POST /api/oracle/graveyard/run
+GET  /api/oracle/calibration
 
 ### COMPASS (prefix: /api/compass)
 GET  /api/compass/portfolio
@@ -293,10 +313,44 @@ All events broadcast on ws://host/ws as { type, data, ts }
 | positions_closed  | Position monitor    | { closed[] }                    |
 | bus_event         | Intelligence bus    | { id, source_system, event_type, direction, conviction, affected_assets, payload_summary, created_at } |
 
-Frontend handles bus_event in the WS message handler.
+Frontend handles bus_event in BOTH data store AND platform store.
 Add to busEvents ring buffer (max 50). Increment unreadCount for
 trade_closed, scram_triggered, thesis_created, thesis_conviction_updated,
-performance_digest.
+performance_digest, allocation_guidance.
+
+---
+
+## Frontend Routes
+
+```
+/               — GRID Command Centre (existing)
+/agents         — GRID Agents (existing)
+/trades         — GRID Trades (existing)
+/strategy       — GRID Strategy Lab (existing)
+/learnings      — GRID Learnings (existing)
+/analytics      — GRID Analytics (existing)
+/backtest       — GRID Backtest (existing)
+/settings       — GRID Settings (existing)
+/compass        — COMPASS Dashboard (Phase 4)
+/oracle         — ORACLE Dashboard (Phase 4)
+/platform       — Platform Overview (Phase 4)
+```
+
+### Shell Components (frontend/src/shell/)
+- SystemSwitcher.jsx — 48px fixed tab bar, system switching, notification bell
+- GodView.jsx — 72px fixed strip, all 3 systems at a glance, refreshes every 5min
+- NotificationDrawer.jsx — slide-in event feed, system health footer
+- PlatformShell.jsx — wrapper injecting shell into all routes
+
+### Platform Store (frontend/src/stores/platform.js)
+- activeSystem — 'grid' | 'compass' | 'oracle' | 'platform'
+- busEvents[] — ring buffer of last 50 bus events (from WebSocket)
+- unreadCount — increments on meaningful bus events
+- drawerOpen — notification drawer visibility
+- platformHealth — /api/platform/health response
+- oracleTheses[] — active theses for God View
+- compassPortfolio — latest compass portfolio guidance
+- compassRisk — latest compass risk assessment
 
 ---
 
@@ -323,7 +377,10 @@ FRED_API_KEY=       (optional — get free at fred.stlouisfed.org)
 - All routes require JWT auth via fastify.authenticate preHandler
 - POST endpoints must accept {} body (Fastify rejects empty body with content-type: json)
 - Frontend: functional React components, Zustand stores, lib/api.js for HTTP
+- Frontend API pattern: `api('/path')` for GET, `api('/path', { method: 'POST', body: JSON.stringify({}) })` for POST
+- Shell: PlatformShell wraps all routes; GRID pages get Sidebar, COMPASS/ORACLE/PLATFORM pages don't
 - Design system: DESIGN-SYSTEM.md — colour tokens, typography, spacing rules
+- System accents: --gc (cyan/GRID), --cc (amber/COMPASS), --oc (violet/ORACLE)
 
 ### Cross-system rules (enforced by ESLint)
 - systems/grid/* cannot require systems/compass/* or systems/oracle/*
@@ -347,34 +404,46 @@ FRED_API_KEY=       (optional — get free at fred.stlouisfed.org)
 | 1     | AI costs, digest, WebSocket, docs        | COMPLETE  |
 | 2     | ORACLE core — thesis agents + bus        | COMPLETE  |
 | 3     | COMPASS core — portfolio + risk          | COMPLETE  |
-| 4     | Platform shell frontend + notifications  | PLANNED   |
-| 5     | Learning loop closure + graveyard        | PLANNED   |
-| 6     | Live trading readiness audit             | PLANNED   |
+| 4     | Platform shell frontend + notifications  | COMPLETE  |
+| 5     | Learning loop closure — all 7 loops active | COMPLETE  |
+| 6     | Live trading readiness audit             | COMPLETE  |
 
 ---
 
-## Active Feedback Loops (Phase 3+)
+## Active Feedback Loops (All 7 Live)
 
-Loop 1: ORACLE → GRID
-  thesis_created/updated events → GRID Synthesizer context
+Loop 1: ORACLE → GRID (Cross-system)
+  thesis_created/updated bus events → context-builders.js → Synthesizer prompt
   High conviction thesis boosts proposal confidence
-  Opposing structural thesis reduces position size
+  Opposing structural thesis reduces position size via conflict-resolver.js
 
-Loop 2: GRID → ORACLE
-  trade_closed events carry thesis_ids (populated Phase 5)
-  Graveyard Auditor correlates trade outcomes to thesis accuracy
+Loop 2: GRID → ORACLE (Cross-system)
+  trade_closed → shared/thesis-linker.js links trades to matching oracle_theses
+  thesis_trade_links table tracks alignment, PnL, outcome per thesis
+  Graveyard Auditor reads trade stats to assess thesis accuracy
 
-Loop 3: COMPASS → GRID
-  portfolio_risk_state → Risk Manager hard limits
+Loop 3: COMPASS → GRID (Cross-system)
+  portfolio_risk_state → Risk Manager hard limits via bus.getRiskState()
   allocation_guidance → direction bias for position sizing
 
-Loop 4: GRID → COMPASS
-  performance_digest → posture guardrails
-  Drawdown > 8% forces CASH posture
-  Win rate < 40% forces DEFENSIVE posture
+Loop 4: GRID → COMPASS (Cross-system)
+  performance_digest → posture guardrails in Portfolio Agent
+  Drawdown >= 8% forces CASH posture
+  Drawdown >= 5% or winRate < 40% forces DEFENSIVE posture
 
-Loop 5: ORACLE → COMPASS
+Loop 5: ORACLE → COMPASS (Cross-system)
   getAllActiveTheses() → portfolio allocation weights
   thesis direction bias informs per-symbol max_position_usd
 
-Loops 6 + 7: Phase 5 (Graveyard Auditor + Pattern Discovery)
+Loop 6: ORACLE Internal (Graveyard → Calibration)
+  oracle/agents/graveyard-auditor.js → post-mortem for retired theses
+  oracle/agents/calibration.js → per-domain conviction multipliers
+  oracle/agents/domain-agents.js → applies multiplier to output conviction
+  Accuracy >= 70% → multiplier 1.1 | 50-70% → 1.0 | 30-50% → 0.9 | < 30% → 0.8
+  Cron: Tuesday 07:00 | Manual: POST /api/oracle/graveyard/run
+
+Loop 7: GRID Internal (Pattern Discovery → Synthesizer)
+  grid/agents/analysis/pattern-discovery.js → grid/agents/pattern-store.js
+  Patterns auto-promote to 'confirmed' when sample >= 15 AND win_rate >= 65%
+  grid/agents/context-builders.js injects confirmed patterns into Synthesizer prompt
+  API: GET /api/patterns, /api/patterns/confirmed, /api/patterns/:symbol

@@ -4,6 +4,80 @@ import { api } from '../lib/api';
 import { timeAgo } from '../lib/format';
 import { GlowCard, SignalBadge, StatusPulse, CountdownTimer, RangeBar } from '../components/ui';
 
+function SignalPatternsPanel() {
+  const [patterns, setPatterns] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api('/patterns')
+      .then(r => setPatterns(r?.patterns || []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return (
+    <GlowCard>
+      <div className="v2-section-title">Signal Patterns</div>
+      <div className="v2-empty">Loading patterns...</div>
+    </GlowCard>
+  );
+
+  const confirmed = patterns.filter(p => p.status === 'confirmed');
+  const emerging  = patterns.filter(p => p.status === 'emerging');
+
+  return (
+    <GlowCard glowColor="cyan">
+      <div className="v2-patterns-header">
+        <div className="v2-section-title" style={{ marginBottom: 0 }}>Signal Patterns</div>
+        <div className="v2-patterns-counts">
+          <span style={{ fontFamily: 'var(--v2-font-data)', fontSize: 9, color: 'var(--v2-accent-green)' }}>
+            {confirmed.length} CONFIRMED
+          </span>
+          <span style={{ fontFamily: 'var(--v2-font-data)', fontSize: 9, color: 'var(--v2-accent-amber)' }}>
+            {emerging.length} EMERGING
+          </span>
+        </div>
+      </div>
+
+      {patterns.length === 0 ? (
+        <div className="v2-empty">
+          No patterns discovered yet. Patterns emerge after Pattern Discovery agent analyses sufficient trade history.
+        </div>
+      ) : (
+        <div className="v2-patterns-list">
+          {patterns.map(p => {
+            const isConfirmed = p.status === 'confirmed';
+            const dirColour = p.signal_direction === 'bullish' ? 'var(--v2-accent-green)'
+                            : p.signal_direction === 'bearish' ? 'var(--v2-accent-red)'
+                            : 'var(--v2-text-muted)';
+            const wrColour = parseFloat(p.win_rate) >= 65 ? 'var(--v2-accent-green)' : 'var(--v2-text-primary)';
+
+            return (
+              <div key={p.pattern_id} className="v2-pattern-row">
+                <div className="v2-pattern-dot" style={{
+                  background: isConfirmed ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)',
+                }} />
+                <div className="v2-pattern-sym">
+                  <div className="v2-pattern-sym-label">{p.symbol}</div>
+                  <div className="v2-pattern-sym-types">{(p.signal_types || []).join('+')}</div>
+                </div>
+                <span className="v2-pattern-dir" style={{ color: dirColour }}>{p.signal_direction}</span>
+                <span className="v2-pattern-desc">{p.description}</span>
+                <div className="v2-pattern-wr">
+                  <div className="v2-pattern-wr-value" style={{ color: wrColour }}>
+                    {parseFloat(p.win_rate || 0).toFixed(1)}%
+                  </div>
+                  <div className="v2-pattern-wr-sample">{p.sample_size}n</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </GlowCard>
+  );
+}
+
 export default function StrategyLab() {
   const { fetchTemplates, fetchLearnings, fetchStandingOrders, templates, antiPatterns, learnings, learningsSummary, standingOrders, prices } = useDataStore();
   const [cancellingId, setCancellingId] = useState(null);
@@ -186,7 +260,12 @@ export default function StrategyLab() {
         </GlowCard>
       </div>
 
-      <div className="v2-two-col v2-animate-in v2-stagger-3">
+      {/* Signal Patterns */}
+      <div className="v2-animate-in v2-stagger-3">
+        <SignalPatternsPanel />
+      </div>
+
+      <div className="v2-two-col v2-animate-in v2-stagger-4">
         {/* Anti-Patterns */}
         <GlowCard glowColor="red">
           <div className="v2-section-title">Anti-Patterns ({antiPatterns.length})</div>
@@ -231,7 +310,7 @@ export default function StrategyLab() {
       </div>
 
       {/* Recent Learnings */}
-      <div className="v2-animate-in v2-stagger-4">
+      <div className="v2-animate-in v2-stagger-5">
         <GlowCard>
           <div className="v2-section-title">Recent Learnings ({learnings.length})</div>
           {learnings.length === 0 ? (
@@ -263,6 +342,27 @@ export default function StrategyLab() {
 
       <style>{`
         .v2-strategy-page { display: flex; flex-direction: column; gap: var(--v2-space-lg); }
+        .v2-patterns-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--v2-space-md); }
+        .v2-patterns-counts { display: flex; gap: var(--v2-space-sm); }
+        .v2-patterns-list { display: flex; flex-direction: column; gap: var(--v2-space-xs); }
+        .v2-pattern-row {
+          display: flex; align-items: center; gap: 10px;
+          padding: var(--v2-space-sm) 10px;
+          background: var(--v2-bg-tertiary); border-radius: var(--v2-radius-sm);
+          border: 1px solid var(--v2-border);
+        }
+        .v2-pattern-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+        .v2-pattern-sym { min-width: 48px; }
+        .v2-pattern-sym-label { font-family: var(--v2-font-data); font-weight: 600; font-size: 12px; color: var(--v2-text-primary); }
+        .v2-pattern-sym-types { font-family: var(--v2-font-data); font-size: 9px; color: var(--v2-text-muted); }
+        .v2-pattern-dir { font-family: var(--v2-font-data); font-size: 9px; text-transform: uppercase; }
+        .v2-pattern-desc {
+          font-family: var(--v2-font-body); font-size: 11px; color: var(--v2-text-muted);
+          flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .v2-pattern-wr { text-align: right; flex-shrink: 0; }
+        .v2-pattern-wr-value { font-family: var(--v2-font-data); font-size: 13px; font-variant-numeric: tabular-nums; }
+        .v2-pattern-wr-sample { font-family: var(--v2-font-data); font-size: 8px; color: var(--v2-text-muted); }
         .v2-page-title {
           font-family: 'Syne', sans-serif; font-weight: 800; font-size: 20px;
           letter-spacing: 6px; color: var(--v2-text-primary);

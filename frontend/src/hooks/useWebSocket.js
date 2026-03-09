@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useDataStore } from '../stores/data';
 import { useCycleReportStore } from '../stores/cycleReport';
 import { useCycleStore } from '../stores/cycle';
+import usePlatformStore from '../stores/platform';
 import { getToken } from '../lib/api';
 
 export function useWebSocket() {
@@ -140,6 +141,21 @@ export function useWebSocket() {
                   ? state.unreadBusCount + 1
                   : state.unreadBusCount,
               }));
+
+              // Also dispatch to platform store for shell components
+              const ps = usePlatformStore.getState();
+              ps.addBusEvent(busEvent);
+              if (ps.shouldNotify(busEvent.event_type)) {
+                ps.incrementUnread();
+              }
+              // Invalidate God View data on relevant events
+              if (busEvent.event_type === 'thesis_created' ||
+                  busEvent.event_type === 'thesis_conviction_updated') {
+                ps.setOracleTheses([]);
+              }
+              if (busEvent.event_type === 'allocation_guidance') {
+                ps.setCompassPortfolio(null);
+              }
               break;
             }
           }

@@ -7,6 +7,7 @@
 const BaseAgent = require('../base-agent');
 const { queryAll, queryOne, query } = require('../../../../db/connection');
 const templatesDb = require('../../../../db/queries/templates');
+const { persistPatterns } = require('../pattern-store');
 
 class PatternDiscoveryAgent extends BaseAgent {
   constructor() {
@@ -84,6 +85,40 @@ class PatternDiscoveryAgent extends BaseAgent {
         console.error(`[PATTERN_DISCOVERY] Performance update failed:`, err.message);
       }
     }
+
+    // Persist discovered signal patterns to grid_signal_patterns
+    try {
+      const rawOutput = result?.output_json?._raw || JSON.stringify(parsed);
+      const jsonStart = rawOutput.indexOf('{');
+      const jsonEnd   = rawOutput.lastIndexOf('}');
+      if (jsonStart !== -1 && jsonEnd !== -1) {
+        const patternData = JSON.parse(rawOutput.slice(jsonStart, jsonEnd + 1));
+        if (patternData.patterns?.length > 0) {
+          await persistPatterns(patternData.patterns);
+        }
+      }
+    } catch { /* pattern persistence is non-critical */ }
+
+    // Also extract patterns from signal combinations data
+    try {
+      const combos = context.signalCombinations || [];
+      const patternPayloads = combos
+        .filter(c => parseInt(c.co_occurrence_count) >= 5)
+        .map(c => ({
+          pattern_id: `pattern-combo-${c.signal_a}-${c.signal_b}`.toLowerCase(),
+          symbol: 'ALL',
+          signal_types: [c.signal_a, c.signal_b],
+          signal_direction: parseFloat(c.avg_pnl_together) >= 0 ? 'bullish' : 'bearish',
+          sample_trades: parseInt(c.co_occurrence_count),
+          win_rate: parseFloat(c.win_rate_together || 0),
+          avg_pnl_pct: parseFloat(c.avg_pnl_together || 0),
+          confidence: parseInt(c.co_occurrence_count) >= 15 && parseFloat(c.win_rate_together) >= 65 ? 'confirmed' : 'emerging',
+          description: `${c.signal_a} + ${c.signal_b} co-occurrence (${c.co_occurrence_count} trades, ${c.win_rate_together}% WR)`,
+        }));
+      if (patternPayloads.length > 0) {
+        await persistPatterns(patternPayloads);
+      }
+    } catch { /* pattern extraction is non-critical */ }
 
     return result;
   }

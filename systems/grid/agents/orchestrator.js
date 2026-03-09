@@ -22,6 +22,7 @@ const logger = require('../../../services/logger');
 const { symbols: trackedSymbols, timeframes } = require('../../../config/symbols');
 const { getRiskLimits, BOOTSTRAP, SCRAM: SCRAM_OVERRIDES } = require('../config/risk-limits');
 const { getLatestCorrelations } = require('./correlation-calculator');
+const { linkTradeToTheses } = require('../../../shared/thesis-linker');
 
 // Knowledge agents (8 total — all run in parallel)
 const TrendAgent = require('./knowledge/trend');
@@ -1421,6 +1422,13 @@ async function executeReviewDecision(review, cycleNum) {
         review.close_executed = true;
         console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via Python — P&L: ${result.pnl_pct}%`);
         await recordTradeCloseLearningOutcome(review.trade_id, result.pnl_realised || result.pnl || 0);
+        try {
+          await linkTradeToTheses({
+            id: review.trade_id, symbol: review.symbol, side: result.side || 'buy',
+            pnl_usd: result.pnl_realised || result.pnl || 0, pnl_pct: result.pnl_pct || 0,
+            close_reason: 'position_review', hold_hours: result.hold_hours || 0,
+          });
+        } catch (e) { /* thesis linking non-critical */ }
       } catch (pyErr) {
         console.warn(`[ORCHESTRATOR] Python close failed for #${review.trade_id}, using DB fallback:`, pyErr.message);
         try {
@@ -1445,6 +1453,13 @@ async function executeReviewDecision(review, cycleNum) {
             review.close_executed = true;
             console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback (atomic) — P&L: ${closed.pnl_pct}%`);
             await recordTradeCloseLearningOutcome(review.trade_id, closed.pnl_realised || 0);
+            try {
+              await linkTradeToTheses({
+                id: review.trade_id, symbol: review.symbol, side: closed.side || 'buy',
+                pnl_usd: closed.pnl_realised || 0, pnl_pct: closed.pnl_pct || 0,
+                close_reason: 'position_review', hold_hours: closed.hold_hours || 0,
+              });
+            } catch (e) { /* thesis linking non-critical */ }
           } else {
             console.log(`[ORCHESTRATOR] Trade #${review.trade_id} already closed — skipping`);
           }
