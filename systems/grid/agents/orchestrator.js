@@ -894,6 +894,10 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
   }
 
   // Step 3: Risk Manager — validate proposals against limits
+  console.log(`[ORCHESTRATOR] Passing ${proposals.length} proposals to Risk Manager`);
+  for (const p of proposals) {
+    console.log(`[ORCHESTRATOR]   → ${p.symbol} ${p.direction} conf=${p.confidence} entry=${p.entry_price} sl=${p.sl_price} tp=${p.tp_price}`);
+  }
   console.log('[ORCHESTRATOR] → Risk Manager');
   let riskResult = { approved: [], rejected: [] };
   try {

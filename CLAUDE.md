@@ -147,7 +147,7 @@ Performance Analyst, Pattern Discovery
 ### Cost Tiers (shared/ai-costs.js TOKEN_BUDGETS)
 - grid_knowledge:    8k input / 1.2k output
 - grid_synthesizer:  32k input / 4k output
-- grid_risk_manager: 6k input / 800 output
+- grid_risk_manager: 6k input / 2k output
 - grid_performance:  10k input / 2k output
 - grid_pattern:      10k input / 2k output
 - oracle_domain:     10k input / 2.5k output

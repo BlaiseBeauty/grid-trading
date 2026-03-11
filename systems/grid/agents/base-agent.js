@@ -137,8 +137,8 @@ class BaseAgent {
       inputTokens = response.usage?.input_tokens || 0;
       outputTokens = response.usage?.output_tokens || 0;
 
-      // Retry once with higher max_tokens and compressed context if truncated
-      if (response.stop_reason === 'max_tokens' && this.promptKey === 'strategySynthesizer') {
+      // Retry once with higher max_tokens if truncated (synthesizer or risk manager)
+      if (response.stop_reason === 'max_tokens' && (this.promptKey === 'strategySynthesizer' || this.promptKey === 'riskManager')) {
         console.warn(`[${this.name.toUpperCase()}] Response truncated at ${outputTokens} tokens — retrying with extended limit and compressed context`);
         try {
           // Compress context: reduce signals to top 5 by confidence
