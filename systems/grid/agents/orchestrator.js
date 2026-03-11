@@ -1669,12 +1669,18 @@ async function runCycle({ broadcast } = {}) {
     console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
 
-  // Step 5: Run analysis layer (every cycle)
+  // Step 5: Run analysis layer (every Nth cycle — not every cycle)
+  const analysisInterval = systemMode === 'BOOTSTRAP' ? ANALYSIS_INFANT_EVERY_N : ANALYSIS_EVERY_N_CYCLES;
+  const shouldRunAnalysis = cycleNumber % analysisInterval === 0;
   let analysis = [];
-  try {
-    analysis = await runAnalysisLayer(cycleNumber, broadcast);
-  } catch (err) {
-    console.error('[ORCHESTRATOR] Analysis layer failed:', err.stack);
+  if (shouldRunAnalysis) {
+    try {
+      analysis = await runAnalysisLayer(cycleNumber, broadcast);
+    } catch (err) {
+      console.error('[ORCHESTRATOR] Analysis layer failed:', err.stack);
+    }
+  } else {
+    console.log(`[ORCHESTRATOR] Skipping analysis layer (cycle ${cycleNumber}, runs every ${analysisInterval}th)`);
   }
 
   // Step 6: Record equity snapshot

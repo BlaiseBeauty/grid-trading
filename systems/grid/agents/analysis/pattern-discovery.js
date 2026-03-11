@@ -271,14 +271,21 @@ class PatternDiscoveryAgent extends BaseAgent {
 
   parseOutput(text) {
     try {
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+      // Try standard ```json block extraction (allow whitespace variations)
+      const jsonMatch = text.match(/```json\s*\n([\s\S]*?)\n\s*```/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[1]);
         return { ...parsed, signals: [], overallConfidence: null };
       }
-      const trimmed = text.trim();
-      if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
+      // Fallback: find outermost { ... } in the text
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
+        return { ...parsed, signals: [], overallConfidence: null };
+      }
     } catch (err) { console.warn('[PATTERN_DISCOVERY] JSON parse failed in parseOutput:', err.message); }
+    console.warn('[PATTERN_DISCOVERY] parseOutput fell back to empty — raw output starts with:', text?.slice(0, 200));
     return { new_templates: [], template_actions: [], anti_patterns: [], signals: [], overallConfidence: null };
   }
 }

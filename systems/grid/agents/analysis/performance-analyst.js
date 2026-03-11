@@ -35,8 +35,13 @@ class PerformanceAnalystAgent extends BaseAgent {
     // Store extracted learnings (Claude returns "new_learnings" or "learnings")
     const parsed = result?.output_json || {};
     const learnings = parsed.new_learnings || parsed.learnings || [];
+    console.log(`[PERFORMANCE_ANALYST] output_json keys: ${Object.keys(parsed).join(', ')}`);
+    console.log(`[PERFORMANCE_ANALYST] Extracted ${learnings.length} learnings to persist`);
+    let storedCount = 0;
     for (const learning of learnings) {
       try {
+        const text = (learning.insight_text || learning.insight || '').slice(0, 80);
+        console.log(`[PERFORMANCE_ANALYST] Storing learning: "${text}..."`);
         await learningsDb.create({
           insight_text: learning.insight_text || learning.insight,
           category: learning.category,
@@ -49,12 +54,13 @@ class PerformanceAnalystAgent extends BaseAgent {
           learning_type: learning.learning_type || learning.type || 'observation',
           scope_level: learning.scope_level || learning.scope || 'specific',
         });
+        storedCount++;
       } catch (err) {
-        console.error('[PERFORMANCE_ANALYST] Failed to store learning:', err.message);
+        console.error('[PERFORMANCE_ANALYST] Failed to store learning:', err.message, err.stack);
       }
     }
     if (learnings.length > 0) {
-      console.log(`[PERFORMANCE_ANALYST] Stored ${learnings.length} learnings`);
+      console.log(`[PERFORMANCE_ANALYST] Stored ${storedCount}/${learnings.length} learnings`);
     }
 
     // Invalidate learnings if evidence contradicts them
@@ -319,14 +325,21 @@ class PerformanceAnalystAgent extends BaseAgent {
 
   parseOutput(text) {
     try {
-      const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+      // Try standard ```json block extraction (allow whitespace variations)
+      const jsonMatch = text.match(/```json\s*\n([\s\S]*?)\n\s*```/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[1]);
         return { ...parsed, signals: [], overallConfidence: null };
       }
-      const trimmed = text.trim();
-      if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
+      // Fallback: find outermost { ... } in the text
+      const firstBrace = text.indexOf('{');
+      const lastBrace = text.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1));
+        return { ...parsed, signals: [], overallConfidence: null };
+      }
     } catch (err) { console.warn('[PERF_ANALYST] JSON parse failed in parseOutput:', err.message); }
+    console.warn('[PERFORMANCE_ANALYST] parseOutput fell back to empty — raw output starts with:', text?.slice(0, 200));
     return { learnings: [], invalidations: [], signals: [], overallConfidence: null };
   }
 }
