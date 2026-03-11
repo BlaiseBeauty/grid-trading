@@ -90,7 +90,7 @@ async function getSystemMode() {
 let cycleNumber = 0;
 let cycleRunning = false;
 let cycleStartedAt = null;
-const MAX_CYCLE_DURATION_MS = 60 * 60 * 1000; // 60 minute timeout (M-27)
+const MAX_CYCLE_DURATION_MS = 15 * 60 * 1000; // 15 minute timeout (was 60min — too long, caused stale locks)
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
 const ANALYSIS_INFANT_EVERY_N = 1;  // Run every cycle during INFANT phase for maximum learning
 

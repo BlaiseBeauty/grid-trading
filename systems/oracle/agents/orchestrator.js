@@ -7,7 +7,15 @@ const { upsertThesis }   = require('../db/theses');
 const { recordHeartbeat }= require('../../../shared/system-health');
 const aiCosts            = require('../../../shared/ai-costs');
 
+let cycleRunning = false;
+let ingestionRunning = false;
+
 async function runCycle(opts = {}) {
+  if (cycleRunning) {
+    console.warn('[ORACLE] Skipping — previous cycle still running');
+    return { skipped: true, reason: 'already_running' };
+  }
+  cycleRunning = true;
   const cycleStart = Date.now();
   console.log('[ORACLE] Starting cycle...');
 
@@ -79,7 +87,9 @@ async function runCycle(opts = {}) {
     });
 
     throw err;
+  } finally {
+    cycleRunning = false;
   }
 }
 
-module.exports = { runCycle };
+module.exports = { runCycle, isCycleRunning: () => cycleRunning, isIngestionRunning: () => ingestionRunning };

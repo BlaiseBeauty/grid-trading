@@ -494,6 +494,10 @@ function setupCron() {
 
   // Hourly position review (independent of 4h cycle, runs at :30)
   cron.schedule('30 * * * *', async () => {
+    if (orchestrator.isCycleRunning()) {
+      console.log('[CRON] Skipping hourly position review — GRID cycle in progress');
+      return;
+    }
     console.log('[CRON] Running hourly position review...');
     try {
       // cycleNumber -1 indicates an out-of-cycle hourly review
@@ -505,15 +509,23 @@ function setupCron() {
   });
 
   // Fetch external data every 30 minutes
+  let externalFetchRunning = false;
   cron.schedule('*/30 * * * *', async () => {
+    if (externalFetchRunning) return;
+    externalFetchRunning = true;
     try { await fetchAll(); }
     catch (err) { console.error('[CRON] External data fetch failed:', err.message); }
+    finally { externalFetchRunning = false; }
   });
 
   // Fetch fresh candles every 5 minutes (keeps market_data current)
+  let candleRefreshRunning = false;
   cron.schedule('*/5 * * * *', async () => {
+    if (candleRefreshRunning) return;
+    candleRefreshRunning = true;
     try { await refreshCandles(); }
     catch (err) { console.error('[CRON] Candle refresh failed:', err.message); }
+    finally { candleRefreshRunning = false; }
   });
 
   // Python engine health check every 5 minutes
@@ -559,7 +571,10 @@ function setupCron() {
   });
 
   // Correlation matrix recomputation every 6 hours
+  let correlationRunning = false;
   cron.schedule('0 */6 * * *', async () => {
+    if (correlationRunning) return;
+    correlationRunning = true;
     console.log('[CRON] Recomputing correlation matrix...');
     try {
       const result = await computeCorrelations();
@@ -567,6 +582,8 @@ function setupCron() {
       console.log(`[CRON] Correlations updated: ${JSON.stringify(result)}`);
     } catch (err) {
       console.error('[CRON] Correlation computation failed:', err.message);
+    } finally {
+      correlationRunning = false;
     }
   });
 
@@ -605,10 +622,14 @@ function setupCron() {
 
   // --- COMPASS cron ---
   // COMPASS cycle — runs at :15 past 1,7,13,19 (45min after ORACLE finishes)
+  const compassOrchestrator = require('./systems/compass/agents/orchestrator');
   cron.schedule('15 1,7,13,19 * * *', async () => {
+    if (compassOrchestrator.isCycleRunning()) {
+      console.log('[CRON] Skipping COMPASS cycle — previous still running');
+      return;
+    }
     console.log('[CRON] Starting COMPASS cycle...');
     try {
-      const compassOrchestrator = require('./systems/compass/agents/orchestrator');
       await compassOrchestrator.runCycle({ broadcast });
     } catch (err) {
       console.error('[CRON] COMPASS cycle failed:', err.message);
@@ -617,22 +638,34 @@ function setupCron() {
 
   // --- ORACLE cron ---
   const { runIngestion } = require('./systems/oracle/ingestion/orchestrator');
+  const oracleOrchestrator = require('./systems/oracle/agents/orchestrator');
 
   // ORACLE ingestion — runs at :00 of 0,6,12,18 (30 min BEFORE agent cycle)
+  let ingestionRunning = false;
   cron.schedule('0 0,6,12,18 * * *', async () => {
+    if (ingestionRunning) {
+      console.log('[CRON] Skipping ORACLE ingestion — previous still running');
+      return;
+    }
+    ingestionRunning = true;
     console.log('[CRON] Starting ORACLE ingestion...');
     try {
       await runIngestion();
     } catch (err) {
       console.error('[CRON] ORACLE ingestion failed:', err.message);
+    } finally {
+      ingestionRunning = false;
     }
   });
 
   // ORACLE agent cycle — runs at :30 of 0,6,12,18 (after ingestion)
   cron.schedule('30 0,6,12,18 * * *', async () => {
+    if (oracleOrchestrator.isCycleRunning()) {
+      console.log('[CRON] Skipping ORACLE cycle — previous still running');
+      return;
+    }
     console.log('[CRON] Starting ORACLE cycle...');
     try {
-      const oracleOrchestrator = require('./systems/oracle/agents/orchestrator');
       await oracleOrchestrator.runCycle({ broadcast });
     } catch (err) {
       console.error('[CRON] ORACLE cycle failed:', err.message);

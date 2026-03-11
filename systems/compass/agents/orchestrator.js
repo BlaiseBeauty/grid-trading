@@ -5,7 +5,14 @@ const { runRiskAssessor }   = require('./risk-assessor');
 const { calculateCorrelations } = require('./correlation-tracker');
 const { recordHeartbeat }   = require('../../../shared/system-health');
 
+let cycleRunning = false;
+
 async function runCycle(opts = {}) {
+  if (cycleRunning) {
+    console.warn('[COMPASS] Skipping — previous cycle still running');
+    return { skipped: true, reason: 'already_running' };
+  }
+  cycleRunning = true;
   const cycleStart = Date.now();
   console.log('[COMPASS] Starting cycle...');
 
@@ -65,7 +72,9 @@ async function runCycle(opts = {}) {
     });
 
     throw err;
+  } finally {
+    cycleRunning = false;
   }
 }
 
-module.exports = { runCycle };
+module.exports = { runCycle, isCycleRunning: () => cycleRunning };
