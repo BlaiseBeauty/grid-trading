@@ -7,6 +7,7 @@ const BaseAgent = require('../base-agent');
 const riskLimitsConfig = require('../../config/risk-limits');
 const { getRiskLimits } = riskLimitsConfig;
 const { queryOne, queryAll, query } = require('../../../../db/connection');
+const decisionsDb = require('../../../../db/queries/decisions');
 const { getLatestCorrelations } = require('../correlation-calculator');
 const { resolveProposal } = require('../../../../shared/conflict-resolver');
 const bus = require('../../../../shared/intelligence-bus');
@@ -20,6 +21,8 @@ class RiskManagerAgent extends BaseAgent {
    * Override run — takes Synthesizer proposals as input.
    */
   async run({ cycleNumber, proposals, broadcast }) {
+    const start = Date.now();
+
     // Get current system state for limit checking
     const systemState = await this.getSystemState();
 
@@ -33,7 +36,33 @@ class RiskManagerAgent extends BaseAgent {
 
     if (passed.length === 0) {
       console.log('[RISK_MANAGER] All proposals rejected by code-enforced limits');
-      return { approved: [], rejected: codeRejected, decision: null };
+
+      // Persist decision even when no AI call was needed (code-enforced rejection)
+      const reasoning = codeRejected.map(r =>
+        `${r.symbol} ${r.direction} conf=${r.confidence}: ${r.rejection_detail}`
+      ).join('\n');
+      const outputJson = { reviews: codeRejected, signals: [] };
+      let decision = null;
+      try {
+        decision = await decisionsDb.create({
+          agent_name: this.name,
+          agent_layer: this.layer,
+          cycle_number: cycleNumber,
+          model_used: null,
+          input_tokens: 0,
+          output_tokens: 0,
+          cost_usd: 0,
+          reasoning,
+          confidence_score: null,
+          output_json: outputJson,
+          duration_ms: Date.now() - start,
+          error: null,
+        });
+      } catch (err) {
+        console.error('[RISK_MANAGER] Failed to store code-rejection decision:', err.message);
+      }
+
+      return { approved: [], rejected: codeRejected, decision };
     }
 
     // For surviving proposals, ask Claude for nuanced risk assessment
