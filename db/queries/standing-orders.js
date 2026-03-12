@@ -60,20 +60,20 @@ async function expireOld() {
   `);
 }
 
-async function createFromSynthesizer({ agentName, agentDecisionId, symbol, side, conditions, executionParams, confidence, expiresHours }) {
+async function createFromSynthesizer({ agentName, agentDecisionId, symbol, side, conditions, executionParams, templateId, confidence, expiresHours }) {
   return query(`
     INSERT INTO standing_orders (
       created_by_agent, agent_decision_id, symbol, asset_class, side,
-      conditions, execution_params, confidence,
+      conditions, execution_params, template_id, confidence,
       expires_at
     ) VALUES (
       $1, $2, $3, 'crypto', $4,
-      $5, $6, $7,
-      NOW() + make_interval(hours => $8)
+      $5, $6, $7, $8,
+      NOW() + make_interval(hours => $9)
     )
   `, [agentName, agentDecisionId, symbol, side,
       JSON.stringify(conditions), JSON.stringify(executionParams),
-      confidence, expiresHours]);
+      templateId, confidence, expiresHours]);
 }
 
 module.exports = { fetchActive, claimOrder, linkTrade, revertToActive, markFailed, markPendingRetry, retryPending, expireOld, createFromSynthesizer };

@@ -87,7 +87,7 @@ async function getSystemMode() {
   return { mode: 'LEARNED', trades, active };
 }
 
-let cycleNumber = 0;
+let cycleNumber = null;
 let cycleRunning = false;
 let cycleStartedAt = null;
 const MAX_CYCLE_DURATION_MS = 15 * 60 * 1000; // 15 minute timeout (was 60min — too long, caused stale locks)
@@ -846,6 +846,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
             side,
             conditions: so.trigger_conditions,
             executionParams: so.exit_plan,
+            templateId: so.template_id || null,
             confidence: so.confidence,
             expiresHours,
           });
@@ -1038,6 +1039,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         entry_price: trade.entry_price,
         tp_price: trade.tp_price,
         sl_price: trade.sl_price,
+        template_id: trade.template_id || null,
         confidence: trade.confidence,
         cycle_number: cycleNum,
         agent_decision_id: synthDecision?.id,
@@ -1570,11 +1572,14 @@ async function runCycle({ broadcast } = {}) {
   cycleRunning = true;
   cycleStartedAt = Date.now();
   try {
-  // Resume cycle number from DB if this is the first cycle after restart
-  if (cycleNumber === 0) {
+  // Resume cycle number from DB on first cycle after restart
+  if (cycleNumber === null) {
     try {
-      cycleNumber = await decisionsDb.getLastCycleNumber();
+      const lastCycle = await decisionsDb.getLastCycleNumber();
+      cycleNumber = lastCycle;
+      console.log(`[ORCHESTRATOR] Resumed cycle number from DB: ${cycleNumber}`);
     } catch (err) {
+      cycleNumber = 0;
       logger.debug('No previous cycle found, starting from 0', { err, error_type: 'cycle_resume' });
     }
   }

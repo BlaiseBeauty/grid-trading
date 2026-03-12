@@ -45,8 +45,8 @@ async function getCostSummary() {
 }
 
 async function getLastCycleNumber() {
-  const row = await queryOne('SELECT MAX(cycle_number) as max_cycle FROM agent_decisions');
-  return parseInt(row?.max_cycle) || 0;
+  const row = await queryOne('SELECT COALESCE(MAX(cycle_number), 0)::int as max_cycle FROM agent_decisions');
+  return row?.max_cycle ?? 0;
 }
 
 module.exports = { getRecent, getById, create, getCostSummary, getLastCycleNumber };

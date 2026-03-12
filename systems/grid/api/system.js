@@ -192,39 +192,25 @@ async function routes(fastify) {
     return { message: 'Cycle started', status: 'running' };
   });
 
-  // GET /api/system/last-cycle — reconstruct last cycle result for dashboard
+  // GET /api/system/last-cycle — read last cycle result from cycle_reports
   fastify.get('/system/last-cycle', async () => {
-    const lastDecision = await queryOne(
-      'SELECT cycle_number, created_at FROM agent_decisions ORDER BY cycle_number DESC LIMIT 1'
+    const row = await queryOne(
+      'SELECT cycle_id, report, created_at FROM cycle_reports ORDER BY created_at DESC LIMIT 1'
     );
-    if (!lastDecision) return null;
+    if (!row) return null;
 
-    const cycleNumber = lastDecision.cycle_number;
-    const decisions = await queryAll(
-      'SELECT agent_name, error, output_json, created_at FROM agent_decisions WHERE cycle_number = $1 ORDER BY created_at ASC',
-      [cycleNumber]
-    );
+    const report = row.report;
+    const cycleNumber = row.cycle_id;
 
-    const firstTs = decisions[0]?.created_at;
-    const lastTs = decisions[decisions.length - 1]?.created_at;
-    const elapsed = firstTs && lastTs
-      ? ((new Date(lastTs) - new Date(firstTs)) / 1000).toFixed(1) + 's'
+    const agents = (report.knowledge_agents || []).map(k => ({
+      agent: k.name,
+      status: k.status === 'ok' ? 'fulfilled' : 'rejected',
+      signals: k.signals || 0,
+    }));
+
+    const elapsed = report.duration_ms
+      ? (report.duration_ms / 1000).toFixed(1) + 's'
       : '?';
-
-    const knowledgeAgents = ['trend', 'momentum', 'volatility', 'volume', 'pattern', 'orderflow', 'macro', 'sentiment'];
-    const agents = decisions
-      .filter(d => knowledgeAgents.includes(d.agent_name))
-      .map(d => ({
-        agent: d.agent_name,
-        status: d.error ? 'rejected' : 'fulfilled',
-        signals: d.output_json?.signals?.length || 0,
-      }));
-
-    const synthDecision = decisions.find(d => d.agent_name === 'synthesizer');
-    const riskDecision = decisions.find(d => d.agent_name === 'risk_manager');
-    const proposals = synthDecision?.output_json?.proposals || [];
-    const approved = riskDecision?.output_json?.approved || riskDecision?.output_json?.trades || [];
-    const rejected = riskDecision?.output_json?.rejected || [];
 
     // Count actual trades executed in this cycle
     const tradeCount = await queryOne(
@@ -236,9 +222,9 @@ async function routes(fastify) {
       cycleNumber,
       agents,
       strategy: {
-        proposals: proposals.length,
-        approved: approved.length,
-        rejected: rejected.length,
+        proposals: report.synthesizer?.proposals || 0,
+        approved: report.risk_manager?.approved || 0,
+        rejected: report.risk_manager?.rejected || 0,
         trades: tradeCount?.count || 0,
       },
       elapsed,
