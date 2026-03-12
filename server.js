@@ -93,8 +93,19 @@ function scheduleCalibration() {
 
 // ---------- Routes ----------
 async function registerRoutes() {
+  // Safe plugin registration — catches require() and plugin init errors
+  // so one broken route file cannot prevent WebSocket from registering
+  const reg = async (label, path, opts) => {
+    try {
+      await fastify.register(require(path), opts);
+    } catch (err) {
+      console.error(`[ROUTES] ✗ ${label} failed to register: ${err.message}`);
+      console.error(err.stack);
+    }
+  };
+
   // Auth routes (no auth required)
-  fastify.register(require('./api/auth'), { prefix: '/api/auth' });
+  await reg('auth', './api/auth', { prefix: '/api/auth' });
 
   // Public healthcheck (no auth — used by Railway)
   fastify.get('/api/system/health', async () => ({ status: 'ok', timestamp: Date.now() }));
@@ -132,60 +143,66 @@ async function registerRoutes() {
   });
 
   // Protected API routes (GRID system)
-  fastify.register(require('./systems/grid/api/portfolio'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/trades'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/agents'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/market-data'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/signals'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/templates'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/learnings'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/costs'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/system'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/analytics'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/notifications'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/standing-orders'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/events'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/calibration'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/cycle-reports'), { prefix: '/api' });
-  fastify.register(require('./systems/grid/api/backtest'), { prefix: '/api' });
+  await reg('grid/portfolio', './systems/grid/api/portfolio', { prefix: '/api' });
+  await reg('grid/trades', './systems/grid/api/trades', { prefix: '/api' });
+  await reg('grid/agents', './systems/grid/api/agents', { prefix: '/api' });
+  await reg('grid/market-data', './systems/grid/api/market-data', { prefix: '/api' });
+  await reg('grid/signals', './systems/grid/api/signals', { prefix: '/api' });
+  await reg('grid/templates', './systems/grid/api/templates', { prefix: '/api' });
+  await reg('grid/learnings', './systems/grid/api/learnings', { prefix: '/api' });
+  await reg('grid/costs', './systems/grid/api/costs', { prefix: '/api' });
+  await reg('grid/system', './systems/grid/api/system', { prefix: '/api' });
+  await reg('grid/analytics', './systems/grid/api/analytics', { prefix: '/api' });
+  await reg('grid/notifications', './systems/grid/api/notifications', { prefix: '/api' });
+  await reg('grid/standing-orders', './systems/grid/api/standing-orders', { prefix: '/api' });
+  await reg('grid/events', './systems/grid/api/events', { prefix: '/api' });
+  await reg('grid/calibration', './systems/grid/api/calibration', { prefix: '/api' });
+  await reg('grid/cycle-reports', './systems/grid/api/cycle-reports', { prefix: '/api' });
+  await reg('grid/backtest', './systems/grid/api/backtest', { prefix: '/api' });
 
   // Platform API routes (shared across systems)
-  fastify.register(require('./api/platform/notifications'), { prefix: '/api/platform' });
-  fastify.register(require('./api/platform/health'), { prefix: '/api/platform' });
-  fastify.register(require('./api/platform/costs'), { prefix: '/api/platform' });
+  await reg('platform/notifications', './api/platform/notifications', { prefix: '/api/platform' });
+  await reg('platform/health', './api/platform/health', { prefix: '/api/platform' });
+  await reg('platform/costs', './api/platform/costs', { prefix: '/api/platform' });
 
   // GRID performance digest API
-  fastify.register(require('./systems/grid/api/performance-digest'), { prefix: '/api' });
+  await reg('grid/performance-digest', './systems/grid/api/performance-digest', { prefix: '/api' });
 
   // GRID patterns API (Phase 5 — learning loop)
-  fastify.register(require('./systems/grid/api/patterns'), { prefix: '/api' });
+  await reg('grid/patterns', './systems/grid/api/patterns', { prefix: '/api' });
 
   // ORACLE API routes
-  fastify.register(require('./systems/oracle/api/theses'), { prefix: '/api/oracle' });
+  await reg('oracle/theses', './systems/oracle/api/theses', { prefix: '/api/oracle' });
 
   // COMPASS API routes
-  fastify.register(require('./systems/compass/api/portfolio'), { prefix: '/api/compass' });
+  await reg('compass/portfolio', './systems/compass/api/portfolio', { prefix: '/api/compass' });
 
   // WebSocket endpoint — requires JWT token as query parameter
-  fastify.register(async function (fastify) {
-    fastify.get('/ws', { websocket: true }, (socket, req) => {
-      // Verify JWT from query string: /ws?token=<jwt>
-      const url = new URL(req.url, `http://${req.headers.host}`);
-      const token = url.searchParams.get('token');
-      if (!token) {
-        socket.close(4401, 'Authentication required');
-        return;
-      }
-      try {
-        jwt.verify(token, process.env.JWT_SECRET);
-      } catch {
-        socket.close(4401, 'Invalid token');
-        return;
-      }
-      wsClients.add(socket);
-      socket.on('close', () => wsClients.delete(socket));
+  try {
+    await fastify.register(async function (fastify) {
+      fastify.get('/ws', { websocket: true }, (socket, req) => {
+        // Verify JWT from query string: /ws?token=<jwt>
+        const url = new URL(req.url, `http://${req.headers.host}`);
+        const token = url.searchParams.get('token');
+        if (!token) {
+          socket.close(4401, 'Authentication required');
+          return;
+        }
+        try {
+          jwt.verify(token, process.env.JWT_SECRET);
+        } catch {
+          socket.close(4401, 'Invalid token');
+          return;
+        }
+        wsClients.add(socket);
+        socket.on('close', () => wsClients.delete(socket));
+      });
     });
-  });
+    console.log('[ROUTES] ✓ WebSocket /ws registered');
+  } catch (err) {
+    console.error('[ROUTES] ✗ WebSocket failed to register:', err.message);
+    console.error(err.stack);
+  }
 
   // SPA fallback — serve index.html for non-API, non-file routes
   fastify.setNotFoundHandler((request, reply) => {
