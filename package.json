@@ -4,6 +4,7 @@
   "description": "GRID — Autonomous Trading Intelligence Platform",
   "main": "server.js",
   "scripts": {
+    "build": "cd frontend && npm install && npm run build",
     "start": "node db/migrate.js && node server.js",
     "dev": "node --watch server.js",
     "migrate": "node db/migrate.js"
