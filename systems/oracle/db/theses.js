@@ -72,13 +72,20 @@ async function upsertThesis(thesis) {
     return { action: 'updated', thesis_id: existing.thesis_id };
   }
 
-  // New thesis — insert
+  // New thesis — upsert (ON CONFLICT updates if thesis_id already exists)
   const result = await query(
     `INSERT INTO oracle_theses
        (thesis_id, name, domain, direction, conviction, time_horizon,
         summary, catalyst, invalidation, competing_view,
         long_assets, short_assets, watch_assets, status)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'active')
+     ON CONFLICT (thesis_id) DO UPDATE SET
+        name = EXCLUDED.name, domain = EXCLUDED.domain, direction = EXCLUDED.direction,
+        conviction = EXCLUDED.conviction, time_horizon = EXCLUDED.time_horizon,
+        summary = EXCLUDED.summary, catalyst = EXCLUDED.catalyst,
+        invalidation = EXCLUDED.invalidation, competing_view = EXCLUDED.competing_view,
+        long_assets = EXCLUDED.long_assets, short_assets = EXCLUDED.short_assets,
+        watch_assets = EXCLUDED.watch_assets, updated_at = NOW()
      RETURNING id, thesis_id`,
     [
       thesis.thesis_id, thesis.name, thesis.domain, thesis.direction,
@@ -93,7 +100,7 @@ async function upsertThesis(thesis) {
 
   // Publish to bus
   try {
-    const busId = await bus.publish({
+    const busResult = await bus.publish({
       source_system:   'oracle',
       event_type:      'thesis_created',
       payload: {
@@ -112,7 +119,8 @@ async function upsertThesis(thesis) {
       expires_at:      null,
     });
 
-    // Store bus event ID on thesis
+    // Store bus event ID on thesis (busResult is {id: N} from queryOne)
+    const busId = busResult?.id;
     await query(
       'UPDATE oracle_theses SET bus_event_id = $1 WHERE thesis_id = $2',
       [busId, saved.thesis_id]

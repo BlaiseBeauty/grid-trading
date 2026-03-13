@@ -48,6 +48,12 @@ async function create(signal) {
 }
 
 async function cleanExpired() {
+  // First remove FK references in trade_signals, then delete the expired signals
+  await query(
+    `DELETE FROM trade_signals WHERE signal_id IN (
+       SELECT id FROM signals WHERE expires_at < NOW() - INTERVAL '7 days'
+     )`
+  );
   return query("DELETE FROM signals WHERE expires_at < NOW() - INTERVAL '7 days'");
 }
 
