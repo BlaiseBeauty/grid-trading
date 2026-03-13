@@ -339,7 +339,9 @@ class PerformanceAnalystAgent extends BaseAgent {
         return { ...parsed, signals: [], overallConfidence: null };
       }
     } catch (err) { console.warn('[PERF_ANALYST] JSON parse failed in parseOutput:', err.message); }
-    console.warn('[PERFORMANCE_ANALYST] parseOutput fell back to empty — raw output starts with:', text?.slice(0, 200));
+    console.warn('[PERFORMANCE_ANALYST] parseOutput fell back to empty — raw output length:', text?.length);
+    console.warn('[PERFORMANCE_ANALYST] raw output START:', text?.slice(0, 500));
+    console.warn('[PERFORMANCE_ANALYST] raw output END:', text?.slice(-500));
     return { learnings: [], invalidations: [], signals: [], overallConfidence: null };
   }
 }
