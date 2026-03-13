@@ -831,14 +831,20 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     }
     console.log(`[ORCHESTRATOR] Synthesizer produced ${proposals.length} valid proposals (from ${rawActions.length} actions, ${candidateProposals.length - proposals.length} rejected)`);
 
-    // Persist standing orders to DB
+    // Persist standing orders to DB (dedup: skip if active order already exists for same symbol+side)
     standingOrders = synthDecision?.output_json?.standing_orders || [];
     if (standingOrders.length > 0) {
+      const existingActive = await standingOrdersDb.fetchActive();
+      const activeKeys = new Set(existingActive.map(o => `${o.symbol}:${o.side}`));
       let soStored = 0;
       for (const so of standingOrders) {
         try {
           const side = so.direction === 'long' ? 'buy' : 'sell';
-          const expiresHours = so.expires_in_hours || 48;
+          if (activeKeys.has(`${so.symbol}:${side}`)) {
+            console.log(`[ORCHESTRATOR] Standing order skipped (active exists): ${so.symbol} ${side}`);
+            continue;
+          }
+          const expiresHours = so.expires_in_hours || 24;
           await standingOrdersDb.createFromSynthesizer({
             agentName: 'strategySynthesizer',
             agentDecisionId: synthDecision?.id || null,

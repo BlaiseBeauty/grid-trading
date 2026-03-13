@@ -452,17 +452,21 @@ function setupCron() {
   });
 
   // Check standing order triggers every 15 minutes
-  // M-14: Skip if a cycle is actively running to prevent race conditions
   cron.schedule('*/15 * * * *', async () => {
+    // Expiry sweep always runs — even during an active cycle
+    try {
+      const expired = await standingOrdersDb.expireOld();
+      if (expired.rowCount > 0) console.log(`[CRON] Expired ${expired.rowCount} standing orders`);
+    } catch (err) {
+      console.error('[CRON] Standing order expiry failed:', err.message);
+    }
+    // M-14: Skip trigger check + retry if a cycle is actively running to prevent race conditions
     if (orchestrator.isCycleRunning()) {
-      console.log('[CRON] Skipping standing order check — cycle in progress');
+      console.log('[CRON] Skipping standing order trigger check — cycle in progress');
       return;
     }
     console.log('[CRON] Monitoring standing orders...');
     try {
-      // Expire old standing orders (runs even when cycle isn't active)
-      const expired = await standingOrdersDb.expireOld();
-      if (expired.rowCount > 0) console.log(`[CRON] Expired ${expired.rowCount} standing orders`);
       // Retry orders that failed due to transient errors (15-min cooldown)
       await standingOrdersDb.retryPending();
       await orchestrator.checkStandingOrders(broadcast);
