@@ -805,6 +805,9 @@ async function start() {
     fetchAll().catch(err => console.error('[BOOT] External data fetch failed:', err.message));
     refreshCandles({ backfill: true }).then(() => console.log('[BOOT] Candle refresh complete')).catch(err => console.error('[BOOT] Candle refresh failed:', err.message));
 
+    // Eagerly initialise cycle number from DB so deploy log confirms the value
+    await orchestrator.initCycleNumber().catch(err => console.error('[BOOT] Cycle number init failed:', err.message));
+
     // Listen
     await fastify.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`[GRID] Server running on port ${PORT}`);

@@ -1864,6 +1864,23 @@ async function runCycle({ broadcast } = {}) {
   }
 }
 
+/**
+ * Eagerly initialise cycleNumber from DB at startup (called by server.js).
+ * Ensures the resume log appears in deploy output immediately.
+ */
+async function initCycleNumber() {
+  if (cycleNumber !== null) return cycleNumber;
+  try {
+    const lastCycle = await decisionsDb.getLastCycleNumber();
+    cycleNumber = lastCycle;
+    console.log(`[ORCHESTRATOR] Resumed cycle number from DB: ${cycleNumber}`);
+  } catch (err) {
+    cycleNumber = 0;
+    console.warn('[ORCHESTRATOR] Could not resume cycle number from DB, starting from 0:', err.message);
+  }
+  return cycleNumber;
+}
+
 module.exports = {
   refreshMarketData,
   getIndicatorsForAll,
@@ -1876,4 +1893,5 @@ module.exports = {
   runCycle,
   getSystemMode,
   isCycleRunning: () => cycleRunning,
+  initCycleNumber,
 };

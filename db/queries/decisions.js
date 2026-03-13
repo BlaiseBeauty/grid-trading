@@ -45,7 +45,10 @@ async function getCostSummary() {
 }
 
 async function getLastCycleNumber() {
-  const row = await queryOne('SELECT COALESCE(MAX(cycle_number), 0)::int as max_cycle FROM agent_decisions');
+  // Use COUNT of cycle_reports as the true cycle number — immune to historical
+  // inflation from restarts that incremented an in-memory counter.
+  // Each completed cycle writes exactly one report, so COUNT = actual cycles run.
+  const row = await queryOne('SELECT COALESCE(COUNT(*), 0)::int as max_cycle FROM cycle_reports');
   return row?.max_cycle ?? 0;
 }
 
