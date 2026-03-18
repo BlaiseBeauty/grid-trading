@@ -186,6 +186,16 @@ async function routes(fastify) {
     schema: { body: { type: 'object', properties: {} } },
   }, async (request, reply) => {
     const orchestrator = require('../agents/orchestrator');
+    if (orchestrator.isCycleRunning()) {
+      return reply.code(409).send({ error: 'Cycle already running' });
+    }
+    const recentRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
+    );
+    const recentCount = parseInt(recentRow?.cnt || '0');
+    if (recentCount >= 10) {
+      return reply.code(429).send({ error: `Rate limit: ${recentCount} cycles already ran in the last 24h (max 10)` });
+    }
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);
     });

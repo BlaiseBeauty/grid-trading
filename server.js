@@ -372,8 +372,30 @@ async function refreshCandles({ backfill = false } = {}) {
 // ---------- Cron ----------
 const cron = require('node-cron');
 
+// Rate limit: max 10 GRID cycles per 24 hours (normal schedule = 6)
+const GRID_CYCLE_LIMIT_24H = 10;
+async function gridCycleAllowed(queryOneFn) {
+  try {
+    const row = await queryOneFn(
+      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
+    );
+    const count = parseInt(row?.cnt || '0');
+    if (count >= GRID_CYCLE_LIMIT_24H) {
+      console.warn(`[CYCLE_GUARD] Blocked — ${count} cycles already ran in the last 24h (limit: ${GRID_CYCLE_LIMIT_24H})`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[CYCLE_GUARD] Rate limit check failed — allowing cycle:', err.message);
+    return true; // fail open so a DB hiccup doesn't kill the system
+  }
+}
+
 function setupCron() {
   const orchestrator = require('./systems/grid/agents/orchestrator');
+  const { recordTradeCloseLearningOutcome } = orchestrator;
+  const { linkTradeToTheses } = require('./shared/thesis-linker');
+  const { queryOne: queryOneTrade } = require('./db/connection');
   const standingOrdersDb = require('./db/queries/standing-orders');
   const signalsDb = require('./db/queries/signals');
   const equityDb = require('./db/queries/equity');
@@ -389,6 +411,7 @@ function setupCron() {
   // --- GRID: 4-hour agent cycle ---
   cron.schedule('0 */4 * * *', async () => {
     console.log('[CRON] 4-hour cycle triggered at', new Date().toISOString());
+    if (!await gridCycleAllowed(queryOneTrade)) return;
     console.log('[CRON] Starting agent cycle...');
     const cycleStart = Date.now();
     try {
@@ -422,6 +445,51 @@ function setupCron() {
     }
   });
 
+  /**
+   * Called whenever trades close via the position monitor or Node.js fallback.
+   * Fires the learning feedback loop and thesis linkage for each closed trade.
+   * Each item in `closed` must have at least { trade_id, action }.
+   */
+  async function processTradeCloseOutcomes(closed) {
+    for (const c of closed) {
+      try {
+        const trade = await queryOneTrade(
+          `SELECT id, symbol, side, pnl_realised, pnl_pct, opened_at FROM trades WHERE id = $1`,
+          [c.trade_id]
+        );
+        if (!trade) {
+          console.warn(`[LEARNING] processTradeCloseOutcomes: trade #${c.trade_id} not found in DB`);
+          continue;
+        }
+        console.log(`[LEARNING] Processing close for trade #${trade.id} (${c.action})`);
+        await recordTradeCloseLearningOutcome(trade.id, trade.pnl_realised ?? 0);
+        try {
+          await linkTradeToTheses({
+            id:           trade.id,
+            symbol:       trade.symbol,
+            side:         trade.side,
+            pnl_usd:      trade.pnl_realised ?? 0,
+            pnl_pct:      trade.pnl_pct ?? 0,
+            close_reason: c.action,
+            hold_hours:   trade.opened_at ? (Date.now() - new Date(trade.opened_at)) / 3600000 : 0,
+          });
+        } catch (e) {
+          console.error(`[LEARNING] linkTradeToTheses failed for trade #${trade.id}:`, e.message);
+        }
+        try {
+          await bus.publish({
+            source_system:   'grid',
+            event_type:      'trade_closed',
+            payload:         { trade_id: trade.id, symbol: trade.symbol, side: trade.side, pnl_usd: trade.pnl_realised, close_reason: c.action },
+            affected_assets: [trade.symbol],
+          });
+        } catch (e) { /* bus publish is best-effort */ }
+      } catch (err) {
+        console.error(`[LEARNING] processTradeCloseOutcomes failed for trade #${c.trade_id}:`, err.message);
+      }
+    }
+  }
+
   // Stop loss / take profit enforcement — every minute
   let slCheckRunning = false;
   cron.schedule('* * * * *', async () => {
@@ -433,6 +501,9 @@ function setupCron() {
       if (closed.length > 0) {
         console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
         broadcast('positions_closed', { closed });
+        processTradeCloseOutcomes(closed).catch(err =>
+          console.error('[LEARNING] processTradeCloseOutcomes (monitor) failed:', err.message)
+        );
       }
     } catch (err) {
       console.error('[CRON] Python position monitor failed:', err.message);
@@ -442,6 +513,9 @@ function setupCron() {
         if (closed.length > 0) {
           console.log(`[CRON] ${closed.length} position(s) closed by Node.js fallback`);
           broadcast('positions_closed', { closed });
+          processTradeCloseOutcomes(closed).catch(err =>
+            console.error('[LEARNING] processTradeCloseOutcomes (fallback) failed:', err.message)
+          );
         }
       } catch (fallbackErr) {
         console.error('[CRON] Node.js stop-loss fallback also failed:', fallbackErr.message);
@@ -773,8 +847,13 @@ async function start() {
 
     // One-time boot cycle — confirm orchestrator works on this deployment
     const orchestrator = require('./systems/grid/agents/orchestrator');
-    setTimeout(() => {
+    const { queryOne: queryOneBoot } = require('./db/connection');
+    setTimeout(async () => {
       console.log('[BOOT] Firing one-time cycle 10s after startup...');
+      if (!await gridCycleAllowed(queryOneBoot)) {
+        console.log('[BOOT] Boot cycle skipped — rate limit already reached');
+        return;
+      }
       orchestrator.runCycle({ broadcast }).catch(err => {
         console.error('[BOOT] One-time cycle failed:', err.message);
       });

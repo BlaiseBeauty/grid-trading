@@ -58,6 +58,15 @@ async function routes(fastify) {
       return reply.code(409).send({ error: 'Cycle already running' });
     }
 
+    // Rate limit guard
+    const recentRow = await queryOne(
+      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
+    );
+    const recentCount = parseInt(recentRow?.cnt || '0');
+    if (recentCount >= 10) {
+      return reply.code(429).send({ error: `Rate limit: ${recentCount} cycles already ran in the last 24h (max 10)` });
+    }
+
     // Run async — don't block the response
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);
