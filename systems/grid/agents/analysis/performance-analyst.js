@@ -220,13 +220,29 @@ class PerformanceAnalystAgent extends BaseAgent {
       ]);
     }
 
-    // 2. candidate → provisional: 5+ influenced trades AND win rate > 55%
-    await queryAll(`
-      UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
-      WHERE stage = 'candidate'
-        AND influenced_trades >= 5
-        AND influenced_wins::float / NULLIF(influenced_trades, 0) > 0.55
-    `);
+    // 2. candidate → provisional: bootstrap-aware thresholds
+    //    < 100 total trades: promote if sample_size >= 3 (win rate not required — not enough data)
+    //    >= 100 total trades: promote if sample_size >= 5 AND win rate > 55%
+    const totalTradesRow = await queryOne(`SELECT COUNT(*) as cnt FROM trades WHERE status = 'closed'`);
+    const totalTrades = parseInt(totalTradesRow?.cnt || '0');
+    console.log(`[PERFORMANCE_ANALYST] Total closed trades: ${totalTrades} — using ${totalTrades < 100 ? 'bootstrap' : 'learned'} promotion threshold`);
+
+    if (totalTrades < 100) {
+      // Bootstrap: low bar — 3 samples enough to prove the learning is being used
+      await queryAll(`
+        UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
+        WHERE stage = 'candidate'
+          AND sample_size >= 3
+      `);
+    } else {
+      // Learned: full statistical threshold
+      await queryAll(`
+        UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
+        WHERE stage = 'candidate'
+          AND sample_size >= 5
+          AND influenced_wins::float / NULLIF(influenced_trades, 0) > 0.55
+      `);
+    }
 
     // 3. provisional → active: tested in 2+ distinct regimes
     await queryAll(`
