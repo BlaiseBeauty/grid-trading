@@ -5,6 +5,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const anthropic = new Anthropic();
 const bus = require('../../../shared/intelligence-bus');
 const { linkTradeToTheses } = require('../../../shared/thesis-linker');
+const { recordTradeCloseLearningOutcome } = require('../agents/orchestrator');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -209,6 +210,9 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
         hold_hours:   trade.opened_at ? (Date.now() - new Date(trade.opened_at)) / 3600000 : 0,
       });
     } catch (e) { /* thesis linking is non-critical */ }
+    try {
+      await recordTradeCloseLearningOutcome(trade.id, trade.pnl_realised ?? 0);
+    } catch (e) { console.error('[TRADES] recordTradeCloseLearningOutcome failed:', e.message); }
     return trade;
   });
 }

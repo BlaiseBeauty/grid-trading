@@ -880,14 +880,15 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
   }
 
   // Track learning influence — which learnings were in Synthesizer context this cycle
+  // Include all pipeline stages: candidate, provisional, and active
   try {
     const activeLearnings = await dbQueryAll(`
       SELECT id, insight_text FROM learnings
-      WHERE stage = 'active' AND invalidated_at IS NULL
-      ORDER BY decayed_confidence DESC NULLS LAST LIMIT 20
+      WHERE stage IN ('active', 'provisional', 'candidate') AND invalidated_at IS NULL
+      ORDER BY decayed_confidence DESC NULLS LAST LIMIT 30
     `);
-    if (activeLearnings.length > 0 && synthDecision) {
-      await trackLearningInfluence(cycleNum, synthDecision.output_json || {}, activeLearnings, regime);
+    if (activeLearnings.length > 0) {
+      await trackLearningInfluence(cycleNum, synthDecision?.output_json || {}, activeLearnings, regime);
     }
   } catch (err) {
     console.error('[ORCHESTRATOR] Learning influence tracking failed:', err.message);
@@ -1242,73 +1243,126 @@ async function trackLearningInfluence(cycleNumber, synthesizerOutput, activeLear
 }
 
 /**
- * After a trade closes, find learnings that were referenced in the opening cycle
- * and record trade outcome against them.
+ * After a trade closes, find learnings that were active when the trade was opened
+ * and record the trade outcome against them (sample_size, influenced_trades, win/loss).
+ *
+ * Primary path: look for 'referenced'/'cited' events in learning_influence_events for the
+ * opening cycle (written by trackLearningInfluence each cycle).
+ *
+ * Bootstrap fallback: if no referenced events exist yet (system is in candidate-only mode
+ * or trackLearningInfluence hadn't run), credit all learnings that existed and were not
+ * invalidated at trade open time.
  */
 async function recordTradeCloseLearningOutcome(tradeId, pnl) {
   try {
-    // Find the cycle when this trade was opened
-    const trade = await dbQueryOne(`SELECT opened_at, symbol FROM trades WHERE id = $1`, [tradeId]);
-    if (!trade) return;
+    console.log(`[LEARNING] recordTradeCloseLearningOutcome — trade #${tradeId}, pnl=${pnl}`);
 
-    // Find cycle number closest to trade open time
+    const trade = await dbQueryOne(`SELECT opened_at, symbol FROM trades WHERE id = $1`, [tradeId]);
+    if (!trade) {
+      console.log(`[LEARNING] Trade #${tradeId} not found — skipping`);
+      return;
+    }
+
+    // Find the cycle report closest to (and before) trade open time
+    // Note: cycle_reports stores cycle_id, not cycle_number
     const cycleRow = await dbQueryOne(`
-      SELECT cycle_number FROM cycle_reports
+      SELECT cycle_id FROM cycle_reports
       WHERE created_at <= $1
       ORDER BY created_at DESC LIMIT 1
     `, [trade.opened_at]);
-    if (!cycleRow) return;
-    const openCycle = cycleRow.cycle_number;
+    const openCycle = cycleRow?.cycle_id ?? null;
+    console.log(`[LEARNING] Trade #${tradeId} opened_at=${trade.opened_at}, opening cycle=${openCycle}`);
 
-    // Find learnings that were referenced in that cycle
-    const referencedLearnings = await dbQueryAll(`
-      SELECT DISTINCT learning_id FROM learning_influence_events
-      WHERE cycle_number = $1 AND event_type IN ('referenced', 'cited')
-    `, [openCycle]);
+    // Primary: learnings referenced/cited in the opening cycle
+    let learningIds = [];
+    if (openCycle !== null) {
+      const fromEvents = await dbQueryAll(`
+        SELECT DISTINCT learning_id FROM learning_influence_events
+        WHERE cycle_number = $1 AND event_type IN ('referenced', 'cited')
+      `, [openCycle]);
+      learningIds = fromEvents.map(r => r.learning_id);
+      console.log(`[LEARNING] Primary path: ${learningIds.length} learning(s) from cycle ${openCycle} events`);
+    }
 
-    if (referencedLearnings.length === 0) return;
+    // Bootstrap fallback: no referenced events (candidates never tracked as active)
+    if (learningIds.length === 0) {
+      console.log(`[LEARNING] No referenced events found — bootstrap fallback: querying learnings active at trade open time`);
+      const fallback = await dbQueryAll(`
+        SELECT id FROM learnings
+        WHERE created_at <= $1
+          AND stage != 'invalidated'
+          AND (invalidated_at IS NULL OR invalidated_at > $1)
+      `, [trade.opened_at]);
+      learningIds = fallback.map(r => r.id);
+      console.log(`[LEARNING] Bootstrap fallback: ${learningIds.length} learning(s) to credit`);
+    }
+
+    if (learningIds.length === 0) {
+      console.log(`[LEARNING] No learnings to credit for trade #${tradeId} — nothing to record`);
+      return;
+    }
 
     const isWin = parseFloat(pnl) > 0;
     const eventType = isWin ? 'trade_won' : 'trade_lost';
-
-    // Get current regime for regime_breakdown
     const regimeRow = await dbQueryOne(`SELECT regime FROM market_regime ORDER BY created_at DESC LIMIT 1`);
     const regime = regimeRow?.regime || 'unknown';
 
-    for (const { learning_id } of referencedLearnings) {
-      // Insert outcome event
-      await dbQuery(`
-        INSERT INTO learning_influence_events (learning_id, cycle_number, trade_id, event_type, regime)
-        VALUES ($1, $2, $3, $4, $5)
-      `, [learning_id, openCycle, tradeId, eventType, regime]);
+    let credited = 0;
+    for (const learning_id of learningIds) {
+      try {
+        // Deduplicate: skip if this trade's outcome was already recorded for this learning
+        const existing = await dbQueryOne(`
+          SELECT id FROM learning_influence_events
+          WHERE learning_id = $1 AND trade_id = $2 AND event_type IN ('trade_won', 'trade_lost')
+        `, [learning_id, tradeId]);
+        if (existing) {
+          console.log(`[LEARNING] Already recorded: learning #${learning_id} / trade #${tradeId} — skipping`);
+          continue;
+        }
 
-      // Update influenced_trades / influenced_wins counters
-      await dbQuery(`
-        UPDATE learnings SET
-          influenced_trades = influenced_trades + 1
-          ${isWin ? ', influenced_wins = influenced_wins + 1' : ''}
-        WHERE id = $1
-      `, [learning_id]);
+        // Write outcome event
+        await dbQuery(`
+          INSERT INTO learning_influence_events (learning_id, cycle_number, trade_id, event_type, regime)
+          VALUES ($1, $2, $3, $4, $5)
+        `, [learning_id, openCycle, tradeId, eventType, regime]);
 
-      // Update regime_breakdown JSONB
-      await dbQuery(`
-        UPDATE learnings SET
-          regime_breakdown = jsonb_set(
-            jsonb_set(
+        // Increment sample_size, influenced_trades, and influenced_wins
+        const updateResult = await dbQuery(`
+          UPDATE learnings SET
+            sample_size       = sample_size + 1,
+            influenced_trades = influenced_trades + 1
+            ${isWin ? ', influenced_wins = influenced_wins + 1' : ''}
+          WHERE id = $1
+        `, [learning_id]);
+        if (updateResult.rowCount === 0) {
+          console.error(`[LEARNING] WARNING: influence event written but learning row not updated — id: ${learning_id}`);
+        }
+
+        // Update regime_breakdown JSONB — use single-level jsonb_set with jsonb_build_object
+        // so the intermediate key is created atomically even when it doesn't yet exist.
+        await dbQuery(`
+          UPDATE learnings SET
+            regime_breakdown = jsonb_set(
               COALESCE(regime_breakdown, '{}'),
-              ARRAY[$2, 'trades'],
-              (COALESCE((regime_breakdown->$2->>'trades')::int, 0) + 1)::text::jsonb
-            ),
-            ARRAY[$2, 'wins'],
-            (COALESCE((regime_breakdown->$2->>'wins')::int, 0) + ${isWin ? 1 : 0})::text::jsonb
-          )
-        WHERE id = $1
-      `, [learning_id, regime]);
+              ARRAY[$2],
+              jsonb_build_object(
+                'trades', (COALESCE((regime_breakdown->$2->>'trades')::int, 0) + 1),
+                'wins',   (COALESCE((regime_breakdown->$2->>'wins')::int,   0) + ${isWin ? 1 : 0})
+              ),
+              true
+            )
+          WHERE id = $1
+        `, [learning_id, regime]);
+
+        credited++;
+      } catch (err) {
+        console.error(`[LEARNING] Failed to credit learning #${learning_id} for trade #${tradeId}:`, err.message);
+      }
     }
 
-    console.log(`[ORCHESTRATOR] Recorded trade #${tradeId} outcome (${eventType}) for ${referencedLearnings.length} learnings`);
+    console.log(`[LEARNING] Trade #${tradeId} (${eventType}): credited ${credited}/${learningIds.length} learning(s)`);
   } catch (err) {
-    console.error(`[ORCHESTRATOR] recordTradeCloseLearningOutcome failed for trade #${tradeId}:`, err.message);
+    console.error(`[LEARNING] recordTradeCloseLearningOutcome failed for trade #${tradeId}:`, err.message);
   }
 }
 
@@ -1894,4 +1948,5 @@ module.exports = {
   getSystemMode,
   isCycleRunning: () => cycleRunning,
   initCycleNumber,
+  recordTradeCloseLearningOutcome,
 };

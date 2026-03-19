@@ -55,7 +55,7 @@ async function routes(fastify) {
   fastify.get('/learnings/stats', async () => {
     const [totals, byType, byScope, conflictsRow, mostEffective,
            mostReferenced, avgConf, thisWeek, knowledgeWr] = await Promise.all([
-      // total + by_stage
+      // total + by_stage — live learnings only (matches pipeline WHERE invalidated_at IS NULL)
       queryOne(`
         SELECT
           COUNT(*) as total,
@@ -65,6 +65,7 @@ async function routes(fastify) {
           COUNT(*) FILTER (WHERE stage = 'decaying') as decaying,
           COUNT(*) FILTER (WHERE stage = 'invalidated') as invalidated
         FROM learnings
+        WHERE invalidated_at IS NULL
       `),
       // by_type
       queryAll(`
@@ -102,12 +103,12 @@ async function routes(fastify) {
       // avg_decayed_confidence of active learnings
       queryOne(`
         SELECT ROUND(AVG(decayed_confidence)::numeric, 3) as avg
-        FROM learnings WHERE stage = 'active'
+        FROM learnings WHERE stage = 'active' AND invalidated_at IS NULL
       `),
       // learnings_this_week
       queryOne(`
         SELECT COUNT(*) as count FROM learnings
-        WHERE created_at > NOW() - INTERVAL '7 days'
+        WHERE created_at > NOW() - INTERVAL '7 days' AND invalidated_at IS NULL
       `),
       // knowledge_win_rate
       queryOne(`
@@ -198,6 +199,106 @@ async function routes(fastify) {
       WHERE lc.resolved_at IS NULL
       ORDER BY lc.detected_at DESC
     `);
+  });
+
+  // ─────────────────────────────────────
+  // POST /api/learnings/evaluate
+  // Run stage promotion evaluation immediately (same logic as advanceLearningStages).
+  // Bootstrap: < 100 closed trades → promote candidates with sample_size >= 3
+  // Learned:  >= 100 closed trades → promote candidates with sample_size >= 5 AND win_rate >= 55%
+  // ─────────────────────────────────────
+  fastify.post('/learnings/evaluate', async () => {
+    const CONF_MAP = { high: 0.85, med: 0.6, medium: 0.6, low: 0.3 };
+
+    // 1. Recompute decayed_confidence
+    const allLearnings = await queryAll(`
+      SELECT id, confidence, confidence_halflife_days, last_validated_at
+      FROM learnings WHERE invalidated_at IS NULL AND stage != 'invalidated'
+    `);
+    for (const l of allLearnings) {
+      const baseConf = CONF_MAP[l.confidence] || 0.5;
+      const daysSince = l.last_validated_at
+        ? (Date.now() - new Date(l.last_validated_at).getTime()) / 86400000 : 0;
+      const decayed = baseConf * Math.pow(0.5, daysSince / (l.confidence_halflife_days || 14));
+      await queryOne(`UPDATE learnings SET decayed_confidence = $1 WHERE id = $2`,
+        [Math.round(decayed * 1000) / 1000, l.id]);
+    }
+
+    // 2. candidate → provisional (bootstrap-aware)
+    const totalTradesRow = await queryOne(`SELECT COUNT(*) as cnt FROM trades WHERE status = 'closed'`);
+    const totalTrades = parseInt(totalTradesRow?.cnt || '0');
+    const mode = totalTrades < 100 ? 'bootstrap' : 'learned';
+
+    let promotedToProvisional;
+    if (totalTrades < 100) {
+      const r = await query(`
+        UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
+        WHERE stage = 'candidate' AND sample_size >= 3
+      `);
+      promotedToProvisional = r.rowCount;
+    } else {
+      const r = await query(`
+        UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
+        WHERE stage = 'candidate'
+          AND sample_size >= 5
+          AND influenced_wins::float / NULLIF(influenced_trades, 0) >= 0.55
+      `);
+      promotedToProvisional = r.rowCount;
+    }
+
+    // 3. provisional → active (2+ distinct regimes)
+    const r2 = await query(`
+      UPDATE learnings SET stage = 'active', last_validated_at = NOW()
+      WHERE stage = 'provisional'
+        AND (SELECT COUNT(DISTINCT key) FROM jsonb_each(COALESCE(regime_breakdown, '{}'))) >= 2
+    `);
+
+    // 4. active → decaying
+    const r3 = await query(`
+      UPDATE learnings SET stage = 'decaying'
+      WHERE stage = 'active'
+        AND (
+          decayed_confidence < 0.4
+          OR (influenced_trades >= 5 AND influenced_wins::float / NULLIF(influenced_trades, 0) < 0.45)
+        )
+    `);
+
+    // 5. decaying → invalidated
+    const r4 = await query(`
+      UPDATE learnings SET stage = 'invalidated', invalidated_at = NOW(),
+        invalidation_reason = 'auto: win_rate < 35% over 10+ trades'
+      WHERE stage = 'decaying'
+        AND influenced_trades >= 10
+        AND influenced_wins::float / NULLIF(influenced_trades, 0) < 0.35
+    `);
+
+    // Final stage counts — live learnings only (matches pipeline filter)
+    const counts = await queryOne(`
+      SELECT
+        COUNT(*) FILTER (WHERE stage = 'candidate')    as candidate,
+        COUNT(*) FILTER (WHERE stage = 'provisional')  as provisional,
+        COUNT(*) FILTER (WHERE stage = 'active')       as active,
+        COUNT(*) FILTER (WHERE stage = 'decaying')     as decaying,
+        COUNT(*) FILTER (WHERE stage = 'invalidated')  as invalidated
+      FROM learnings
+      WHERE invalidated_at IS NULL
+    `);
+
+    return {
+      total_closed_trades: totalTrades,
+      threshold_mode: mode,
+      promoted_to_provisional: promotedToProvisional,
+      promoted_to_active: r2.rowCount,
+      sent_to_decaying: r3.rowCount,
+      invalidated: r4.rowCount,
+      stage_counts: {
+        candidate:   parseInt(counts.candidate),
+        provisional: parseInt(counts.provisional),
+        active:      parseInt(counts.active),
+        decaying:    parseInt(counts.decaying),
+        invalidated: parseInt(counts.invalidated),
+      },
+    };
   });
 
   // ─────────────────────────────────────

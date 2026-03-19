@@ -42,17 +42,30 @@ class PerformanceAnalystAgent extends BaseAgent {
       try {
         const text = (learning.insight_text || learning.insight || '').slice(0, 80);
         console.log(`[PERFORMANCE_ANALYST] Storing learning: "${text}..."`);
+        const tradeIds = learning.supporting_trade_ids || learning.trade_ids || [];
+        let initial_influenced = tradeIds.length;
+        let initial_wins = 0;
+        if (tradeIds.length > 0) {
+          const winRow = await queryOne(
+            `SELECT COUNT(*) as wins FROM trades WHERE id = ANY($1::bigint[]) AND pnl_realised > 0 AND status = 'closed'`,
+            [tradeIds]
+          );
+          initial_wins = parseInt(winRow?.wins || '0');
+        }
         await learningsDb.create({
           insight_text: learning.insight_text || learning.insight,
           category: learning.category,
           confidence: learning.confidence,
           symbols: learning.symbols || [],
           asset_classes: learning.asset_classes || ['crypto'],
-          supporting_trade_ids: learning.supporting_trade_ids || learning.trade_ids || [],
+          supporting_trade_ids: tradeIds,
           source_agent: 'performance_analyst',
           evidence: learning.evidence || {},
           learning_type: learning.learning_type || learning.type || 'observation',
           scope_level: learning.scope_level || learning.scope || 'specific',
+          sample_size: initial_influenced,
+          influenced_trades: initial_influenced,
+          influenced_wins: initial_wins,
         });
         storedCount++;
       } catch (err) {
@@ -240,7 +253,7 @@ class PerformanceAnalystAgent extends BaseAgent {
         UPDATE learnings SET stage = 'provisional', last_validated_at = NOW()
         WHERE stage = 'candidate'
           AND sample_size >= 5
-          AND influenced_wins::float / NULLIF(influenced_trades, 0) > 0.55
+          AND influenced_wins::float / NULLIF(influenced_trades, 0) >= 0.55
       `);
     }
 

@@ -22,24 +22,27 @@ async function getById(id) {
 async function create(learning) {
   const { insight_text, category, confidence, symbols, asset_classes,
     supporting_trade_ids, source_agent, evidence,
-    parent_learning_id, learning_type, scope_level } = learning;
+    parent_learning_id, learning_type, scope_level,
+    sample_size, influenced_trades, influenced_wins } = learning;
 
   return queryOne(`
     INSERT INTO learnings (
       insight_text, category, confidence, symbols, asset_classes,
       supporting_trade_ids, source_agent, evidence,
-      parent_learning_id, learning_type, scope_level
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      parent_learning_id, learning_type, scope_level,
+      sample_size, influenced_trades, influenced_wins
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
     RETURNING *
   `, [insight_text, category, confidence || 'med',
     JSON.stringify(symbols), JSON.stringify(asset_classes),
     supporting_trade_ids, source_agent, JSON.stringify(evidence),
-    parent_learning_id, learning_type || 'observation', scope_level || 'specific']);
+    parent_learning_id, learning_type || 'observation', scope_level || 'specific',
+    sample_size || 0, influenced_trades || 0, influenced_wins || 0]);
 }
 
 async function invalidate(id, invalidated_by) {
   return queryOne(`
-    UPDATE learnings SET invalidated_by = $2, invalidated_at = NOW(), updated_at = NOW()
+    UPDATE learnings SET stage = 'invalidated', invalidated_by = $2, invalidated_at = NOW(), updated_at = NOW()
     WHERE id = $1 RETURNING *
   `, [id, invalidated_by]);
 }
