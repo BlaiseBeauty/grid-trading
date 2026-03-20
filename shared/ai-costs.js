@@ -11,7 +11,7 @@ const TOKEN_BUDGETS = {
   grid_synthesizer:  { max_input: 32000, max_output: 16000 },
   grid_risk_manager: { max_input: 6000,  max_output: 4000 },
   grid_performance:  { max_input: 10000, max_output: 8000 },
-  grid_pattern:      { max_input: 10000, max_output: 4000 },
+  grid_pattern:      { max_input: 10000, max_output: 8000 },
   // ORACLE (future)
   oracle_domain:     { max_input: 10000, max_output: 2500 },
   oracle_synthesis:  { max_input: 15000, max_output: 4000 },
