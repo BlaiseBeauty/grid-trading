@@ -119,8 +119,12 @@ async function routes(fastify) {
       `),
     ]);
 
+    const totalClosedTrades = await queryOne(`SELECT COUNT(*) as cnt FROM trades WHERE status = 'closed'`);
+    const closedTradeCount = parseInt(totalClosedTrades.cnt || '0');
+
     return {
       total: parseInt(totals.total),
+      bootstrap_mode: closedTradeCount < 100,
       by_stage: {
         candidate: parseInt(totals.candidate),
         provisional: parseInt(totals.provisional),
@@ -246,12 +250,22 @@ async function routes(fastify) {
       promotedToProvisional = r.rowCount;
     }
 
-    // 3. provisional → active (2+ distinct regimes)
-    const r2 = await query(`
-      UPDATE learnings SET stage = 'active', last_validated_at = NOW()
-      WHERE stage = 'provisional'
-        AND (SELECT COUNT(DISTINCT key) FROM jsonb_each(COALESCE(regime_breakdown, '{}'))) >= 2
-    `);
+    // 3. provisional → active
+    //    Bootstrap: sample_size >= 5 (regime diversity not required)
+    //    Learned: 2+ distinct regimes
+    let r2;
+    if (totalTrades < 100) {
+      r2 = await query(`
+        UPDATE learnings SET stage = 'active', last_validated_at = NOW()
+        WHERE stage = 'provisional' AND sample_size >= 5
+      `);
+    } else {
+      r2 = await query(`
+        UPDATE learnings SET stage = 'active', last_validated_at = NOW()
+        WHERE stage = 'provisional'
+          AND (SELECT COUNT(DISTINCT key) FROM jsonb_each(COALESCE(regime_breakdown, '{}'))) >= 2
+      `);
+    }
 
     // 4. active → decaying
     const r3 = await query(`

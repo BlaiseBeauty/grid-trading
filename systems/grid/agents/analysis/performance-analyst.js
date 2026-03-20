@@ -257,12 +257,23 @@ class PerformanceAnalystAgent extends BaseAgent {
       `);
     }
 
-    // 3. provisional → active: tested in 2+ distinct regimes
-    await queryAll(`
-      UPDATE learnings SET stage = 'active', last_validated_at = NOW()
-      WHERE stage = 'provisional'
-        AND (SELECT COUNT(DISTINCT key) FROM jsonb_each(COALESCE(regime_breakdown, '{}'))) >= 2
-    `);
+    // 3. provisional → active
+    //    Bootstrap (< 100 trades): sample_size >= 5 — regime diversity not required,
+    //    system may not have seen multiple regimes yet
+    //    Learned (>= 100 trades): 2+ distinct regimes in regime_breakdown
+    if (totalTrades < 100) {
+      await queryAll(`
+        UPDATE learnings SET stage = 'active', last_validated_at = NOW()
+        WHERE stage = 'provisional'
+          AND sample_size >= 5
+      `);
+    } else {
+      await queryAll(`
+        UPDATE learnings SET stage = 'active', last_validated_at = NOW()
+        WHERE stage = 'provisional'
+          AND (SELECT COUNT(DISTINCT key) FROM jsonb_each(COALESCE(regime_breakdown, '{}'))) >= 2
+      `);
+    }
 
     // 4. active → decaying: decayed_confidence < 0.4 OR win rate < 45%
     await queryAll(`

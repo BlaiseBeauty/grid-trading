@@ -116,17 +116,24 @@ export default function Learnings() {
     return l.stage === 'active' && l.decayed_confidence > 0.7 && winRate(l) > 60;
   }
 
-  function stageProgress(l) {
+  function stageProgress(l, bootstrapMode) {
     const wr = winRate(l);
     switch (l.stage) {
       case 'candidate': {
         const trades = l.influenced_trades || 0;
-        const pct = Math.min(trades / 5, 1) * 100;
-        return { label: `${trades}/5 trades`, pct, sublabel: wr != null ? `${wr}% WR (need >55%)` : 'Need >55% win rate' };
+        const target = bootstrapMode ? 3 : 5;
+        const pct = Math.min(trades / target, 1) * 100;
+        const wrLabel = bootstrapMode ? `${trades}/${target} trades` : `${trades}/${target} trades + 55% WR`;
+        return { label: wrLabel, pct, sublabel: wr != null ? `${wr}% WR (need >55%)` : 'Need >55% win rate' };
       }
       case 'provisional': {
         const rb = l.regime_breakdown || {};
         const regimes = Object.keys(rb).length;
+        if (bootstrapMode) {
+          const ss = l.sample_size || 0;
+          const pct = Math.min(ss / 5, 1) * 100;
+          return { label: `${ss}/5 samples`, pct, sublabel: ss >= 5 ? 'Ready for active' : 'Need 5 samples (bootstrap)' };
+        }
         const pct = Math.min(regimes / 2, 1) * 100;
         return { label: `${regimes}/2 regimes`, pct, sublabel: regimes < 2 ? 'Need 2 distinct regimes' : 'Ready for active' };
       }
@@ -188,7 +195,7 @@ export default function Learnings() {
       </div>
 
       {/* ── Tab Content ── */}
-      {tab === 'PIPELINE' && <PipelineView learnings={learnings} byStage={byStage} onInvalidate={handleInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} />}
+      {tab === 'PIPELINE' && <PipelineView learnings={learnings} byStage={byStage} onInvalidate={handleInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} bootstrapMode={stats?.bootstrap_mode ?? true} />}
       {tab === 'CONFLICTS' && <ConflictsView conflicts={conflicts} fading={fadingConflicts} onResolve={handleResolve} />}
       {tab === 'AUDIT' && <AuditView learnings={learnings} selectedId={selectedId} setSelectedId={setSelectedId} influence={influence} loading={loadingInfluence} winRate={winRate} confPct={confPct} />}
 
@@ -217,7 +224,7 @@ function KpiTile({ label, value, color, pulse, stagger }) {
 // TAB 1: PIPELINE (Kanban)
 // ════════════════════════════════════════════════════════════════
 
-function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHighPerf, stageProgress }) {
+function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHighPerf, stageProgress, bootstrapMode }) {
   return (
     <div className="ln-pipeline v2-animate-in">
       {STAGES.map(stage => {
@@ -230,7 +237,7 @@ function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHi
             </div>
             <div className="ln-column-cards">
               {items.map(l => (
-                <LearningCard key={l.id} learning={l} onInvalidate={onInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} />
+                <LearningCard key={l.id} learning={l} onInvalidate={onInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} bootstrapMode={bootstrapMode} />
               ))}
               {items.length === 0 && <div className="ln-empty-col">No learnings</div>}
             </div>
@@ -241,11 +248,11 @@ function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHi
   );
 }
 
-function LearningCard({ learning: l, onInvalidate, winRate, confPct, isHighPerf, stageProgress }) {
+function LearningCard({ learning: l, onInvalidate, winRate, confPct, isHighPerf, stageProgress, bootstrapMode }) {
   const wr = winRate(l);
   const conf = confPct(l);
   const hp = isHighPerf(l);
-  const prog = stageProgress(l);
+  const prog = stageProgress(l, bootstrapMode);
   const hasConflict = (l.unresolved_conflicts || 0) > 0;
 
   return (
