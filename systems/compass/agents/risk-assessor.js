@@ -133,7 +133,7 @@ Return ONLY valid JSON.`;
     const assessmentId = riskResult.rows[0].id;
 
     // Publish portfolio_risk_state to bus — GRID reads this for position sizing
-    const busId = await bus.publish({
+    const busId = (await bus.publish({
       source_system: 'compass',
       event_type:    'portfolio_risk_state',
       payload: {
@@ -144,7 +144,7 @@ Return ONLY valid JSON.`;
         assessment_summary:    result.assessment_summary || '',
       },
       expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(), // 4h
-    });
+    }))?.id;
 
     await query(
       'UPDATE compass_risk_assessments SET bus_event_id = $1 WHERE id = $2',

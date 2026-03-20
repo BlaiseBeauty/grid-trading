@@ -14,7 +14,7 @@ const TOKEN_BUDGETS = {
   grid_pattern:      { max_input: 10000, max_output: 8000 },
   // ORACLE (future)
   oracle_domain:     { max_input: 10000, max_output: 2500 },
-  oracle_synthesis:  { max_input: 15000, max_output: 4000 },
+  oracle_synthesis:  { max_input: 15000, max_output: 8000 },
   oracle_graveyard:  { max_input: 20000, max_output: 3000 },
   // COMPASS (future)
   compass_portfolio: { max_input: 12000, max_output: 2000 },

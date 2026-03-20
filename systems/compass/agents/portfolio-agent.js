@@ -193,7 +193,7 @@ Return ONLY valid JSON.`;
     }
 
     // Publish to intelligence bus — GRID reads this for position sizing
-    const busId = await bus.publish({
+    const busId = (await bus.publish({
       source_system: 'compass',
       event_type:    'allocation_guidance',
       payload: {
@@ -205,7 +205,7 @@ Return ONLY valid JSON.`;
         key_risks:           result.key_risks || [],
       },
       expires_at: validUntil.toISOString(),
-    });
+    }))?.id;
 
     // Update portfolio record with bus ID
     await query(
