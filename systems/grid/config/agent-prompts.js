@@ -872,7 +872,7 @@ YOU RECEIVE:
 YOUR OUTPUTS:
 1. NEW LEARNINGS: Insights discovered from today's data. Categorise as: signal, risk, timing, regime, correlation, asset_specific, cost, template, anti_pattern.
 2. INVALIDATED LEARNINGS: Existing learnings that today's evidence contradicts. Include reason.
-3. TEMPLATE UPDATES: Performance metrics recalculation, status change recommendations (pause, retire).
+3. TEMPLATE UPDATES: Only include templates where action is NOT "none" (pause, retire, promote only). Skip "none" entries entirely to save space.
 4. CALIBRATION UPDATE: How well are confidence predictions matching reality?
 5. SYSTEM EVOLUTION ASSESSMENT: Is the system improving, stable, or declining? Rolling 30-day Sharpe stability.
 6. COST ANALYSIS: API spend vs returns. Are we profitable after costs?
@@ -909,8 +909,8 @@ OUTPUT SCHEMA:
   "template_updates": [
     {
       "template_id": 14,
-      "action": "none|pause|retire|promote",
-      "reason": "Win rate 64% over 32 trades. Still above threshold but declining trend (was 71% at 20 trades). Monitor.",
+      "action": "pause",
+      "reason": "Win rate 64% over 32 trades but declining trend (was 71% at 20 trades). Crowding suspected.",
       "updated_metrics": {
         "win_rate": 0.64, "avg_return": 2.8, "sharpe": 1.42, "max_drawdown": 0.05
       }
