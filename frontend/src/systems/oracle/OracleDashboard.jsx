@@ -10,6 +10,7 @@ export default function OracleDashboard() {
   const [loading,     setLoading]     = useState(true);
   const [activeTab,   setActiveTab]   = useState('theses');
   const [calibration, setCalibration] = useState(null);
+  const [lastCycleAt, setLastCycleAt] = useState(null);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -28,6 +29,7 @@ export default function OracleDashboard() {
       setEvidence(e?.evidence || []);
       setGraveyard(g?.graveyard || []);
       setCalibration(cal);
+      setLastCycleAt(t?.last_cycle_at || null);
     } finally {
       setLoading(false);
     }
@@ -71,12 +73,15 @@ export default function OracleDashboard() {
         <div style={panelStyle}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <PanelTitle>Active Theses ({theses.length})</PanelTitle>
-            <button
-              onClick={() => api('/oracle/cycle/run', { method: 'POST', body: JSON.stringify({}) }).then(fetchAll)}
-              style={runButtonStyle}
-            >
-              RUN CYCLE
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {lastCycleAt && <LastRunBadge ts={lastCycleAt} />}
+              <button
+                onClick={() => api('/oracle/cycle/run', { method: 'POST', body: JSON.stringify({}) }).then(fetchAll)}
+                style={runButtonStyle}
+              >
+                RUN CYCLE
+              </button>
+            </div>
           </div>
           {theses.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -182,6 +187,7 @@ function ThesisCard({ thesis, onClick }) {
           {thesis.domain}
         </span>
       </div>
+      <AccuracyBadge trades={parseInt(thesis.accuracy_trades) || 0} wins={parseInt(thesis.accuracy_wins) || 0} />
     </div>
   );
 }
@@ -511,6 +517,61 @@ function CalibrationPanel({ calibration }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ── Accuracy Badge ────────────────────────────────────────────────────────────
+function AccuracyBadge({ trades, wins }) {
+  let colour = 'var(--t4)';
+  let label  = '—';
+
+  if (trades === 0) {
+    // nothing to show
+  } else if (trades <= 2) {
+    colour = 'var(--t4)';
+    label  = `~50% (${trades} trade${trades > 1 ? 's' : ''})`;
+  } else {
+    const pct = Math.round((wins / trades) * 100);
+    colour = pct >= 60 ? 'var(--profit)' : pct >= 40 ? 'var(--warn)' : 'var(--loss)';
+    label  = `${pct}% (${trades} trades)`;
+  }
+
+  return (
+    <div style={{ marginTop: 5 }}>
+      <span style={{
+        fontFamily: 'IBM Plex Mono', fontSize: 8,
+        color: colour, letterSpacing: '0.5px',
+        padding: '2px 5px', borderRadius: 3,
+        border: `1px solid ${colour}33`,
+        background: `${colour}11`,
+      }}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+// ── Last Run Badge ────────────────────────────────────────────────────────────
+function timeAgo(ts) {
+  const diff = Date.now() - new Date(ts).getTime();
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ago`;
+  if (h > 0)   return `${h}h ago`;
+  return `${m}m ago`;
+}
+
+function LastRunBadge({ ts }) {
+  const h     = (Date.now() - new Date(ts).getTime()) / 3600000;
+  const stale = h > 12;
+  return (
+    <span style={{
+      fontFamily: 'IBM Plex Mono', fontSize: 8,
+      color: stale ? 'var(--warn)' : 'var(--t4)',
+      letterSpacing: '0.5px',
+    }}>
+      LAST RUN: {timeAgo(ts)}
+    </span>
   );
 }
 

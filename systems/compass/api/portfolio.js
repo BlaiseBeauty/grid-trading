@@ -4,13 +4,35 @@ const { queryAll, queryOne, query } = require('../../../db/connection');
 
 module.exports = async function (fastify) {
 
-  // GET /api/compass/portfolio — latest portfolio guidance
+  // GET /api/compass/portfolio — latest portfolio guidance with drawdown + last-run
   fastify.get('/portfolio', { preHandler: fastify.authenticate },
     async (request, reply) => {
-      const portfolio = await queryOne(
-        `SELECT * FROM compass_portfolios ORDER BY created_at DESC LIMIT 1`
-      );
-      return reply.send({ portfolio: portfolio || null });
+      const [portfolio, health, drawdownData] = await Promise.all([
+        queryOne(`SELECT * FROM compass_portfolios ORDER BY created_at DESC LIMIT 1`),
+        queryOne(
+          `SELECT last_cycle_at FROM platform_system_health
+           WHERE system_name = 'compass' LIMIT 1`
+        ).catch(() => null),
+        queryOne(
+          `SELECT
+            MAX(total_value) AS peak,
+            (SELECT total_value FROM equity_snapshots ORDER BY created_at DESC LIMIT 1) AS current_val
+           FROM equity_snapshots
+           WHERE created_at > NOW() - INTERVAL '90 days'`
+        ).catch(() => null),
+      ]);
+
+      const peak       = parseFloat(drawdownData?.peak);
+      const currentVal = parseFloat(drawdownData?.current_val);
+      const current_drawdown_pct = (peak > 0 && !isNaN(currentVal))
+        ? parseFloat(((peak - currentVal) / peak * 100).toFixed(2))
+        : null;
+
+      return reply.send({
+        portfolio: portfolio || null,
+        last_cycle_at: health?.last_cycle_at || null,
+        current_drawdown_pct,
+      });
     }
   );
 

@@ -1,15 +1,30 @@
 'use strict';
 
-const { getActiveTheses, getThesisById, retireThesis } = require('../db/theses');
+const { getThesisById, retireThesis } = require('../db/theses');
 const { queryAll, queryOne } = require('../../../db/connection');
 
 module.exports = async function (fastify) {
 
-  // GET /api/oracle/theses — all active theses
+  // GET /api/oracle/theses — all active theses with accuracy stats
   fastify.get('/theses', { preHandler: fastify.authenticate },
     async (request, reply) => {
-      const theses = await getActiveTheses();
-      return reply.send({ theses, count: theses.length });
+      const [theses, health] = await Promise.all([
+        queryAll(
+          `SELECT ot.*,
+            COUNT(ttl.id)                                                           AS accuracy_trades,
+            COUNT(ttl.id) FILTER (WHERE ttl.aligned AND ttl.trade_outcome = 'win') AS accuracy_wins
+           FROM oracle_theses ot
+           LEFT JOIN thesis_trade_links ttl ON ttl.thesis_id = ot.thesis_id
+           WHERE ot.status = 'active'
+           GROUP BY ot.id
+           ORDER BY ot.conviction DESC`
+        ),
+        queryOne(
+          `SELECT last_cycle_at FROM platform_system_health
+           WHERE system_name = 'oracle' LIMIT 1`
+        ).catch(() => null),
+      ]);
+      return reply.send({ theses, count: theses.length, last_cycle_at: health?.last_cycle_at || null });
     }
   );
 

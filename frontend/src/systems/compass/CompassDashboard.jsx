@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { api } from '../../lib/api';
 
 export default function CompassDashboard() {
-  const [portfolio,   setPortfolio]   = useState(null);
-  const [risk,        setRisk]        = useState(null);
-  const [allocations, setAllocations] = useState([]);
-  const [rebalance,   setRebalance]   = useState([]);
-  const [history,     setHistory]     = useState([]);
-  const [loading,     setLoading]     = useState(true);
+  const [portfolio,    setPortfolio]    = useState(null);
+  const [risk,         setRisk]         = useState(null);
+  const [allocations,  setAllocations]  = useState([]);
+  const [rebalance,    setRebalance]    = useState([]);
+  const [history,      setHistory]      = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [lastCycleAt,  setLastCycleAt]  = useState(null);
+  const [drawdownPct,  setDrawdownPct]  = useState(null);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -26,6 +28,8 @@ export default function CompassDashboard() {
       setAllocations(a?.allocations || []);
       setRebalance(rb?.pending || []);
       setHistory(h?.history || []);
+      setLastCycleAt(p?.last_cycle_at || null);
+      setDrawdownPct(p?.current_drawdown_pct ?? null);
     } finally {
       setLoading(false);
     }
@@ -67,6 +71,15 @@ export default function CompassDashboard() {
               }}>
                 {portfolio.risk_posture}
               </div>
+              {lastCycleAt && (
+                <div style={{
+                  fontFamily: 'IBM Plex Mono', fontSize: 8,
+                  color: compassLastRunColour(lastCycleAt),
+                  marginTop: 4, letterSpacing: '0.5px',
+                }}>
+                  {compassLastRunLabel(lastCycleAt)}
+                </div>
+              )}
               <div style={{
                 fontFamily: 'Outfit', fontSize: 12, color: 'var(--t3)',
                 marginTop: 6, lineHeight: 1.5,
@@ -81,6 +94,21 @@ export default function CompassDashboard() {
               </span>
               <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 13, color: 'var(--t1)' }}>
                 {(parseFloat(portfolio.cash_weight) * 100).toFixed(0)}%
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+              <span style={{ fontFamily: 'Outfit', fontSize: 13, color: 'var(--t2)' }}>
+                Drawdown
+              </span>
+              <span style={{
+                fontFamily: 'IBM Plex Mono', fontSize: 13,
+                color: drawdownPct === null ? 'var(--t4)'
+                     : drawdownPct < 5    ? 'var(--profit)'
+                     : drawdownPct <= 10  ? 'var(--warn)'
+                     : 'var(--loss)',
+              }}>
+                {drawdownPct !== null ? `${drawdownPct.toFixed(1)}%` : '—'}
               </span>
             </div>
 
@@ -306,6 +334,28 @@ function PostureHistory({ history }) {
       })}
     </div>
   );
+}
+
+// ── Last-run helpers ───────────────────────────────────────────────────────────
+function compassTimeAgo(ts) {
+  const diff = Date.now() - new Date(ts).getTime();
+  const h = Math.floor(diff / 3600000);
+  const m = Math.floor((diff % 3600000) / 60000);
+  if (h >= 24) return `${Math.floor(h / 24)}d ago`;
+  if (h > 0)   return `${h}h ago`;
+  return `${m}m ago`;
+}
+
+function compassLastRunColour(ts) {
+  const h = (Date.now() - new Date(ts).getTime()) / 3600000;
+  return h > 12 ? 'var(--warn)' : 'var(--t4)';
+}
+
+function compassLastRunLabel(ts) {
+  const h = (Date.now() - new Date(ts).getTime()) / 3600000;
+  return h > 12
+    ? `LAST RUN: ${compassTimeAgo(ts)} · STALE`
+    : `LAST RUN: ${compassTimeAgo(ts)}`;
 }
 
 // ── Shared ─────────────────────────────────────────────────────────────────────

@@ -119,6 +119,15 @@ class OracleBaseAgent {
 
       const thesis = JSON.parse(clean.slice(start, end + 1));
 
+      // Recover name from summary if missing (LLM occasionally omits it)
+      if (!thesis.name && thesis.summary) {
+        const firstSentence = thesis.summary.split(/[.!?]/)[0].trim();
+        thesis.name = firstSentence.length > 8
+          ? firstSentence.slice(0, 80)
+          : `${thesis.domain} thesis`;
+        console.warn(`[${this.name}] name missing — recovered from summary: "${thesis.name}"`);
+      }
+
       // Validate required fields
       const required = ['name', 'domain', 'direction', 'conviction', 'time_horizon', 'summary'];
       for (const field of required) {
