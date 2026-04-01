@@ -3,6 +3,7 @@ const path = require('path');
 const fastify = require('fastify')({ logger: true });
 const { migrate } = require('./db/migrate');
 const logger = require('./services/logger');
+const orchestrator = require('./systems/grid/agents/orchestrator');
 
 const PORT = process.env.PORT || 3100;
 
@@ -831,6 +832,13 @@ async function start() {
     // Inject broadcast into intelligence bus so it can fan out WS events
     const bus = require('./shared/intelligence-bus');
     bus.init(broadcast);
+
+    // Bootstrap phase correction — runs before cron starts, corrects any stale phase
+    try {
+      await orchestrator.checkAndPromoteBootstrapPhase();
+    } catch (err) {
+      console.error('[BOOTSTRAP] Boot-time phase check failed:', err.message);
+    }
 
     // Start cron
     setupCron();
