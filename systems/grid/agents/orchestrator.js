@@ -741,7 +741,7 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality) {
 /**
  * Run the strategy layer: Regime → Synthesizer → Risk Manager → Execute.
  */
-async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false, systemMode = 'LEARNED') {
+async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false, systemMode = 'LEARNED', compassConstraints = null) {
   console.log(`[ORCHESTRATOR] Running strategy layer (cycle ${cycleNum})${quietMarket ? ' [QUIET MARKET]' : ''}...`);
 
   // Step 1: Classify market regime
@@ -947,6 +947,13 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     return { regime, proposals: [], approved: [], rejected: [], trades: [], standing_orders: standingOrders };
   }
 
+  // COMPASS reduce mode — keep only the highest-confidence proposal before Risk Manager
+  if (compassConstraints?.maxPositions === 1 && proposals.length > 1) {
+    proposals.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    const droppedSymbols = proposals.splice(1).map(p => p.symbol).join(', ');
+    console.log(`[COMPASS_GATE] Elevated risk: capped to 1 proposal (dropped: ${droppedSymbols})`);
+  }
+
   // Step 3: Risk Manager — validate proposals against limits
   console.log(`[ORCHESTRATOR] Passing ${proposals.length} proposals to Risk Manager`);
   for (const p of proposals) {
@@ -970,6 +977,14 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       })),
       rejected: riskDecision?.rejected || [],
     };
+    // COMPASS reduce mode — halve approved_size_pct so positions are half-sized
+    if (compassConstraints?.halveSizes && riskResult.approved.length > 0) {
+      riskResult.approved = riskResult.approved.map(t => ({
+        ...t,
+        approved_size_pct: (t.approved_size_pct || 1.0) * 0.5,
+      }));
+      console.log(`[COMPASS_GATE] Elevated risk: position sizes halved for ${riskResult.approved.length} approved trade(s)`);
+    }
     console.log(`[ORCHESTRATOR] Risk Manager: ${riskResult.approved.length} approved, ${riskResult.rejected.length} rejected`);
     if (broadcast) {
       broadcast('agent_complete', {
@@ -1705,6 +1720,76 @@ async function runCycle({ broadcast } = {}) {
     });
   }
 
+  // COMPASS risk gate — evaluate posture before spending any API budget
+  const COMPASS_ABORT_THRESHOLD  = parseFloat(process.env.COMPASS_ABORT_THRESHOLD  || '8.0');
+  const COMPASS_REDUCE_THRESHOLD = parseFloat(process.env.COMPASS_REDUCE_THRESHOLD || '6.5');
+  let compassConstraints = null;
+  try {
+    const [riskBusRow, postureBusRow] = await Promise.all([
+      dbQueryOne(`
+        SELECT payload FROM intelligence_bus
+        WHERE source_system = 'compass'
+          AND event_type    = 'portfolio_risk_state'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC LIMIT 1`),
+      dbQueryOne(`
+        SELECT payload FROM intelligence_bus
+        WHERE source_system = 'compass'
+          AND event_type    = 'allocation_guidance'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC LIMIT 1`),
+    ]);
+
+    if (!riskBusRow && !postureBusRow) {
+      console.warn('[COMPASS_GATE] No COMPASS signal in bus — proceeding without gate');
+    } else {
+      const riskScore = riskBusRow  ? parseFloat(riskBusRow.payload?.risk_score   ?? -1) : -1;
+      const posture   = postureBusRow ? String(postureBusRow.payload?.risk_posture || '').toUpperCase() : '';
+
+      const shouldAbort  = riskScore >= COMPASS_ABORT_THRESHOLD || posture === 'DEFENSIVE';
+      const shouldReduce = !shouldAbort && riskScore >= COMPASS_REDUCE_THRESHOLD;
+
+      if (shouldAbort) {
+        const riskLabel = riskScore >= 0 ? `${riskScore.toFixed(1)}/10` : 'N/A';
+        const reason    = `COMPASS ${posture || 'HIGH_RISK'} posture (risk: ${riskLabel})`;
+        console.log(`[ORCHESTRATOR] Cycle aborted — ${reason}`);
+        if (broadcast) {
+          broadcast('cycle_skipped', {
+            cycleNumber,
+            reason,
+            risk_score: riskScore >= 0 ? riskScore : null,
+            posture,
+          });
+        }
+        try {
+          await dbQuery(
+            `INSERT INTO agent_decisions (agent_name, agent_layer, cycle_number, reasoning, output_json)
+             VALUES ($1, $2, $3, $4, $5)`,
+            [
+              'COMPASS_GATE',
+              'strategy',
+              cycleNumber,
+              `Cycle skipped — ${reason}`,
+              JSON.stringify({ risk_score: riskScore, posture, threshold_abort: COMPASS_ABORT_THRESHOLD, threshold_reduce: COMPASS_REDUCE_THRESHOLD }),
+            ]
+          );
+        } catch (dbErr) {
+          console.error('[COMPASS_GATE] Failed to record gate decision:', dbErr.message);
+        }
+        return { cycleNumber, aborted: true, reason: 'compass_gate', risk_score: riskScore, posture };
+      }
+
+      if (shouldReduce) {
+        compassConstraints = { maxPositions: 1, halveSizes: true };
+        console.log(`[COMPASS_GATE] Elevated risk (${riskScore.toFixed(1)}/10) — capping to 1 position, halving sizes this cycle`);
+      } else {
+        console.log(`[COMPASS_GATE] Risk ${riskScore >= 0 ? riskScore.toFixed(1) + '/10' : 'N/A'} posture=${posture || 'NONE'} — proceeding normally`);
+      }
+    }
+  } catch (gateErr) {
+    console.error('[COMPASS_GATE] Gate check failed — proceeding without gate:', gateErr.message);
+  }
+
   // Step 0: Expire old standing orders
   let expiredStandingOrders = 0;
   try {
@@ -1775,7 +1860,7 @@ async function runCycle({ broadcast } = {}) {
   // Always run strategy layer — even in quiet markets, the Synthesizer should evaluate
   // existing standing orders and check for opportunistic entries
   try {
-    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket, systemMode);
+    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket, systemMode, compassConstraints);
   } catch (err) {
     console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
