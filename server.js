@@ -393,7 +393,7 @@ async function gridCycleAllowed(queryOneFn) {
 
 function setupCron() {
   const orchestrator = require('./systems/grid/agents/orchestrator');
-  const { recordTradeCloseLearningOutcome } = orchestrator;
+  const { recordTradeCloseLearningOutcome, checkAndPromoteBootstrapPhase } = orchestrator;
   const { linkTradeToTheses } = require('./shared/thesis-linker');
   const { queryOne: queryOneTrade } = require('./db/connection');
   const standingOrdersDb = require('./db/queries/standing-orders');
@@ -488,6 +488,10 @@ function setupCron() {
         console.error(`[LEARNING] processTradeCloseOutcomes failed for trade #${c.trade_id}:`, err.message);
       }
     }
+    // After processing all closed trades, re-check bootstrap phase promotion
+    checkAndPromoteBootstrapPhase().catch(err =>
+      console.error('[BOOTSTRAP] Phase check after trade close failed:', err.message)
+    );
   }
 
   // Stop loss / take profit enforcement — every minute
@@ -886,6 +890,11 @@ async function start() {
 
     // Eagerly initialise cycle number from DB so deploy log confirms the value
     await orchestrator.initCycleNumber().catch(err => console.error('[BOOT] Cycle number init failed:', err.message));
+
+    // Boot-time phase correction — ensures phase is up-to-date without waiting for next cycle
+    await orchestrator.checkAndPromoteBootstrapPhase().catch(err =>
+      console.error('[BOOT] Bootstrap phase check failed:', err.message)
+    );
 
     // Listen
     await fastify.listen({ port: PORT, host: '0.0.0.0' });

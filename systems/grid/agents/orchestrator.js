@@ -87,6 +87,52 @@ async function getSystemMode() {
   return { mode: 'LEARNED', trades, active };
 }
 
+/**
+ * Map cumulative closed trade count to the correct bootstrap phase.
+ * INFANT:    0–99
+ * LEARNING:  100–299
+ * MATURING:  300–999
+ * GRADUATED: 1000+
+ */
+function getPhaseForTradeCount(count) {
+  if (count >= 1000) return 'graduated';
+  if (count >= 300)  return 'maturing';
+  if (count >= 100)  return 'learning';
+  return 'infant';
+}
+
+/**
+ * Check the persisted bootstrap phase against the actual closed trade count.
+ * If the phase has advanced, INSERT a new bootstrap_status row (preserving history)
+ * and log the transition clearly.
+ * Safe to call repeatedly — no-ops when phase is already correct.
+ */
+async function checkAndPromoteBootstrapPhase() {
+  try {
+    const countRow = await dbQueryOne(
+      "SELECT COUNT(*) as count FROM trades WHERE status = 'closed'"
+    );
+    const closedCount = parseInt(countRow?.count || '0');
+    const correctPhase = getPhaseForTradeCount(closedCount);
+
+    const currentRow = await dbQueryOne(
+      'SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1'
+    );
+    const currentPhase = currentRow?.phase || 'infant';
+
+    if (currentPhase !== correctPhase) {
+      await dbQuery(
+        `INSERT INTO bootstrap_status (phase, total_closed_trades, entered_at)
+         VALUES ($1, $2, NOW())`,
+        [correctPhase, closedCount]
+      );
+      console.log(`[BOOTSTRAP] Phase promoted: ${currentPhase.toUpperCase()} → ${correctPhase.toUpperCase()} (${closedCount} trades)`);
+    }
+  } catch (err) {
+    console.error('[BOOTSTRAP] Phase promotion check failed:', err.message);
+  }
+}
+
 let cycleNumber = null;
 let cycleRunning = false;
 let cycleStartedAt = null;
@@ -1762,6 +1808,9 @@ async function runCycle({ broadcast } = {}) {
     console.error('[ORCHESTRATOR] Equity snapshot failed:', err.message);
   }
 
+  // Step 6b: Bootstrap phase promotion check (idempotent — runs every cycle)
+  await checkAndPromoteBootstrapPhase();
+
   const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(1);
   console.log(`[ORCHESTRATOR] ═══ Cycle ${cycleNumber} complete in ${elapsed}s ═══`);
   console.log(`[ORCHESTRATOR] Knowledge: ${knowledge.filter(k => k.status === 'fulfilled').length}/${knowledge.length} agents succeeded`);
@@ -1949,4 +1998,5 @@ module.exports = {
   isCycleRunning: () => cycleRunning,
   initCycleNumber,
   recordTradeCloseLearningOutcome,
+  checkAndPromoteBootstrapPhase,
 };
