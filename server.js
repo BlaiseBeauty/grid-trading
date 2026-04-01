@@ -699,6 +699,38 @@ function setupCron() {
     }
   });
 
+  // Daily cost summary at 00:00 UTC — log spend and alert if over threshold
+  cron.schedule('0 0 * * *', async () => {
+    const { queryOne: costQuery } = require('./db/connection');
+    try {
+      const [costRow, tradeRow] = await Promise.all([
+        costQuery(`
+          SELECT
+            COALESCE(SUM(cost_usd), 0)::float       AS total_cost,
+            COUNT(DISTINCT cycle_id)::int            AS cycles
+          FROM platform_ai_costs
+          WHERE created_at >= CURRENT_DATE
+            AND source_system = 'grid'
+        `),
+        costQuery(`
+          SELECT COUNT(*)::int AS trades_today
+          FROM trades
+          WHERE status = 'closed' AND closed_at >= CURRENT_DATE
+        `),
+      ]);
+      const spend  = parseFloat(costRow?.total_cost || 0);
+      const cycles = parseInt(costRow?.cycles       || 0);
+      const trades = parseInt(tradeRow?.trades_today || 0);
+      console.log(`[COSTS] Daily spend: $${spend.toFixed(2)} | Cycles run: ${cycles} | Trades executed: ${trades}`);
+      if (spend > 5.00) {
+        broadcast('cost_alert', { daily_spend: spend, cycles, trades, threshold: 5.00 });
+        console.warn(`[COSTS] ALERT: Daily spend $${spend.toFixed(2)} exceeds $5.00 threshold`);
+      }
+    } catch (err) {
+      console.error('[COSTS] Daily summary failed:', err.message);
+    }
+  });
+
   // Broadcast live prices every 10 seconds
 
   setInterval(async () => {

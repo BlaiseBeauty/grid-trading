@@ -11,7 +11,7 @@ const { persistPatterns } = require('../pattern-store');
 
 class PatternDiscoveryAgent extends BaseAgent {
   constructor() {
-    super({ name: 'pattern_discovery', layer: 'analysis', model: 'claude-opus-4-6', costTier: 'grid_pattern' });
+    super({ name: 'pattern_discovery', layer: 'analysis', model: 'claude-sonnet-4-6', costTier: 'grid_pattern' });
   }
 
   /**

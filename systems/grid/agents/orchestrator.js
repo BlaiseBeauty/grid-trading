@@ -677,7 +677,7 @@ async function cacheIndicators(indicators) {
 /**
  * Run all knowledge agents in parallel.
  */
-async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality) {
+async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality, bootstrapPhase = 'infant') {
   console.log(`[ORCHESTRATOR] Running knowledge layer (cycle ${cycleNum})...`);
 
   // Run in batches of 2 to stay within rate limits (30k input tokens/min)
@@ -693,6 +693,7 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality) {
           symbols: trackedSymbols,
           indicators,
           cycleNumber: cycleNum,
+          bootstrapPhase,
           // Inject data quality so agents can adjust confidence when data is degraded
           ...(dataQuality?.status === 'degraded' ? { data_quality: 'degraded' } : {}),
         }).then(decision => {
@@ -1712,6 +1713,11 @@ async function runCycle({ broadcast } = {}) {
   const { mode: systemMode, trades: closedTrades, active: activeLearnings } = await getSystemMode();
   console.log(`[ORCHESTRATOR] System mode: ${systemMode} (${closedTrades} closed trades, ${activeLearnings} active learnings)`);
 
+  // Read bootstrap phase once per cycle — drives phase-gated token budgets in all agents
+  const bootstrapPhaseRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1').catch(() => null);
+  const bootstrapPhase = bootstrapPhaseRow?.phase || 'infant';
+  console.log(`[ORCHESTRATOR] Bootstrap phase: ${bootstrapPhase}`);
+
   // Broadcast cycle start
   if (broadcast) {
     broadcast('cycle_start', {
@@ -1731,17 +1737,19 @@ async function runCycle({ broadcast } = {}) {
         WHERE source_system = 'compass'
           AND event_type    = 'portfolio_risk_state'
           AND (expires_at IS NULL OR expires_at > NOW())
+          AND created_at   > NOW() - INTERVAL '24 hours'
         ORDER BY created_at DESC LIMIT 1`),
       dbQueryOne(`
         SELECT payload FROM intelligence_bus
         WHERE source_system = 'compass'
           AND event_type    = 'allocation_guidance'
           AND (expires_at IS NULL OR expires_at > NOW())
+          AND created_at   > NOW() - INTERVAL '24 hours'
         ORDER BY created_at DESC LIMIT 1`),
     ]);
 
     if (!riskBusRow && !postureBusRow) {
-      console.warn('[COMPASS_GATE] No COMPASS signal in bus — proceeding without gate');
+      console.warn('[COMPASS_GATE] No fresh COMPASS signal in bus (stale or absent) — proceeding without gate');
     } else {
       const riskScore = riskBusRow  ? parseFloat(riskBusRow.payload?.risk_score   ?? -1) : -1;
       const posture   = postureBusRow ? String(postureBusRow.payload?.risk_posture || '').toUpperCase() : '';
@@ -1790,6 +1798,36 @@ async function runCycle({ broadcast } = {}) {
     console.error('[COMPASS_GATE] Gate check failed — proceeding without gate:', gateErr.message);
   }
 
+  // Consecutive no-trade check — conserve API budget if Synthesizer has been idle
+  // Skipped in live-trading mode so real positions are never missed
+  if (process.env.LIVE_TRADING_ENABLED !== 'true') {
+    try {
+      const recentSynth = await dbQueryAll(`
+        SELECT output_json->'actions' AS actions
+        FROM agent_decisions
+        WHERE agent_name = 'synthesizer'
+          AND output_json IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 3
+      `);
+      if (recentSynth.length === 3) {
+        const allNoTrade = recentSynth.every(r => {
+          const actions = r.actions;
+          return !actions || (Array.isArray(actions) && actions.length === 0);
+        });
+        if (allNoTrade) {
+          console.log('[ORCHESTRATOR] Cycle skipped — 3 consecutive no-trade decisions, conserving API budget');
+          if (broadcast) {
+            broadcast('cycle_skipped', { cycleNumber, reason: 'consecutive_no_trade' });
+          }
+          return { cycleNumber, aborted: true, reason: 'consecutive_no_trade' };
+        }
+      }
+    } catch (noTradeErr) {
+      console.warn('[ORCHESTRATOR] No-trade check failed — proceeding:', noTradeErr.message);
+    }
+  }
+
   // Step 0: Expire old standing orders
   let expiredStandingOrders = 0;
   try {
@@ -1828,7 +1866,7 @@ async function runCycle({ broadcast } = {}) {
 
   // Step 3: Run knowledge agents (parallel — emit signals)
   // Inject data quality status so agents can adjust confidence when degraded
-  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast, dataQuality);
+  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast, dataQuality, bootstrapPhase);
 
   // Step 3.5: Active Position Management
   let positionReview = { reviews: [], actions: [] };
@@ -1866,6 +1904,8 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // Step 5: Run analysis layer (every Nth cycle — not every cycle)
+  // cycleNumber is derived from COUNT(cycle_reports) in DB via decisionsDb.getLastCycleNumber()
+  // — immune to in-memory resets on restart, always DB-persisted.
   const analysisInterval = systemMode === 'BOOTSTRAP' ? ANALYSIS_INFANT_EVERY_N : ANALYSIS_EVERY_N_CYCLES;
   const shouldRunAnalysis = cycleNumber % analysisInterval === 0;
   let analysis = [];

@@ -9,7 +9,7 @@ const learningsDb = require('../../../../db/queries/learnings');
 
 class PerformanceAnalystAgent extends BaseAgent {
   constructor() {
-    super({ name: 'performance_analyst', layer: 'analysis', model: 'claude-opus-4-6', costTier: 'grid_performance' });
+    super({ name: 'performance_analyst', layer: 'analysis', model: 'claude-sonnet-4-6', costTier: 'grid_performance' });
   }
 
   /**

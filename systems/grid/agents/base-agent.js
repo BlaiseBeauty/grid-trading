@@ -104,7 +104,17 @@ class BaseAgent {
     let inputTokens = 0, outputTokens = 0, costUsd = 0;
     try {
       // Call Claude with retry on rate limit (streaming for long requests)
-      const rawMaxTokens = this.promptKey === 'strategySynthesizer' ? 32000 : 8192;
+      // Phase-aware token budgets — reduce output during INFANT/LEARNING to cut costs
+      const bootstrapPhase = extraContext?.bootstrapPhase || 'infant';
+      const isEarlyPhase = bootstrapPhase === 'infant' || bootstrapPhase === 'learning';
+      let rawMaxTokens;
+      if (this.promptKey === 'strategySynthesizer') {
+        rawMaxTokens = 4096; // Opus synthesis — fixed budget always (was 32000)
+      } else if (this.layer === 'knowledge') {
+        rawMaxTokens = isEarlyPhase ? 1024 : 2048; // phase-gated for Layer 1 agents
+      } else {
+        rawMaxTokens = 8192; // strategy/analysis agents — unchanged
+      }
       const maxTokens = aiCosts.clampMaxTokens(this.costTier, rawMaxTokens);
       let response;
       let outputText = '';
@@ -157,7 +167,7 @@ class BaseAgent {
 
           const retryStream = await client.messages.stream({
             model: this.model,
-            max_tokens: 64000,
+            max_tokens: Math.min(64000, maxTokens * 2),
             system: systemPrompt,
             messages: [{ role: 'user', content: retryPrompt }],
           });
