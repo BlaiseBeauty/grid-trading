@@ -673,6 +673,23 @@ async function buildSynthesizerContext(trigger) {
   const forcedExploration = trigger.forcedExploration || false;
   const paperMode = process.env.LIVE_TRADING_ENABLED !== 'true';
 
+  // ── COMPASS state injection (reads from intelligence bus) ─────────────────
+  let compassState = null;
+  try {
+    const [compassRiskRow, compassPostureRow] = await Promise.all([
+      queryOne(`SELECT payload FROM intelligence_bus WHERE source_system = 'compass' AND event_type = 'portfolio_risk_state' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1`),
+      queryOne(`SELECT payload FROM intelligence_bus WHERE source_system = 'compass' AND event_type = 'allocation_guidance' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1`),
+    ]);
+    if (compassRiskRow || compassPostureRow) {
+      compassState = {
+        risk_score: compassRiskRow ? parseFloat(compassRiskRow.payload?.risk_score ?? -1) : null,
+        risk_posture: compassPostureRow ? String(compassPostureRow.payload?.risk_posture || '').toUpperCase() : null,
+      };
+    }
+  } catch (err) {
+    console.warn('[SYNTH] Failed to fetch COMPASS state:', err.message);
+  }
+
   // ── Oracle thesis injection (reads from intelligence bus) ────────────────
   let oracleThesisContext = null;
   try {
@@ -757,11 +774,15 @@ async function buildSynthesizerContext(trigger) {
       hours_since_last_trade: hoursSinceLastTrade,
       forced_exploration: forcedExploration,
       oracle_theses: oracleThesisContext,
+      compass_state: compassState,
     },
     section3_memory: memory,
     section4_task: (isBootstrap
-      ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating trade volume for the learning system. Match signals against templates. Propose trades at lower confidence thresholds (>=50%). Prefer action over inaction. Full reasoning required.`
+      ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating quality trade data for the learning system. Match signals against templates. Minimum confidence threshold is 70%. Full reasoning required.`
       : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`) + oracleInstruction + patternContext
+      + (compassState?.risk_posture === 'DEFENSIVE' || (compassState?.risk_score != null && compassState.risk_score >= 7.0)
+        ? `\nCOMPASS ALERT: DEFENSIVE posture active (risk: ${compassState.risk_score}/10). You MUST NOT propose any LONG or BUY trade this cycle. This overrides all other instructions.`
+        : '')
   });
   console.log('[SYNTH] context length:', JSON.stringify(context).length);
   return warnIfLarge('strategy_synthesizer', context);

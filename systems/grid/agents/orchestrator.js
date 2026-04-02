@@ -1100,6 +1100,19 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
           if (row) trade.entry_price = parseFloat(row.close);
         } catch (e) { /* will fail at calculateQuantity if still null */ }
       }
+      // SL minimum distance: reject stops too tight for crypto 4h noise (< 1.5%)
+      if (trade.entry_price && trade.sl_price) {
+        const slDistance = Math.abs(trade.entry_price - trade.sl_price) / trade.entry_price;
+        if (slDistance < 0.015) {
+          console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — SL too tight: ${(slDistance * 100).toFixed(2)}% < 1.5% minimum`);
+          await dbQuery(
+            `INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'sl_too_tight', $5, NOW())`,
+            [cycleNum, trade.symbol, trade.direction, trade.confidence, `SL distance ${(slDistance * 100).toFixed(2)}% < 1.5% minimum (entry=${trade.entry_price}, sl=${trade.sl_price})`]
+          );
+          continue;
+        }
+      }
+
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
       const result = await executeTrade({
         symbol: trade.symbol,
@@ -1727,7 +1740,7 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // COMPASS risk gate — evaluate posture before spending any API budget
-  const COMPASS_ABORT_THRESHOLD  = parseFloat(process.env.COMPASS_ABORT_THRESHOLD  || '8.0');
+  const COMPASS_ABORT_THRESHOLD  = parseFloat(process.env.COMPASS_ABORT_THRESHOLD  || '7.0');
   const COMPASS_REDUCE_THRESHOLD = parseFloat(process.env.COMPASS_REDUCE_THRESHOLD || '6.5');
   let compassConstraints = null;
   try {

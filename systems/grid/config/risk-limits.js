@@ -18,7 +18,7 @@ const LIVE_LIMITS = {
 
   // Quality gates
   MIN_RISK_REWARD_RATIO: 1.5,
-  MIN_CONFIDENCE_TO_TRADE: 55,      // Calibrated confidence threshold
+  MIN_CONFIDENCE_TO_TRADE: 70,      // Calibrated confidence threshold
   MIN_SIGNAL_COMPLEXITY: 2,         // Minimum signals from different domains
 
   // Event blackout
@@ -30,7 +30,7 @@ const PAPER_OVERRIDES = {
   MIN_POSITION_PCT: 3,              // 3% minimum (take meaningful positions)
   MAX_SINGLE_POSITION_PCT: 8,       // 8% maximum per position
   MAX_OPEN_POSITIONS: 8,
-  MIN_CONFIDENCE_TO_TRADE: 55,      // 55% confidence threshold
+  MIN_CONFIDENCE_TO_TRADE: 70,      // 70% confidence threshold
   MAX_SINGLE_TRADE_LOSS_PCT: 5,     // 5% risk per trade
 };
 
@@ -53,21 +53,21 @@ module.exports = {
       MAX_SINGLE_POSITION_PCT: 2,
       MAX_OPEN_POSITIONS: 3,
       MAX_DAILY_LOSS_PCT: 3,
-      MIN_CONFIDENCE_TO_TRADE: 55,
+      MIN_CONFIDENCE_TO_TRADE: 70,
       PAPER_ONLY: true,
     },
     learning: {
       MAX_SINGLE_POSITION_PCT: 3,
       MAX_OPEN_POSITIONS: 5,
       MAX_DAILY_LOSS_PCT: 2,
-      MIN_CONFIDENCE_TO_TRADE: 65,
+      MIN_CONFIDENCE_TO_TRADE: 70,
       PAPER_ONLY: true,
     },
     maturing: {
       MAX_SINGLE_POSITION_PCT: 4,
       MAX_OPEN_POSITIONS: 6,
       MAX_DAILY_LOSS_PCT: 2.5,
-      MIN_CONFIDENCE_TO_TRADE: 60,
+      MIN_CONFIDENCE_TO_TRADE: 70,
       PAPER_ONLY: false,
     },
     graduated: null, // Use standard limits
