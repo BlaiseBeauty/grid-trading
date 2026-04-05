@@ -1767,8 +1767,8 @@ async function runCycle({ broadcast } = {}) {
       const riskScore = riskBusRow  ? parseFloat(riskBusRow.payload?.risk_score   ?? -1) : -1;
       const posture   = postureBusRow ? String(postureBusRow.payload?.risk_posture || '').toUpperCase() : '';
 
-      const shouldAbort  = riskScore >= COMPASS_ABORT_THRESHOLD || posture === 'DEFENSIVE';
-      const shouldReduce = !shouldAbort && riskScore >= COMPASS_REDUCE_THRESHOLD;
+      const shouldAbort  = riskScore >= COMPASS_ABORT_THRESHOLD;
+      const shouldReduce = !shouldAbort && (riskScore >= COMPASS_REDUCE_THRESHOLD || posture === 'DEFENSIVE');
 
       if (shouldAbort) {
         const riskLabel = riskScore >= 0 ? `${riskScore.toFixed(1)}/10` : 'N/A';

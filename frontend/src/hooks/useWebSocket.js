@@ -63,6 +63,7 @@ export function useWebSocket() {
               cs.onCycleComplete(msg.data);
               break;
             case 'cycle_aborted':
+            case 'cycle_skipped':
               s.setCycleStatus(null);
               cs.onCycleAborted(msg.data);
               break;
