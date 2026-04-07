@@ -1,36 +1,32 @@
 const API_BASE = '/api';
 
-// H-16: Access token stored in memory only (not localStorage)
-// Refresh token is in an HttpOnly cookie set by the server
-let accessToken = localStorage.getItem('grid_token'); // Migration: read existing token
-let refreshToken = localStorage.getItem('grid_refresh'); // Migration: read existing token
+// Access token in memory only — never localStorage.
+// Refresh token lives in an HttpOnly cookie set by the server (not accessible to JS).
+let accessToken = null;
 
-export function setTokens(access, refresh) {
+export function setTokens(access) {
   accessToken = access;
-  refreshToken = refresh;
-  localStorage.setItem('grid_token', access);
-  localStorage.setItem('grid_refresh', refresh);
 }
 
 export function clearTokens() {
   accessToken = null;
-  refreshToken = null;
-  localStorage.removeItem('grid_token');
-  localStorage.removeItem('grid_refresh');
 }
 
 export function getToken() { return accessToken; }
 
 async function refreshAccessToken() {
-  if (!refreshToken) throw new Error('No refresh token');
   const res = await fetch(`${API_BASE}/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refreshToken }),
+    credentials: 'include', // Send HttpOnly refreshToken cookie
+    body: JSON.stringify({}),
   });
-  if (!res.ok) { clearTokens(); throw new Error('Refresh failed'); }
+  if (!res.ok) {
+    clearTokens();
+    throw new Error('Refresh failed');
+  }
   const data = await res.json();
-  setTokens(data.accessToken, data.refreshToken);
+  setTokens(data.accessToken);
   return data.accessToken;
 }
 
@@ -40,16 +36,17 @@ export async function api(path, opts = {}) {
 
   let res = await fetch(`${API_BASE}${path}`, {
     signal: AbortSignal.timeout(30000),
+    credentials: 'include',
     ...opts,
     headers,
   });
 
   // Auto-refresh on 401
-  if (res.status === 401 && refreshToken) {
+  if (res.status === 401) {
     try {
       const newToken = await refreshAccessToken();
       headers.Authorization = `Bearer ${newToken}`;
-      res = await fetch(`${API_BASE}${path}`, { ...opts, headers });
+      res = await fetch(`${API_BASE}${path}`, { ...opts, credentials: 'include', headers });
     } catch {
       clearTokens();
       window.location.reload();
@@ -75,6 +72,7 @@ export async function api(path, opts = {}) {
 export async function login(email, password) {
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',
+    credentials: 'include', // Receive HttpOnly refreshToken cookie
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
@@ -83,29 +81,33 @@ export async function login(email, password) {
     throw new Error(err.error || 'Login failed');
   }
   const data = await res.json();
-  setTokens(data.accessToken, data.refreshToken);
+  setTokens(data.accessToken); // Only store access token in memory
   return data;
 }
 
 export async function logout() {
-  try { await api('/auth/logout', { method: 'POST' }); } catch {}
+  try {
+    await api('/auth/logout', { method: 'POST' });
+  } catch (err) {
+    // Server invalidation failed — still clear local state
+    console.error('[AUTH] Logout API failed (server may not have invalidated token):', err.message);
+  }
   clearTokens();
 }
 
-// H-16: Attempt silent refresh using HttpOnly cookie on page reload
+// Attempt silent refresh using HttpOnly cookie on page reload
 export async function silentRefresh() {
   try {
     const res = await fetch(`${API_BASE}/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      credentials: 'include', // Send HttpOnly cookies
+      credentials: 'include',
       body: JSON.stringify({}),
     });
     if (!res.ok) return false;
     const data = await res.json();
     if (data.accessToken) {
-      accessToken = data.accessToken;
-      // Don't store in localStorage — keep in memory only
+      setTokens(data.accessToken);
       return true;
     }
   } catch {}

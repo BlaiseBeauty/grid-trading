@@ -25,10 +25,12 @@ export function useWebSocket() {
         return;
       }
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`);
+      const ws = new WebSocket(`${proto}//${window.location.host}/ws`);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        // Authenticate via first message — token never sent in URL
+        ws.send(JSON.stringify({ type: 'auth', token }));
         storeRef.current.addFeedItem({ type: 'system', message: 'Connected to GRID' });
       };
 

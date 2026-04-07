@@ -112,7 +112,7 @@ module.exports = async function (fastify) {
   );
 
   // POST /api/compass/cycle/run — manually trigger COMPASS cycle
-  fastify.post('/cycle/run', { preHandler: fastify.authenticate },
+  fastify.post('/cycle/run', { preHandler: fastify.authenticate, config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
     async (request, reply) => {
       const { runCycle } = require('../agents/orchestrator');
       try {

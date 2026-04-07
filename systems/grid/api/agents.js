@@ -52,6 +52,7 @@ async function routes(fastify) {
   // POST /api/agents/cycle — manually trigger a full agent cycle
   fastify.post('/agents/cycle', {
     schema: { body: { type: 'object', properties: {} } },
+    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     // Guard: reject if a cycle is already running
     if (orchestrator.isCycleRunning()) {

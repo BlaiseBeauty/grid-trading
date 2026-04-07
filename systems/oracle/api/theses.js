@@ -117,7 +117,7 @@ module.exports = async function (fastify) {
   );
 
   // POST /api/oracle/cycle/run — manually trigger ORACLE cycle
-  fastify.post('/cycle/run', { preHandler: fastify.authenticate },
+  fastify.post('/cycle/run', { preHandler: fastify.authenticate, config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
     async (request, reply) => {
       const { runCycle } = require('../agents/orchestrator');
       try {

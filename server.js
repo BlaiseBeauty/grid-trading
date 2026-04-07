@@ -11,13 +11,21 @@ const PORT = process.env.PORT || 3100;
 async function registerPlugins() {
   const allowedOrigins = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
-    : true; // Allow all in development
+    : ['http://localhost:5173', 'http://localhost:3100']; // Explicit dev whitelist — never allow *
   await fastify.register(require('@fastify/cors'), {
     origin: allowedOrigins,
     credentials: true,
   });
 
   await fastify.register(require('@fastify/cookie'));
+
+  // Rate limiting — protect expensive AI/cycle routes from abuse
+  await fastify.register(require('@fastify/rate-limit'), {
+    global: false, // Only apply where explicitly configured
+    max: 20,
+    timeWindow: '1 minute',
+    errorResponseBuilder: () => ({ error: 'Too many requests — slow down' }),
+  });
 
   // M-23: Handle empty POST bodies gracefully (Fastify rejects empty body with content-type: json)
   fastify.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
@@ -178,25 +186,38 @@ async function registerRoutes() {
   // COMPASS API routes
   await reg('compass/portfolio', './systems/compass/api/portfolio', { prefix: '/api/compass' });
 
-  // WebSocket endpoint — requires JWT token as query parameter
+  // WebSocket endpoint — auth via first message (token never in URL/logs)
   try {
     await fastify.register(async function (fastify) {
-      fastify.get('/ws', { websocket: true }, (socket, req) => {
-        // Verify JWT from query string: /ws?token=<jwt>
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const token = url.searchParams.get('token');
-        if (!token) {
-          socket.close(4401, 'Authentication required');
-          return;
-        }
-        try {
-          jwt.verify(token, process.env.JWT_SECRET);
-        } catch {
-          socket.close(4401, 'Invalid token');
-          return;
-        }
-        wsClients.add(socket);
-        socket.on('close', () => wsClients.delete(socket));
+      fastify.get('/ws', { websocket: true }, (socket) => {
+        let authenticated = false;
+
+        // Close unauthenticated connections after 5s
+        const authTimeout = setTimeout(() => {
+          if (!authenticated) socket.close(4401, 'Authentication timeout');
+        }, 5000);
+
+        socket.on('message', (raw) => {
+          if (authenticated) return; // ignore subsequent messages
+          try {
+            const msg = JSON.parse(raw.toString());
+            if (msg.type === 'auth' && msg.token) {
+              jwt.verify(msg.token, process.env.JWT_SECRET);
+              authenticated = true;
+              clearTimeout(authTimeout);
+              wsClients.add(socket);
+            } else {
+              socket.close(4401, 'Authentication required');
+            }
+          } catch {
+            socket.close(4401, 'Invalid token');
+          }
+        });
+
+        socket.on('close', () => {
+          clearTimeout(authTimeout);
+          wsClients.delete(socket);
+        });
       });
     });
     console.log('[ROUTES] ✓ WebSocket /ws registered');
