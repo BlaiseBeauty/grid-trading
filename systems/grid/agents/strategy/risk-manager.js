@@ -240,6 +240,16 @@ class RiskManagerAgent extends BaseAgent {
         reasons.push(`correlated_exposure_limit (${correlatedExposure.toFixed(1)}% > ${limits.MAX_CORRELATED_EXPOSURE_PCT}%)`);
       }
 
+      // R:R check — only for proposals with all three prices known (limit/standing orders)
+      if (proposal.entry_price && proposal.tp_price && proposal.sl_price) {
+        const ROUND_TRIP_COST = proposal.entry_price * 0.002;
+        const reward = Math.abs(proposal.tp_price - proposal.entry_price) - ROUND_TRIP_COST;
+        const risk   = Math.abs(proposal.entry_price - proposal.sl_price);
+        if (risk > 0 && reward / risk < riskLimitsConfig.MIN_RISK_REWARD_RATIO) {
+          reasons.push(`low_risk_reward (fee-adjusted R:R ${(reward / risk).toFixed(2)} < ${riskLimitsConfig.MIN_RISK_REWARD_RATIO})`);
+        }
+      }
+
       // SCRAM check
       if (state.scramLevel === 'crisis' || state.scramLevel === 'emergency') {
         reasons.push(`scram_active (${state.scramLevel})`);

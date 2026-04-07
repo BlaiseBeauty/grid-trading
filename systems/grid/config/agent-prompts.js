@@ -482,11 +482,30 @@ RULES:
 - If bootstrap is INFANT: propose PAPER trades only — the system needs paper trade data to graduate. Be selective but not silent. LEARNING: only highest-confidence templates.
 - ALWAYS explain your reasoning. What signals matched. What you rejected and why. What learnings influenced you.
 
+STOP LOSS & TAKE PROFIT METHODOLOGY (mandatory for every proposal):
+You MUST calculate SL and TP using ATR14 from the volatility context. Never use round numbers or gut estimates.
+
+SL CALCULATION:
+- Long: SL = entry_price − (ATR14 × 2.0). Round to 2 significant decimal places.
+- Short: SL = entry_price + (ATR14 × 2.0). Round to 2 significant decimal places.
+- In volatile regimes (regime = 'volatile'): use ATR14 × 2.5 multiplier.
+- In ranging regimes (regime = 'ranging'): use ATR14 × 1.5 multiplier (tighter, near S/R).
+- Minimum SL distance: 1.5% of entry_price. If ATR-based SL is tighter than this, use 1.5%.
+- Maximum SL distance: 6% of entry_price. If ATR gives a wider SL, the setup is too risky — do not propose.
+
+TP CALCULATION:
+- Minimum net R:R (after 0.2% round-trip fees) must be ≥ 2.0.
+- Effective R:R = (|TP − entry| − entry × 0.002) / |entry − SL|
+- This means your TP must be at minimum: entry + (SL_distance × 2.0) + (entry × 0.002) for longs
+- Or for shorts: entry − (SL_distance × 2.0) − (entry × 0.002)
+- Prefer 2.5–3.0 R:R when the setup is strong. Use the next significant resistance (long) or support (short) as a natural TP cap.
+- ALWAYS include the calculated risk_reward in exit_plan (it is validated in code — if R:R < 1.5 net of fees, the trade will be code-rejected).
+
 PAPER TRADING MODE (when LIVE_TRADING_ENABLED=false):
 In paper mode, your primary goal is GENERATING QUALITY LEARNING DATA, not capital preservation.
 - The minimum confidence threshold is 70%. A well-chosen trade at 70%+ confidence generates better learning data than a low-probability gamble.
 - Every paper trade teaches the system something — about template accuracy, regime behaviour, timing patterns, and signal reliability.
-- If the risk/reward is reasonable (>1.5) and you have at least 2 confirming signals from different domains at 70%+ confidence, propose the trade.
+- If the fee-adjusted R:R is ≥ 2.0 and you have at least 3 confirming signals from different domains at 70%+ confidence, propose the trade.
 - Apply the same directional guards in paper mode as in live trading. Paper mode explores setup quality, not random noise.
 
 HARD DIRECTIONAL RULE:
@@ -520,10 +539,10 @@ LIVE MODE enforcement (LIVE_TRADING_ENABLED=true):
 
 PAPER/BOOTSTRAP MODE enforcement (LIVE_TRADING_ENABLED=false):
 - The consensus guard is ADVISORY, not blocking. You MUST still report the tally, but you MAY propose trades even with poor consensus.
-- If 5+ domains are neutral/opposing: cap confidence at 50%, use half position size, and mark exploration: true. DO NOT BLOCK.
+- If 5+ domains are neutral/opposing: cap confidence at 55%, use half position size, and mark exploration: true. DO NOT BLOCK.
 - Domains with NO signals count as "absent" not "opposing" — a domain that didn't fire is not the same as a domain that disagrees.
-- The system needs trade data to learn. A paper trade with 2/8 domains active is MORE VALUABLE than no trade at all.
-- NEVER cite the consensus guard as a reason to produce zero proposals in paper mode. If signals exist, propose something.
+- Minimum for any proposal: at least 3 active domains must agree on direction (not just be absent). A trade with only 1-2 domains generates noisy learning data that corrupts the model.
+- NEVER cite the consensus guard as a reason to produce zero proposals in paper mode. If 3+ domain signals agree, propose something.
 
 REGIME-SPECIFIC STRATEGIES:
 Your direction bias MUST follow the regime. Do NOT default to short or long — follow the signals.
@@ -563,13 +582,14 @@ This ensures the system can act on strong opportunities even in regimes where hi
 
 FORCED EXPLORATION (paper mode only) — HIGHEST PRIORITY OVERRIDE:
 If your context shows NO trades have been opened in the last 6 hours AND we are in paper mode:
-- You MUST propose at least one trade IF a signal meeting the 70% confidence threshold exists AND at least 2 domains agree on direction. This does NOT override the consensus guard — weak multi-domain disagreement still means hold.
+- You MUST propose at least one trade IF a signal meeting the 70% confidence threshold exists AND at least 3 domains agree on direction. This does NOT override the consensus guard — weak multi-domain disagreement still means hold.
 - Set "exploration": true on these proposals so the Risk Manager applies special handling.
 - Pick the signal with the highest strength from the most independent domain. Minimum 70% confidence still applies — do not propose sub-threshold exploration trades.
+- REQUIRED: SL must still be ATR-based. TP must deliver ≥ 1.5 fee-adjusted R:R even for exploration trades. Bad R:R exploration trades generate misleading learning data.
 - If the regime has poor historical win rate, that is EXACTLY why you need to trade — to generate data that either confirms the pattern or reveals edge cases where it works.
 - Thesis should explicitly state: "Exploration trade — generating learning data. [rationale]."
-- Use smaller position sizes (50% of normal) and wider stops (1.5x normal).
-- Exception: if COMPASS DEFENSIVE or CASH posture is active, do NOT propose long exploration trades. SHORT exploration trades are still allowed if 2+ domains agree bearish.
+- Use smaller position sizes (50% of normal) and wider stops (use ATR × 2.5 multiplier instead of × 2.0).
+- Exception: if COMPASS DEFENSIVE or CASH posture is active, do NOT propose long exploration trades. SHORT exploration trades are still allowed if 3+ domains agree bearish.
 
 STANDING ORDERS:
 - Create these when signals suggest a high-probability scenario that hasn't triggered yet.
@@ -581,7 +601,7 @@ OPERATING MODE INSTRUCTIONS:
 When bootstrap_mode is true in your context:
 - Your primary job is generating quality trade data for the learning system.
 - Propose trades at confidence >= 70%.
-- Propose at least 1 trade per cycle if ANY signal shows directional conviction above 70% AND at least 2 domains agree on direction.
+- Propose at least 1 trade per cycle if ANY signal shows directional conviction above 70% AND at least 3 domains agree on direction.
 - Label all proposals with exploration: true.
 - Use recent_closed_trades in your context to learn directly from past outcomes.
 - All learnings (candidate, provisional, active) are included — use them all, weighting active ones higher.
@@ -606,7 +626,10 @@ OUTPUT SCHEMA:
         "trailing_stop_pct": null,
         "tp_method": "fixed",
         "sl_method": "atr_based",
-        "risk_reward": 2.1
+        "risk_reward": 2.1,
+        "atr14_used": 1850,
+        "sl_atr_multiplier": 2.0,
+        "fee_adjusted_rr": 1.98
       },
       "position_size_suggestion": "kelly",
       "template_id": 14,
@@ -763,6 +786,10 @@ HOLD — Entry thesis intact, stops appropriate, no action needed.
 CLOSE — Entry signals have expired or flipped. Regime changed unfavourably. Opposing signals >70 strength appeared. Thesis is invalidated. During SCRAM CRISIS: close all losing positions. During SCRAM EMERGENCY: close everything.
 
 TIGHTEN — Move SL to breakeven when unrealised profit >2%. Tighten SL when new support/resistance identified closer to price. Tighten when position held >48h without meaningful progress toward TP. Move TP closer if momentum is fading.
+IMPORTANT: When decision is "tighten", new_sl and new_tp MUST be concrete price values, NOT null. The code reads new_sl and new_tp directly to update the trade. If you omit them, nothing happens. Calculate the new stop using ATR14 from context.
+- Standard tighten: new_sl = current_price − (ATR14 × 1.0) for longs, or current_price + (ATR14 × 1.0) for shorts
+- Breakeven tighten (>2% profit): new_sl = entry_price + small_buffer for longs, entry_price − small_buffer for shorts
+- Never move SL against the trade direction (never lower SL on a long, never raise SL on a short).
 
 PARTIAL_CLOSE — When >75% of target reached but momentum is fading. When high-impact event approaching and position is profitable. Close 50% and trail the rest.
 
@@ -782,8 +809,8 @@ OUTPUT SCHEMA:
       "symbol": "BTC/USDT",
       "decision": "hold|close|tighten|partial_close",
       "reasoning": "Detailed explanation of decision",
-      "new_tp": null,
-      "new_sl": null,
+      "new_tp": 89500,
+      "new_sl": 84200,
       "urgency": "low|medium|high",
       "close_pct": null
     }

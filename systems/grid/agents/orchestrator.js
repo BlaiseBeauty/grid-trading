@@ -1059,21 +1059,6 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         continue;
       }
 
-      // M-18: Check minimum risk/reward ratio
-      if (trade.entry_price && trade.tp_price && trade.sl_price) {
-        const reward = Math.abs(trade.tp_price - trade.entry_price);
-        const risk = Math.abs(trade.entry_price - trade.sl_price);
-        if (risk > 0) {
-          const rrRatio = reward / risk;
-          if (rrRatio < currentLimits.MIN_RISK_REWARD_RATIO) {
-            console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — risk/reward ratio ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO}`);
-            await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'low_risk_reward', $5, NOW())`,
-              [cycleNum, trade.symbol, trade.direction, trade.confidence, `R:R ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO}`]);
-            continue;
-          }
-        }
-      }
-
       // M-17: Check correlated exposure
       try {
         const openSymbolTrades = await dbQueryOne(
@@ -1113,6 +1098,25 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         }
       }
 
+      // R:R check (fee-adjusted) — runs AFTER entry_price is resolved so market orders are covered
+      // Round-trip cost: ~0.2% (entry fee + slippage + exit fee)
+      if (trade.entry_price && trade.tp_price && trade.sl_price) {
+        const ROUND_TRIP_COST = trade.entry_price * 0.002;
+        const reward = Math.abs(trade.tp_price - trade.entry_price) - ROUND_TRIP_COST;
+        const risk   = Math.abs(trade.entry_price - trade.sl_price);
+        if (risk > 0) {
+          const rrRatio = reward / risk;
+          if (rrRatio < currentLimits.MIN_RISK_REWARD_RATIO) {
+            console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — fee-adjusted R:R ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO} (reward=${reward.toFixed(2)}, risk=${risk.toFixed(2)}, fees=${ROUND_TRIP_COST.toFixed(2)})`);
+            await dbQuery(
+              `INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'low_risk_reward', $5, NOW())`,
+              [cycleNum, trade.symbol, trade.direction, trade.confidence, `Fee-adjusted R:R ${rrRatio.toFixed(2)} < min ${currentLimits.MIN_RISK_REWARD_RATIO} (entry=${trade.entry_price}, tp=${trade.tp_price}, sl=${trade.sl_price})`]
+            );
+            continue;
+          }
+        }
+      }
+
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
       const result = await executeTrade({
         symbol: trade.symbol,
@@ -1129,6 +1133,24 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         asset_class: 'crypto',
         exchange: 'kucoin',
       });
+      // Recalibrate SL/TP if fill price differs from proposed entry by > 0.3%
+      if (result.trade_id && result.fill_price && trade.tp_price && trade.sl_price) {
+        const fillPrice = parseFloat(result.fill_price);
+        const proposedEntry = parseFloat(trade.entry_price);
+        const priceDiff = Math.abs(fillPrice - proposedEntry) / proposedEntry;
+        if (priceDiff > 0.003) {
+          const scale = fillPrice / proposedEntry;
+          const newSl = parseFloat((trade.sl_price * scale).toFixed(2));
+          const newTp = parseFloat((trade.tp_price * scale).toFixed(2));
+          try {
+            await tradesDb.updateStops(result.trade_id, { sl_price: newSl, tp_price: newTp });
+            console.log(`[ORCHESTRATOR] Recalibrated stops for #${result.trade_id}: SL ${trade.sl_price}→${newSl}, TP ${trade.tp_price}→${newTp} (fill slippage ${(priceDiff * 100).toFixed(2)}%)`);
+          } catch (stopErr) {
+            console.warn(`[ORCHESTRATOR] Stop recalibration failed for #${result.trade_id}:`, stopErr.message);
+          }
+        }
+      }
+
       trades.push(result);
       currentOpenCount++;
       console.log(`[ORCHESTRATOR] Trade executed: #${result.trade_id} ${trade.symbol} fill=${result.fill_price}`);
@@ -1208,7 +1230,17 @@ async function calculateQuantity(trade) {
   if (!trade.entry_price || trade.entry_price <= 0) {
     throw new Error(`Invalid entry_price: ${trade.entry_price}`);
   }
-  const positionValue = portfolioValue * (sizePct / 100);
+  // Scale position size by conviction: high confidence = full size, low confidence = reduced size
+  // 85%+ → 1.0x | 75–85% → 0.8x | 65–75% → 0.65x | <65% → 0.5x
+  const confidence = parseFloat(trade.confidence) || 70;
+  const convictionMultiplier = confidence >= 85 ? 1.0
+    : confidence >= 75 ? 0.8
+    : confidence >= 65 ? 0.65
+    : 0.5;
+  if (convictionMultiplier < 1.0) {
+    console.log(`[ORCHESTRATOR] Conviction scaling: ${trade.symbol} conf=${confidence}% → ${(convictionMultiplier * 100).toFixed(0)}% size (${sizePct}% → ${(sizePct * convictionMultiplier).toFixed(2)}%)`);
+  }
+  const positionValue = portfolioValue * (sizePct / 100) * convictionMultiplier;
   return positionValue / trade.entry_price;
 }
 
