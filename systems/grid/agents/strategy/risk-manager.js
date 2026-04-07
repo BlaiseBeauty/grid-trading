@@ -27,7 +27,17 @@ class RiskManagerAgent extends BaseAgent {
     const systemState = await this.getSystemState();
 
     // Code-enforced pre-flight — reject anything that violates hard limits
-    const { passed, codeRejected } = await this.preflightCheck(proposals, systemState);
+    // Read COMPASS posture once — used in preflightCheck to code-enforce directional bans
+    let compassPosture = null;
+    try {
+      const compassRisk = await bus.getRiskState();
+      if (compassRisk?.payload) {
+        const p = typeof compassRisk.payload === 'string' ? JSON.parse(compassRisk.payload) : compassRisk.payload;
+        compassPosture = { risk_posture: p?.risk_posture?.toUpperCase?.() || null, risk_score: p?.risk_score ?? null };
+      }
+    } catch { /* non-critical — fail open */ }
+
+    const { passed, codeRejected } = await this.preflightCheck(proposals, systemState, compassPosture);
 
     // Store code-rejected opportunities
     for (const rej of codeRejected) {
@@ -163,7 +173,7 @@ class RiskManagerAgent extends BaseAgent {
   /**
    * Hard-coded pre-flight check. Code enforces — AI cannot override these.
    */
-  async preflightCheck(proposals, state) {
+  async preflightCheck(proposals, state, compassPosture = null) {
     const passed = [];
     const codeRejected = [];
     const limits = this.getEffectiveLimits(state);
@@ -205,6 +215,14 @@ class RiskManagerAgent extends BaseAgent {
       const reasons = [];
       const isExploration = proposal.exploration === true;
 
+      // COMPASS posture — code-enforced directional ban (overrides all other logic)
+      if (compassPosture?.risk_posture === 'DEFENSIVE' || compassPosture?.risk_posture === 'CASH') {
+        const isLong = proposal.direction === 'long' || proposal.direction === 'bullish';
+        if (isLong) {
+          reasons.push(`compass_posture_block (${compassPosture.risk_posture} — long trades banned, risk=${compassPosture.risk_score}/10)`);
+        }
+      }
+
       // Max open positions
       if (state.openPositions >= limits.MAX_OPEN_POSITIONS) {
         reasons.push(`max_positions_reached (${state.openPositions}/${limits.MAX_OPEN_POSITIONS})`);
@@ -221,10 +239,10 @@ class RiskManagerAgent extends BaseAgent {
         reasons.push(`low_confidence (${proposal.confidence} < ${confidenceThreshold}${isExploration ? ' exploration' : ''})`);
       }
 
-      // Min complexity score — exploration proposals need only 1 domain
-      const complexityThreshold = isExploration ? 1 : riskLimitsConfig.MIN_SIGNAL_COMPLEXITY;
+      // Min complexity score — exploration proposals need 3 domains (prompt and code aligned)
+      const complexityThreshold = isExploration ? 3 : riskLimitsConfig.MIN_SIGNAL_COMPLEXITY;
       if ((proposal.complexity_score || 0) < complexityThreshold) {
-        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${complexityThreshold}${isExploration ? ' exploration' : ''})`);
+        reasons.push(`low_complexity (${proposal.complexity_score || 0} < ${complexityThreshold}${isExploration ? ' exploration_min_3_domains' : ''})`);
       }
 
       // Position size limit

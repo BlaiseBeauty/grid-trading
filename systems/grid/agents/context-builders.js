@@ -683,6 +683,27 @@ async function buildSynthesizerContext(trigger) {
     signalCategories: [...new Set(signals.map(s => s.signal_category))]
   }));
 
+  // ATR14 per symbol — required for Synthesizer to calculate ATR-based SL/TP
+  const signalSymbolsForAtr = [...new Set(signals.map(s => s.symbol))];
+  const atrBySymbol = {};
+  for (const sym of signalSymbolsForAtr) {
+    try {
+      const vol = await queryOne(`
+        SELECT data FROM external_data_cache
+        WHERE source = 'indicators' AND metric = 'volatility' AND symbol = $1
+        ORDER BY fetched_at DESC LIMIT 1
+      `, [sym]);
+      if (vol?.data) {
+        const d = typeof vol.data === 'string' ? JSON.parse(vol.data) : vol.data;
+        atrBySymbol[sym] = {
+          atr14: d.atr14 ?? d.ATR14 ?? d.atr ?? null,
+          atr_pct: d.atr14_pct ?? d.atr_pct ?? null,
+          bb_width: d.bb_width ?? null,
+        };
+      }
+    } catch { /* non-critical */ }
+  }
+
   // Exploration context (passed from orchestrator via base-agent spread)
   const hoursSinceLastTrade = trigger.hoursSinceLastTrade ?? null;
   const forcedExploration = trigger.forcedExploration || false;
@@ -767,7 +788,10 @@ async function buildSynthesizerContext(trigger) {
   const context = formatUserMessage({
     section1_market_data: {
       active_signals: signals,
-      signal_cooccurrence: cooccurrence
+      signal_cooccurrence: cooccurrence,
+      volatility_atr_per_symbol: Object.keys(atrBySymbol).length > 0
+        ? atrBySymbol
+        : 'No ATR data available — use ATR estimate of 2% of current price as fallback',
     },
     section2_context: {
       regime: regime.regime,
@@ -1074,6 +1098,25 @@ async function buildPositionReviewerContext(trigger) {
     riskLimits = getRiskLimits();
   } catch { /* may not exist */ }
 
+  // ATR14 per held symbol — required for position reviewer to calculate concrete new_sl/new_tp
+  const atrBySymbol = {};
+  for (const sym of heldSymbols) {
+    try {
+      const vol = await queryOne(`
+        SELECT data FROM external_data_cache
+        WHERE source = 'indicators' AND metric = 'volatility' AND symbol = $1
+        ORDER BY fetched_at DESC LIMIT 1
+      `, [sym]);
+      if (vol?.data) {
+        const d = typeof vol.data === 'string' ? JSON.parse(vol.data) : vol.data;
+        atrBySymbol[sym] = {
+          atr14: d.atr14 ?? d.ATR14 ?? d.atr ?? null,
+          atr_pct: d.atr14_pct ?? d.atr_pct ?? null,
+        };
+      }
+    } catch { /* non-critical */ }
+  }
+
   // Memory injection (800 token budget)
   const memory = truncateLearnings(await getRelevantMemory('positionReviewer', {
     symbols: heldSymbols,
@@ -1086,6 +1129,9 @@ async function buildPositionReviewerContext(trigger) {
     section1_market_data: {
       open_positions: openTrades,
       active_signals_per_symbol: activeSignals,
+      volatility_atr_per_symbol: Object.keys(atrBySymbol).length > 0
+        ? atrBySymbol
+        : 'No ATR data available — use 2% of current price as ATR fallback for stop calculations',
     },
     section2_context: {
       regime: regime.regime,
@@ -1100,7 +1146,7 @@ async function buildPositionReviewerContext(trigger) {
       risk_limits: riskLimits,
     },
     section3_memory: memory,
-    section4_task: `Review all ${openTrades.length} open position(s). For each, decide: HOLD, CLOSE, TIGHTEN, or PARTIAL_CLOSE. Output JSON with reviews array.`
+    section4_task: `Review all ${openTrades.length} open position(s). For each, decide: HOLD, CLOSE, TIGHTEN, or PARTIAL_CLOSE. When decision is TIGHTEN, you MUST provide concrete new_sl and new_tp price values using ATR14 from volatility_atr_per_symbol. Output JSON with reviews array.`
   });
   return warnIfLarge('position_reviewer', context);
 }
