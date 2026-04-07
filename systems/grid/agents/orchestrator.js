@@ -955,6 +955,22 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     console.log(`[COMPASS_GATE] Elevated risk: capped to 1 proposal (dropped: ${droppedSymbols})`);
   }
 
+  // Resolve entry_price for market-order proposals BEFORE Risk Manager
+  // so fee-adjusted R:R can be validated on every proposal (not just limit orders)
+  for (const p of proposals) {
+    if (!p.entry_price) {
+      try {
+        const row = await marketDataDb.getLatestClose(p.symbol);
+        if (row?.close) {
+          p.entry_price = parseFloat(row.close);
+          console.log(`[ORCHESTRATOR] Pre-resolved entry_price for ${p.symbol}: ${p.entry_price}`);
+        }
+      } catch (err) {
+        console.warn(`[ORCHESTRATOR] Could not resolve entry_price for ${p.symbol}:`, err.message);
+      }
+    }
+  }
+
   // Step 3: Risk Manager — validate proposals against limits
   console.log(`[ORCHESTRATOR] Passing ${proposals.length} proposals to Risk Manager`);
   for (const p of proposals) {
