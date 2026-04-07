@@ -226,8 +226,14 @@ class BaseAgent {
             reasoning: signal.reasoning,
             cycle_number: cycleNumber,
             timeframe: signal.timeframe || '4h',
-            ttl_candles: signal.ttl_candles || 6,
-            expires_at: signal.expires_at || new Date(Date.now() + 6 * 4 * 3600 * 1000).toISOString(),
+            ttl_candles: Math.max(1, parseInt(signal.ttl_candles) || 6),
+            expires_at: (() => {
+              const ttl = Math.max(1, parseInt(signal.ttl_candles) || 6);
+              const fromSignal = signal.expires_at ? new Date(signal.expires_at) : null;
+              const minExpiry = new Date(Date.now() + 15 * 60 * 1000); // must expire at least 15min from now
+              const defaultExpiry = new Date(Date.now() + ttl * 4 * 3600 * 1000);
+              return (fromSignal && fromSignal > minExpiry) ? fromSignal.toISOString() : defaultExpiry.toISOString();
+            })(),
             decay_model: ['linear', 'cliff', 'exponential'].includes(signal.decay_model) ? signal.decay_model : 'linear',
           });
           storedCount++;

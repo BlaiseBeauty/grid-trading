@@ -2,6 +2,11 @@
 
 const bus = require('./intelligence-bus');
 
+const MULT_STRUCTURAL_CONFLICT = parseFloat(process.env.ORACLE_MULT_STRUCTURAL_CONFLICT || '0.5');
+const MULT_STRATEGIC_CONFLICT  = parseFloat(process.env.ORACLE_MULT_STRATEGIC_CONFLICT  || '0.6');
+const MULT_MULTI_CONFLUENCE    = parseFloat(process.env.ORACLE_MULT_MULTI_CONFLUENCE    || '1.3');
+const MULT_SINGLE_CONFLUENCE   = parseFloat(process.env.ORACLE_MULT_SINGLE_CONFLUENCE   || '1.15');
+
 /**
  * Apply ORACLE thesis context to a GRID trade proposal.
  * Modifies size_multiplier and adds conflict metadata.
@@ -46,7 +51,7 @@ async function resolveProposal(proposal) {
 
       if (topConflict.time_horizon === 'structural' && parseFloat(topConflict.conviction) >= 9.0) {
         // Structural, very high conviction conflict — halve the position
-        multiplier = 0.5;
+        multiplier = MULT_STRUCTURAL_CONFLICT;
         conflictFlag = {
           thesis_id:   topConflict.payload?.thesis_id,
           thesis_name: topConflict.payload?.name,
@@ -55,7 +60,7 @@ async function resolveProposal(proposal) {
         };
       } else if (topConflict.time_horizon === 'strategic') {
         // Strategic conflict — reduce by 40%
-        multiplier = 0.6;
+        multiplier = MULT_STRATEGIC_CONFLICT;
         conflictFlag = {
           thesis_id:   topConflict.payload?.thesis_id,
           thesis_name: topConflict.payload?.name,
@@ -66,18 +71,18 @@ async function resolveProposal(proposal) {
     }
 
     if (confluences.length >= 2) {
-      // Multi-thesis confluence — boost by 30% (capped, doesn't override conflict)
+      // Multi-thesis confluence — boost (capped, doesn't override conflict)
       if (multiplier >= 1.0) {
-        multiplier = 1.3;
+        multiplier = MULT_MULTI_CONFLUENCE;
         confluenceFlag = {
           count: confluences.length,
           theses: confluences.map(t => t.payload?.name || t.payload?.thesis_id),
         };
       }
     } else if (confluences.length === 1 && parseFloat(confluences[0].conviction) >= 8.0) {
-      // Single high-conviction confluence — boost by 15%
+      // Single high-conviction confluence — small boost
       if (multiplier >= 1.0) {
-        multiplier = 1.15;
+        multiplier = MULT_SINGLE_CONFLUENCE;
         confluenceFlag = {
           count: 1,
           theses: [confluences[0].payload?.name],

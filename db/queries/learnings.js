@@ -52,6 +52,7 @@ async function getForContext({ symbols, asset_classes, limit = 20 } = {}) {
     SELECT * FROM learnings
     WHERE invalidated_at IS NULL
       AND confidence IN ('high', 'med')
+      AND created_at > NOW() - INTERVAL '90 days'
       AND (symbols IS NULL OR symbols ?| $1 OR asset_classes ?| $2)
     ORDER BY
       CASE confidence WHEN 'high' THEN 1 WHEN 'med' THEN 2 ELSE 3 END,

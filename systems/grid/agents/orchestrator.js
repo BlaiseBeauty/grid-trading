@@ -1851,6 +1851,23 @@ async function runCycle({ broadcast } = {}) {
     logger.debug('Standing order expiry skipped', { err, cycle_id: cycleNumber, error_type: 'standing_order' });
   }
 
+  // Step 0b: Auto-clear SCRAM if drawdown has recovered below threshold
+  try {
+    const activeScram = await dbQueryOne("SELECT id, threshold_value FROM scram_events WHERE cleared_at IS NULL ORDER BY activated_at DESC LIMIT 1");
+    if (activeScram) {
+      const currentDrawdown = await riskManager.computeCurrentDrawdown();
+      const threshold = parseFloat(activeScram.threshold_value) || 10;
+      if (currentDrawdown !== null && currentDrawdown < threshold * 0.7) {
+        await dbQuery("UPDATE scram_events SET cleared_at = NOW() WHERE id = $1", [activeScram.id]);
+        console.log(`[ORCHESTRATOR] SCRAM auto-cleared — drawdown ${currentDrawdown.toFixed(2)}% recovered below ${(threshold * 0.7).toFixed(1)}% (70% of trigger threshold)`);
+      } else if (activeScram) {
+        console.log(`[ORCHESTRATOR] SCRAM still active — drawdown ${currentDrawdown?.toFixed(2) ?? 'unknown'}% vs threshold ${threshold}%`);
+      }
+    }
+  } catch (scramErr) {
+    console.warn('[ORCHESTRATOR] SCRAM auto-clear check failed:', scramErr.message);
+  }
+
   // Step 1: Refresh market data
   const { dataQuality, report: dataQualityReport } = await refreshMarketData();
 
