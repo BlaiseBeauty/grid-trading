@@ -1740,7 +1740,7 @@ async function runCycle({ broadcast } = {}) {
   }
 
   // COMPASS risk gate — evaluate posture before spending any API budget
-  const COMPASS_ABORT_THRESHOLD  = parseFloat(process.env.COMPASS_ABORT_THRESHOLD  || '7.0');
+  const COMPASS_ABORT_THRESHOLD  = parseFloat(process.env.COMPASS_ABORT_THRESHOLD  || '9.5');
   const COMPASS_REDUCE_THRESHOLD = parseFloat(process.env.COMPASS_REDUCE_THRESHOLD || '6.5');
   let compassConstraints = null;
   try {
@@ -1768,7 +1768,7 @@ async function runCycle({ broadcast } = {}) {
       const posture   = postureBusRow ? String(postureBusRow.payload?.risk_posture || '').toUpperCase() : '';
 
       const shouldAbort  = riskScore >= COMPASS_ABORT_THRESHOLD;
-      const shouldReduce = !shouldAbort && (riskScore >= COMPASS_REDUCE_THRESHOLD || posture === 'DEFENSIVE');
+      const shouldReduce = !shouldAbort && (riskScore >= COMPASS_REDUCE_THRESHOLD || posture === 'DEFENSIVE' || posture === 'CASH');
 
       if (shouldAbort) {
         const riskLabel = riskScore >= 0 ? `${riskScore.toFixed(1)}/10` : 'N/A';

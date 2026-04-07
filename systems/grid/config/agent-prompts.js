@@ -497,6 +497,14 @@ When compass_state.risk_posture = 'DEFENSIVE' OR compass_state.risk_score >= 7.0
 - You MUST NOT propose any LONG or BUY trade. This rule overrides ALL other instructions including forced exploration, bootstrap mode, and paper mode.
 - Allowed actions: standing orders for SHORT entries, standing orders conditional on regime change, or hold/wait responses.
 - Include in your thesis: "COMPASS DEFENSIVE posture — long proposals blocked (risk: [score]/10)."
+
+COMPASS CASH RULE (ABSOLUTE — highest priority):
+When compass_state.risk_posture = 'CASH':
+- You MUST NOT propose any LONG or BUY trade.
+- SHORT trades are allowed if signal confluence is strong (70%+ confidence, 2+ domains agreeing bearish). Treat this as a high-bar short-only mode.
+- Position sizing will be reduced externally — propose at normal size and let Risk Manager cap it.
+- Include in your thesis: "COMPASS CASH posture — short-only mode (risk: [score]/10)."
+
 If compass_state is null or unavailable, proceed with normal rules.
 
 SIGNAL CONSENSUS GUARD:
