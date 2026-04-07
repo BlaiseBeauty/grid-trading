@@ -103,6 +103,7 @@ Return ONLY valid JSON.`;
     limits.max_open_positions      = Math.min(parseInt(limits.max_open_positions         || 4),     6);
     limits.scram_threshold_pct     = Math.max(parseFloat(limits.scram_threshold_pct      || 8),     5.0);
     result.limits = limits;
+    result.risk_score = Math.min(10, Math.max(0, parseFloat(result.risk_score) || 5));
 
     // Persist
     const riskResult = await query(

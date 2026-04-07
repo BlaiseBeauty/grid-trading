@@ -27,8 +27,13 @@ class RegimeClassifierAgent extends BaseAgent {
     });
 
     // Store regime classification
+    const VALID_REGIMES = ['trending_up', 'trending_down', 'volatile', 'ranging', 'quiet'];
     const parsed = result?.output_json || {};
     if (parsed.regime) {
+      if (!VALID_REGIMES.includes(parsed.regime)) {
+        console.warn(`[REGIME_CLASSIFIER] Invalid regime "${parsed.regime}" — clamping to "ranging"`);
+        parsed.regime = 'ranging';
+      }
       await this.storeRegime(parsed, result?.id);
       console.log(`[REGIME_CLASSIFIER] Stored regime: ${parsed.regime} conf=${parsed.confidence}`);
     }

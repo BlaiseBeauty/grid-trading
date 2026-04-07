@@ -50,6 +50,12 @@ class SynthesizerAgent extends BaseAgent {
           WHEN 'exponential' THEN strength * EXP(
             -3.0 * EXTRACT(EPOCH FROM (NOW() - created_at)) /
             NULLIF(EXTRACT(EPOCH FROM (expires_at - created_at)), 0))
+          WHEN 'cliff' THEN
+            CASE WHEN EXTRACT(EPOCH FROM (NOW() - created_at)) <
+                      EXTRACT(EPOCH FROM (expires_at - created_at)) * 0.9
+              THEN strength
+              ELSE strength * 0.1
+            END
           ELSE strength
         END as current_strength
       FROM signals

@@ -336,7 +336,7 @@ class RiskManagerAgent extends BaseAgent {
       'SELECT MAX(total_value) as high_water_mark FROM equity_snapshots'
     );
     const highWaterMark = parseFloat(hwmRow?.high_water_mark);
-    if (!highWaterMark || highWaterMark <= 0) return null;
+    if (!highWaterMark || highWaterMark <= 0) return 0; // No equity history yet — no drawdown
 
     // Current equity: starting capital + realised P&L + unrealised P&L
     const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
