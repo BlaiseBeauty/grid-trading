@@ -309,6 +309,7 @@ class RiskManagerAgent extends BaseAgent {
       // Compute existing position size as % of portfolio
       const entryPrice = parseFloat(trade.entry_price) || 0;
       const qty = parseFloat(trade.quantity) || 0;
+      if (!entryPrice || !qty) continue; // skip trades with missing price/qty — treating as $0 hides exposure
       const existingSizePct = (entryPrice * qty / portfolioValue) * 100;
 
       // Directional sign of existing trade

@@ -62,7 +62,7 @@ async function buildTrendContext(trigger) {
 
   for (const symbol of symbols) {
     const indicators = await queryOne(`
-      SELECT data FROM external_data_cache
+      SELECT data, fetched_at FROM external_data_cache
       WHERE source = 'indicators' AND metric = 'trend' AND symbol = $1
       ORDER BY fetched_at DESC LIMIT 1
     `, [symbol]);
@@ -78,7 +78,10 @@ async function buildTrendContext(trigger) {
     }
 
     const newestCandle = priceData['4h']?.[0]?.timestamp;
-    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const candleStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const indicatorStale = indicators?.fetched_at && (Date.now() - new Date(indicators.fetched_at).getTime()) > 6 * 3600 * 1000;
+    const isStale = candleStale || indicatorStale;
+    if (isStale) console.warn(`[CONTEXT] Stale data for ${symbol} — candle: ${candleStale}, indicators: ${indicatorStale}`);
 
     contextParts.push({
       symbol,
@@ -115,7 +118,7 @@ async function buildMomentumContext(trigger) {
 
   for (const symbol of symbols) {
     const indicators = await queryOne(`
-      SELECT data FROM external_data_cache
+      SELECT data, fetched_at FROM external_data_cache
       WHERE source = 'indicators' AND metric = 'momentum' AND symbol = $1
       ORDER BY fetched_at DESC LIMIT 1
     `, [symbol]);
@@ -131,7 +134,10 @@ async function buildMomentumContext(trigger) {
     }
 
     const newestCandle = priceData['4h']?.[0]?.timestamp;
-    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const candleStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const indicatorStale = indicators?.fetched_at && (Date.now() - new Date(indicators.fetched_at).getTime()) > 6 * 3600 * 1000;
+    const isStale = candleStale || indicatorStale;
+    if (isStale) console.warn(`[CONTEXT] Stale data for ${symbol} — candle: ${candleStale}, indicators: ${indicatorStale}`);
 
     contextParts.push({
       symbol, asset_class: assetClass,
@@ -165,7 +171,7 @@ async function buildVolatilityContext(trigger) {
 
   for (const symbol of symbols) {
     const indicators = await queryOne(`
-      SELECT data FROM external_data_cache
+      SELECT data, fetched_at FROM external_data_cache
       WHERE source = 'indicators' AND metric = 'volatility' AND symbol = $1
       ORDER BY fetched_at DESC LIMIT 1
     `, [symbol]);
@@ -181,7 +187,10 @@ async function buildVolatilityContext(trigger) {
     }
 
     const newestCandle = priceData['4h']?.[0]?.timestamp;
-    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const candleStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const indicatorStale = indicators?.fetched_at && (Date.now() - new Date(indicators.fetched_at).getTime()) > 6 * 3600 * 1000;
+    const isStale = candleStale || indicatorStale;
+    if (isStale) console.warn(`[CONTEXT] Stale data for ${symbol} — candle: ${candleStale}, indicators: ${indicatorStale}`);
 
     contextParts.push({
       symbol, asset_class: assetClass,
@@ -215,7 +224,7 @@ async function buildVolumeContext(trigger) {
 
   for (const symbol of symbols) {
     const indicators = await queryOne(`
-      SELECT data FROM external_data_cache
+      SELECT data, fetched_at FROM external_data_cache
       WHERE source = 'indicators' AND metric = 'volume' AND symbol = $1
       ORDER BY fetched_at DESC LIMIT 1
     `, [symbol]);
@@ -231,7 +240,10 @@ async function buildVolumeContext(trigger) {
     }
 
     const newestCandle = priceData['4h']?.[0]?.timestamp;
-    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const candleStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const indicatorStale = indicators?.fetched_at && (Date.now() - new Date(indicators.fetched_at).getTime()) > 6 * 3600 * 1000;
+    const isStale = candleStale || indicatorStale;
+    if (isStale) console.warn(`[CONTEXT] Stale data for ${symbol} — candle: ${candleStale}, indicators: ${indicatorStale}`);
 
     contextParts.push({
       symbol, asset_class: assetClass,
@@ -275,7 +287,7 @@ async function buildPatternContext(trigger) {
 
   for (const symbol of symbols) {
     const indicators = await queryOne(`
-      SELECT data FROM external_data_cache
+      SELECT data, fetched_at FROM external_data_cache
       WHERE source = 'indicators' AND metric = 'pattern' AND symbol = $1
       ORDER BY fetched_at DESC LIMIT 1
     `, [symbol]);
@@ -299,7 +311,10 @@ async function buildPatternContext(trigger) {
     } catch { /* table may be empty */ }
 
     const newestCandle = priceData['4h']?.[0]?.timestamp;
-    const isStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const candleStale = newestCandle && (Date.now() - new Date(newestCandle).getTime()) > 12 * 3600 * 1000;
+    const indicatorStale = indicators?.fetched_at && (Date.now() - new Date(indicators.fetched_at).getTime()) > 6 * 3600 * 1000;
+    const isStale = candleStale || indicatorStale;
+    if (isStale) console.warn(`[CONTEXT] Stale data for ${symbol} — candle: ${candleStale}, indicators: ${indicatorStale}`);
 
     contextParts.push({
       symbol, asset_class: assetClass,

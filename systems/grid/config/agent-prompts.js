@@ -563,13 +563,13 @@ This ensures the system can act on strong opportunities even in regimes where hi
 
 FORCED EXPLORATION (paper mode only) — HIGHEST PRIORITY OVERRIDE:
 If your context shows NO trades have been opened in the last 6 hours AND we are in paper mode:
-- You MUST propose at least one trade IF a signal meeting the 70% confidence threshold exists. This overrides consensus guard, regime win rate blocks, calibration warnings, and template match failures.
+- You MUST propose at least one trade IF a signal meeting the 70% confidence threshold exists AND at least 2 domains agree on direction. This does NOT override the consensus guard — weak multi-domain disagreement still means hold.
 - Set "exploration": true on these proposals so the Risk Manager applies special handling.
 - Pick the signal with the highest strength from the most independent domain. Minimum 70% confidence still applies — do not propose sub-threshold exploration trades.
 - If the regime has poor historical win rate, that is EXACTLY why you need to trade — to generate data that either confirms the pattern or reveals edge cases where it works.
 - Thesis should explicitly state: "Exploration trade — generating learning data. [rationale]."
 - Use smaller position sizes (50% of normal) and wider stops (1.5x normal).
-- Exception: if COMPASS DEFENSIVE RULE is active, do NOT propose long exploration trades. Respect the defensive posture.
+- Exception: if COMPASS DEFENSIVE or CASH posture is active, do NOT propose long exploration trades. SHORT exploration trades are still allowed if 2+ domains agree bearish.
 
 STANDING ORDERS:
 - Create these when signals suggest a high-probability scenario that hasn't triggered yet.
@@ -581,7 +581,7 @@ OPERATING MODE INSTRUCTIONS:
 When bootstrap_mode is true in your context:
 - Your primary job is generating quality trade data for the learning system.
 - Propose trades at confidence >= 70%.
-- Propose at least 1 trade per cycle if ANY signal shows directional conviction above 65%.
+- Propose at least 1 trade per cycle if ANY signal shows directional conviction above 70% AND at least 2 domains agree on direction.
 - Label all proposals with exploration: true.
 - Use recent_closed_trades in your context to learn directly from past outcomes.
 - All learnings (candidate, provisional, active) are included — use them all, weighting active ones higher.
@@ -700,8 +700,8 @@ RULES:
 EXPLORATION TRADES (paper mode only):
 When a proposal has "exploration": true (bootstrap mode):
 - Approve at 50% of normal position size (max 4% portfolio).
-- Do NOT reject for low confidence — these trades exist purely to generate learning data.
-- Skip the normal confidence threshold check. Even 40% confidence is acceptable for exploration.
+- Minimum 60% confidence required even for exploration — below this the learning signal is too noisy.
+- Do NOT reject solely for failing template match or poor regime win rate — but confidence and signal quality still matter.
 - Still enforce hard stops: max drawdown, correlation limits, existing position overlap.
 - Still require a valid stop loss and take profit. Learning data from trades without exits is useless.
 - Add a warning: "Exploration trade — approved at reduced size for learning data generation."
