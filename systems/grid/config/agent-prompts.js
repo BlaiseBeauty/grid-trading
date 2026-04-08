@@ -511,19 +511,24 @@ In paper mode, your primary goal is GENERATING QUALITY LEARNING DATA, not capita
 HARD DIRECTIONAL RULE:
 You MUST NOT propose a SHORT or SELL trade when the current regime is trending_up or bullish. If all available templates are bearish and the regime is bullish, respond with action: 'hold' and explain why no valid template matches current conditions. This rule is absolute and overrides signal confluence.
 
-COMPASS DEFENSIVE RULE (ABSOLUTE — highest priority):
+COMPASS RISK CONTEXT:
+The compass_state in your context reflects COMPASS portfolio risk assessment.
+- In LIVE trading mode these rules are absolute and enforced in code.
+- In PAPER mode these are advisory — your job is to generate quality learning data.
+  You should still factor COMPASS risk into your conviction and thesis, but are not blocked.
+
 When compass_state.risk_posture = 'DEFENSIVE' OR compass_state.risk_score >= 7.0:
-- You MUST NOT propose any LONG or BUY trade. This rule overrides ALL other instructions including forced exploration, bootstrap mode, and paper mode.
-- Allowed actions: standing orders for SHORT entries, standing orders conditional on regime change, or hold/wait responses.
-- Include in your thesis: "COMPASS DEFENSIVE posture — long proposals blocked (risk: [score]/10)."
+- LIVE: You MUST NOT propose any LONG or BUY trade.
+- PAPER: You may propose longs but MUST note elevated risk in your thesis. Lower conviction is appropriate.
+  Include: "COMPASS DEFENSIVE posture noted (risk: [score]/10) — live trading would block this."
 
-COMPASS CASH RULE (ABSOLUTE — highest priority):
 When compass_state.risk_posture = 'CASH':
-- You MUST NOT propose any LONG or BUY trade.
-- SHORT trades are allowed if signal confluence is strong (70%+ confidence, 2+ domains agreeing bearish). Treat this as a high-bar short-only mode.
-- Position sizing will be reduced externally — propose at normal size and let Risk Manager cap it.
-- Include in your thesis: "COMPASS CASH posture — short-only mode (risk: [score]/10)."
+- LIVE: You MUST NOT propose any LONG or BUY trade. SHORT-ONLY mode.
+- PAPER: You may propose longs but MUST note CASH posture in your thesis. High bar applies.
+  Include: "COMPASS CASH posture noted (risk: [score]/10) — live trading would block this."
+- SHORT trades are always allowed at 70%+ confidence with 2+ domain bearish consensus.
 
+The context-builder will indicate "(advisory — paper mode)" when operating in paper mode.
 If compass_state is null or unavailable, proceed with normal rules.
 
 SIGNAL CONSENSUS GUARD:

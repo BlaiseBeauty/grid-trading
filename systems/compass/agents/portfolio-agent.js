@@ -2,7 +2,7 @@
 
 const CompassBaseAgent     = require('./base-agent');
 const { buildCompassContext } = require('./context-builder');
-const { query }            = require('../../../db/connection');
+const { query, queryOne }  = require('../../../db/connection');
 const bus                  = require('../../../shared/intelligence-bus');
 
 const PORTFOLIO_SYSTEM_PROMPT = `You are the COMPASS Portfolio Agent.
@@ -53,7 +53,8 @@ RULES:
 - max_position_usd cannot exceed 10000 (hard cap from risk-limits.js)
 - If ORACLE has no active theses, default to neutral posture
 - If GRID win_rate < 40% in last period, force defensive posture
-- If GRID max_drawdown > 8%, force cash posture
+- If GRID max_drawdown > 8% and regime is NOT trending_up, force cash posture
+- If GRID max_drawdown > 8% and regime IS trending_up (bullish), force defensive posture — participate at reduced size to recover losses
 - Never recommend a direction that conflicts with a structural ORACLE thesis > 8.5/10`;
 
 async function runPortfolioAgent() {
@@ -82,8 +83,23 @@ async function runPortfolioAgent() {
     // Only apply guardrails if we have meaningful sample size
     if (totalTrades >= 5) {
       if (drawdownPct >= 8.0) {
-        postureOverride = 'cash';
-        console.log(`[COMPASS-PORTFOLIO] OVERRIDE: Drawdown ${drawdownPct}% >= 8% → forcing CASH posture`);
+        // Check current market regime — bullish market warrants defensive (not full cash)
+        // so the system can participate in the recovery rather than sitting it out
+        let currentRegime = null;
+        try {
+          const regimeRow = await queryOne(
+            `SELECT regime FROM market_regime ORDER BY created_at DESC LIMIT 1`
+          );
+          currentRegime = regimeRow?.regime || null;
+        } catch { /* non-critical — default to cash */ }
+
+        if (currentRegime === 'trending_up') {
+          postureOverride = 'defensive';
+          console.log(`[COMPASS-PORTFOLIO] REGIME OVERRIDE: Drawdown ${drawdownPct}% >= 8% but regime is BULLISH (${currentRegime}) → DEFENSIVE (not CASH) — longs permitted at reduced size`);
+        } else {
+          postureOverride = 'cash';
+          console.log(`[COMPASS-PORTFOLIO] OVERRIDE: Drawdown ${drawdownPct}% >= 8%, regime=${currentRegime || 'unknown'} → forcing CASH posture`);
+        }
       } else if (drawdownPct >= 5.0 || winRate < 40) {
         postureOverride = 'defensive';
         console.log(`[COMPASS-PORTFOLIO] OVERRIDE: Performance weak (drawdown ${drawdownPct}%, win ${winRate}%) → forcing DEFENSIVE`);

@@ -576,6 +576,7 @@ function setupCron() {
   });
 
   // Clean expired signals + intelligence bus every hour
+  const { checkNoTradeSituation } = require('./systems/grid/agents/no-trade-monitor');
   cron.schedule('0 * * * *', async () => {
     try {
       await signalsDb.cleanExpired();
@@ -598,6 +599,12 @@ function setupCron() {
       if (purged.rowCount > 0) console.log(`[CRON] Oracle raw feed purge: ${purged.rowCount} items`);
     } catch (err) {
       console.error('[CRON] Oracle raw feed purge failed:', err.message);
+    }
+    // No-trade alert — fires if no trades in 48h with diagnosis of why
+    try {
+      await checkNoTradeSituation();
+    } catch (err) {
+      console.error('[CRON] No-trade monitor failed:', err.message);
     }
   });
 

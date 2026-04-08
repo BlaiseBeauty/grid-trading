@@ -820,9 +820,13 @@ async function buildSynthesizerContext(trigger) {
       ? `BOOTSTRAP MODE ACTIVE. Your primary job is generating quality trade data for the learning system. Match signals against templates. Minimum confidence threshold is 70%. Full reasoning required.`
       : `Match active signals against templates. Generate trade proposals, standing orders, or explain why no action. Full reasoning required.`) + oracleInstruction + patternContext
       + (compassState?.risk_posture === 'CASH'
-        ? `\nCOMPASS ALERT: CASH posture active (risk: ${compassState.risk_score}/10). SHORT-ONLY mode. You MUST NOT propose any LONG or BUY trade. SHORT trades allowed only at 70%+ confidence with 2+ domain consensus.`
+        ? (paperMode
+          ? `\nCOMPASS CONTEXT (advisory — paper mode): CASH posture active (risk: ${compassState.risk_score}/10). In live trading this would be SHORT-ONLY mode. You should be cautious about long proposals and document the COMPASS risk context in your thesis, but this does not block you from proposing longs for learning purposes.`
+          : `\nCOMPASS ALERT: CASH posture active (risk: ${compassState.risk_score}/10). SHORT-ONLY mode. You MUST NOT propose any LONG or BUY trade. SHORT trades allowed only at 70%+ confidence with 2+ domain consensus.`)
         : compassState?.risk_posture === 'DEFENSIVE' || (compassState?.risk_score != null && compassState.risk_score >= 7.0)
-        ? `\nCOMPASS ALERT: DEFENSIVE posture active (risk: ${compassState.risk_score}/10). You MUST NOT propose any LONG or BUY trade this cycle. This overrides all other instructions.`
+        ? (paperMode
+          ? `\nCOMPASS CONTEXT (advisory — paper mode): DEFENSIVE posture active (risk: ${compassState.risk_score}/10). In live trading long proposals would be blocked. You may still propose longs, but note the elevated risk in your thesis.`
+          : `\nCOMPASS ALERT: DEFENSIVE posture active (risk: ${compassState.risk_score}/10). You MUST NOT propose any LONG or BUY trade this cycle. This overrides all other instructions.`)
         : '')
   });
   console.log('[SYNTH] context length:', JSON.stringify(context).length);

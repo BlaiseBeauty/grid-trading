@@ -48,22 +48,38 @@ async function upsertThesis(thesis) {
         ]
       );
 
-      // Publish update to bus
+      // Publish update to bus — supersede old thesis_created event so bus doesn't accumulate
       try {
-        await bus.publish({
-          source_system: 'oracle',
-          event_type:    'thesis_conviction_updated',
+        // Find the old bus event to supersede
+        const oldBusEvent = await queryOne(
+          'SELECT bus_event_id FROM oracle_theses WHERE thesis_id = $1',
+          [existing.thesis_id]
+        );
+
+        const newBusResult = await bus.publish({
+          source_system:   'oracle',
+          event_type:      'thesis_created',
           payload: {
-            thesis_id:      existing.thesis_id,
-            name:           thesis.name,
-            old_conviction: parseFloat(existing.conviction),
-            new_conviction: thesis.conviction,
+            thesis_id:    existing.thesis_id,
+            name:         thesis.name,
+            domain:       thesis.domain,
+            summary:      thesis.summary,
+            catalyst:     thesis.catalyst,
+            invalidation: thesis.invalidation,
           },
           conviction:      thesis.conviction,
           affected_assets: [...thesis.long_assets, ...thesis.short_assets],
           direction:       thesis.direction,
           time_horizon:    thesis.time_horizon,
+          expires_at:      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          supersedes:      oldBusEvent?.bus_event_id || undefined,
         });
+
+        // Update stored bus_event_id to the new event
+        if (newBusResult?.id) {
+          await query('UPDATE oracle_theses SET bus_event_id = $1 WHERE thesis_id = $2', [newBusResult.id, existing.thesis_id]);
+        }
+
         console.log(`[THESES] Updated conviction for "${thesis.name}": ${existing.conviction} → ${thesis.conviction}`);
       } catch (err) {
         console.error('[THESES] Bus publish failed:', err.message);
@@ -115,8 +131,9 @@ async function upsertThesis(thesis) {
       affected_assets: [...thesis.long_assets, ...thesis.short_assets],
       direction:       thesis.direction,
       time_horizon:    thesis.time_horizon,
-      // Theses never expire — they are retired explicitly
-      expires_at:      null,
+      // Theses expire after 7 days on the bus — the oracle_theses table is source of truth
+      // Re-published each cycle if still active, so active theses stay visible
+      expires_at:      new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     });
 
     // Store bus event ID on thesis (busResult is {id: N} from queryOne)

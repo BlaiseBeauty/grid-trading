@@ -215,11 +215,25 @@ class RiskManagerAgent extends BaseAgent {
       const reasons = [];
       const isExploration = proposal.exploration === true;
 
-      // COMPASS posture — code-enforced directional ban (overrides all other logic)
-      if (compassPosture?.risk_posture === 'DEFENSIVE' || compassPosture?.risk_posture === 'CASH') {
-        const isLong = proposal.direction === 'long' || proposal.direction === 'bullish';
-        if (isLong) {
-          reasons.push(`compass_posture_block (${compassPosture.risk_posture} — long trades banned, risk=${compassPosture.risk_score}/10)`);
+      // COMPASS posture — code-enforced directional controls (live trading only)
+      // In paper mode posture is advisory — Synthesizer already sees it in context.
+      // Hard blocks and size reductions only engage when LIVE_TRADING_ENABLED=true.
+      if (process.env.LIVE_TRADING_ENABLED === 'true') {
+        if (compassPosture?.risk_posture === 'CASH') {
+          const isLong = proposal.direction === 'long' || proposal.direction === 'bullish';
+          if (isLong) {
+            reasons.push(`compass_posture_block (CASH — long trades banned, risk=${compassPosture.risk_score}/10)`);
+          }
+        } else if (compassPosture?.risk_posture === 'DEFENSIVE') {
+          const isLong = proposal.direction === 'long' || proposal.direction === 'bullish';
+          if (isLong) {
+            // Halve position size — conservative participation, not a ban
+            proposal.position_size_suggestion_pct = Math.max(
+              1,
+              Math.round((proposal.position_size_suggestion_pct || 5) * 0.5 * 100) / 100
+            );
+            console.log(`[RISK_MANAGER] DEFENSIVE posture: ${proposal.symbol} long size halved to ${proposal.position_size_suggestion_pct}%`);
+          }
         }
       }
 
