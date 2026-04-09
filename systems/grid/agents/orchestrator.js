@@ -1865,35 +1865,6 @@ async function runCycle({ broadcast } = {}) {
     console.error('[COMPASS_GATE] Gate check failed — proceeding without gate:', gateErr.message);
   }
 
-  // Consecutive no-trade check — conserve API budget if Synthesizer has been idle
-  // Skipped in live-trading mode so real positions are never missed
-  if (process.env.LIVE_TRADING_ENABLED !== 'true') {
-    try {
-      const recentSynth = await dbQueryAll(`
-        SELECT output_json->'actions' AS actions
-        FROM agent_decisions
-        WHERE agent_name = 'synthesizer'
-          AND output_json IS NOT NULL
-        ORDER BY created_at DESC
-        LIMIT 3
-      `);
-      if (recentSynth.length === 3) {
-        const allNoTrade = recentSynth.every(r => {
-          const actions = r.actions;
-          return !actions || (Array.isArray(actions) && actions.length === 0);
-        });
-        if (allNoTrade) {
-          console.log('[ORCHESTRATOR] Cycle skipped — 3 consecutive no-trade decisions, conserving API budget');
-          if (broadcast) {
-            broadcast('cycle_skipped', { cycleNumber, reason: 'consecutive_no_trade' });
-          }
-          return { cycleNumber, aborted: true, reason: 'consecutive_no_trade' };
-        }
-      }
-    } catch (noTradeErr) {
-      console.warn('[ORCHESTRATOR] No-trade check failed — proceeding:', noTradeErr.message);
-    }
-  }
 
   // Step 0: Expire old standing orders
   let expiredStandingOrders = 0;
