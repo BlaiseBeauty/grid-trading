@@ -696,9 +696,9 @@ async function buildSynthesizerContext(trigger) {
       if (vol?.data) {
         const d = typeof vol.data === 'string' ? JSON.parse(vol.data) : vol.data;
         atrBySymbol[sym] = {
-          atr14: d.atr14 ?? d.ATR14 ?? d.atr ?? null,
+          atr14: d.atr14 ?? d.ATR14 ?? d.atr_14 ?? d.atr ?? null,
           atr_pct: d.atr14_pct ?? d.atr_pct ?? null,
-          bb_width: d.bb_width ?? null,
+          bb_width: d.bb_width ?? d.bb_bandwidth ?? null,
         };
       }
     } catch { /* non-critical */ }
@@ -1114,7 +1114,7 @@ async function buildPositionReviewerContext(trigger) {
       if (vol?.data) {
         const d = typeof vol.data === 'string' ? JSON.parse(vol.data) : vol.data;
         atrBySymbol[sym] = {
-          atr14: d.atr14 ?? d.ATR14 ?? d.atr ?? null,
+          atr14: d.atr14 ?? d.ATR14 ?? d.atr_14 ?? d.atr ?? null,
           atr_pct: d.atr14_pct ?? d.atr_pct ?? null,
         };
       }
