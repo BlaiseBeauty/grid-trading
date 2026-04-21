@@ -394,6 +394,11 @@ async function refreshCandles({ backfill = false } = {}) {
 // ---------- Cron ----------
 const cron = require('node-cron');
 
+// ── MASTER PAUSE SWITCH ────────────────────────────────────────────────────
+// Set to false to re-enable all AI agent cycles (GRID / COMPASS / ORACLE).
+// Non-AI crons (SL monitor, data fetch, cleanup) are unaffected.
+const CYCLES_PAUSED = true;
+
 // Rate limit: max 10 GRID cycles per 24 hours (normal schedule = 6)
 const GRID_CYCLE_LIMIT_24H = 10;
 async function gridCycleAllowed(queryOneFn) {
@@ -432,6 +437,7 @@ function setupCron() {
 
   // --- GRID: 4-hour agent cycle ---
   cron.schedule('0 */4 * * *', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] GRID cycle skipped — CYCLES_PAUSED'); return; }
     console.log('[CRON] 4-hour cycle triggered at', new Date().toISOString());
     if (!await gridCycleAllowed(queryOneTrade)) return;
     console.log('[CRON] Starting agent cycle...');
@@ -523,7 +529,7 @@ function setupCron() {
     slCheckRunning = true;
     try {
       const result = await orchestrator.monitorPositions();
-      const closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit');
+      const closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit' || r.action === 'trail_hit');
       if (closed.length > 0) {
         console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
         broadcast('positions_closed', { closed });
@@ -612,6 +618,7 @@ function setupCron() {
   // Runs BEFORE ORACLE's Monday cycle so ORACLE has fresh data immediately
   const { buildDigest } = require('./systems/grid/agents/performance-digest');
   cron.schedule('0 6 * * 1', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] Digest skipped — CYCLES_PAUSED'); return; }
     console.log('[CRON] Building weekly performance digest...');
     try {
       await buildDigest();
@@ -622,6 +629,7 @@ function setupCron() {
 
   // Hourly position review (independent of 4h cycle, runs at :30)
   cron.schedule('30 * * * *', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] Position review skipped — CYCLES_PAUSED'); return; }
     if (orchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping hourly position review — GRID cycle in progress');
       return;
@@ -784,6 +792,7 @@ function setupCron() {
   // COMPASS cycle — runs at :15 past 1,7,13,19 (45min after ORACLE finishes)
   const compassOrchestrator = require('./systems/compass/agents/orchestrator');
   cron.schedule('15 1,7,13,19 * * *', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] COMPASS cycle skipped — CYCLES_PAUSED'); return; }
     if (compassOrchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping COMPASS cycle — previous still running');
       return;
@@ -803,6 +812,7 @@ function setupCron() {
   // ORACLE ingestion — runs at :00 of 0,6,12,18 (30 min BEFORE agent cycle)
   let ingestionRunning = false;
   cron.schedule('0 0,6,12,18 * * *', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] ORACLE ingestion skipped — CYCLES_PAUSED'); return; }
     if (ingestionRunning) {
       console.log('[CRON] Skipping ORACLE ingestion — previous still running');
       return;
@@ -820,6 +830,7 @@ function setupCron() {
 
   // ORACLE agent cycle — runs at :30 of 0,6,12,18 (after ingestion)
   cron.schedule('30 0,6,12,18 * * *', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] ORACLE cycle skipped — CYCLES_PAUSED'); return; }
     if (oracleOrchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping ORACLE cycle — previous still running');
       return;
@@ -835,6 +846,7 @@ function setupCron() {
   // ORACLE: Graveyard Auditor — every Tuesday at 07:00
   // Runs after Monday's digest (06:00) so trade outcomes are fresh
   cron.schedule('0 7 * * 2', async () => {
+    if (CYCLES_PAUSED) { console.log('[CRON] Graveyard Auditor skipped — CYCLES_PAUSED'); return; }
     console.log('[CRON] Starting Graveyard Auditor...');
     try {
       const { runGraveyardAuditor } = require('./systems/oracle/agents/graveyard-auditor');
