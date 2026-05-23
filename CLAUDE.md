@@ -457,8 +457,9 @@ NEVER run these commands in this terminal:
 - `npm install` / `npm i`
 - `railway up` / `railway deploy`
 - `prisma migrate deploy` / `prisma db push`
-- `git push`
 - `rm -rf` anything
+
+`git push` / `git commit` / `git add` are FINE — they complete in seconds.
 - Any command that restarts a server
 - Any command that takes over the terminal for more than 30 seconds
 

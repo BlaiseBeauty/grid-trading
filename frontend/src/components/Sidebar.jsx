@@ -11,6 +11,7 @@ const NAV = [
   { path: '/learnings', label: 'Learnings', icon: '◆' },
   { path: '/analytics', label: 'Analytics', icon: '◎' },
   { path: '/backtest', label: 'Backtest', icon: '◑' },
+  { path: '/observation', label: 'Observation', icon: '◉' },
   { path: '/settings', label: 'Settings', icon: '⚙' },
 ];
 
@@ -27,6 +28,12 @@ export default function Sidebar({ open, onClose }) {
             {system.bootstrap_phase}
           </span>
         )}
+      </div>
+
+      {/* Observation Mode Banner */}
+      <div className="v2-obs-banner">
+        <span className="v2-obs-dot" />
+        <span className="v2-obs-text">Observation Mode</span>
       </div>
 
       <nav className="v2-sidebar-nav">
@@ -157,6 +164,37 @@ export default function Sidebar({ open, onClose }) {
           transition: color var(--v2-duration-fast);
         }
         .v2-logout-btn:hover { color: var(--v2-text-primary); }
+
+        /* Observation Mode Banner */
+        .v2-obs-banner {
+          display: flex;
+          align-items: center;
+          gap: 7px;
+          padding: 8px 20px;
+          background: rgba(102, 187, 106, 0.08);
+          border-bottom: 1px solid rgba(102, 187, 106, 0.15);
+        }
+        .v2-obs-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #66bb6a;
+          box-shadow: 0 0 6px rgba(102, 187, 106, 0.7);
+          flex-shrink: 0;
+          animation: obs-sidebar-pulse 2.5s ease-in-out infinite;
+        }
+        .v2-obs-text {
+          font-family: var(--v2-font-data);
+          font-size: 10px;
+          font-weight: 600;
+          color: #66bb6a;
+          letter-spacing: 0.8px;
+          text-transform: uppercase;
+        }
+        @keyframes obs-sidebar-pulse {
+          0%, 100% { opacity: 1; }
+          50%       { opacity: 0.5; }
+        }
       `}</style>
     </aside>
   );

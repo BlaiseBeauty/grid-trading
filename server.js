@@ -180,6 +180,9 @@ async function registerRoutes() {
   // GRID patterns API (Phase 5 — learning loop)
   await reg('grid/patterns', './systems/grid/api/patterns', { prefix: '/api' });
 
+  // Observation mode — passive market data collection (no AI, no trades)
+  await reg('grid/observation', './systems/grid/api/observation', { prefix: '/api' });
+
   // ORACLE API routes
   await reg('oracle/theses', './systems/oracle/api/theses', { prefix: '/api/oracle' });
 
@@ -706,6 +709,18 @@ function setupCron() {
     }
   });
 
+  // ── OBSERVATION MODE: market data collection every 6h ────────────────────────
+  // Zero AI calls. Zero trades. Just watching and logging.
+  const { runObservation } = require('./systems/grid/observation/market-observer');
+  let observationRunning = false;
+  cron.schedule('30 */6 * * *', async () => {
+    if (observationRunning) return;
+    observationRunning = true;
+    try { await runObservation(); }
+    catch (err) { console.error('[CRON] Observation failed:', err.message); }
+    finally { observationRunning = false; }
+  });
+
   // Correlation matrix recomputation every 6 hours
   let correlationRunning = false;
   cron.schedule('0 */6 * * *', async () => {
@@ -930,9 +945,14 @@ async function start() {
     }
 
     // One-time boot cycle — confirm orchestrator works on this deployment
+    // Skipped when CYCLES_PAUSED (observation mode) to avoid AI spend on deploy
     const orchestrator = require('./systems/grid/agents/orchestrator');
     const { queryOne: queryOneBoot } = require('./db/connection');
     setTimeout(async () => {
+      if (CYCLES_PAUSED) {
+        console.log('[BOOT] Boot cycle skipped — CYCLES_PAUSED (observation mode)');
+        return;
+      }
       console.log('[BOOT] Firing one-time cycle 10s after startup...');
       if (!await gridCycleAllowed(queryOneBoot)) {
         console.log('[BOOT] Boot cycle skipped — rate limit already reached');
@@ -967,6 +987,12 @@ async function start() {
     const { fetchAll } = require('./systems/grid/agents/external-data-fetcher');
     fetchAll().catch(err => console.error('[BOOT] External data fetch failed:', err.message));
     refreshCandles({ backfill: true }).then(() => console.log('[BOOT] Candle refresh complete')).catch(err => console.error('[BOOT] Candle refresh failed:', err.message));
+
+    // First observation on boot (non-blocking) — starts populating market_observations immediately
+    const { runObservation } = require('./systems/grid/observation/market-observer');
+    setTimeout(() => {
+      runObservation().catch(err => console.error('[BOOT] Initial observation failed:', err.message));
+    }, 5000);
 
     // Eagerly initialise cycle number from DB so deploy log confirms the value
     await orchestrator.initCycleNumber().catch(err => console.error('[BOOT] Cycle number init failed:', err.message));

@@ -6,6 +6,18 @@
 const BaseAgent = require('../base-agent');
 const { queryOne, queryAll, query } = require('../../../../db/connection');
 
+const BRAIN_API_URL    = 'https://brain-web-production-41af.up.railway.app';
+const BRAIN_API_SECRET = process.env.BRAIN_API_SECRET || null;
+
+/** Map GRID-native regime labels to Brain color codes and numeric scores. */
+const REGIME_MAP = {
+  trending_up:   { color: 'GREEN', score: 85 },
+  trending_down: { color: 'RED',   score: 15 },
+  volatile:      { color: 'AMBER', score: 40 },
+  ranging:       { color: 'AMBER', score: 55 },
+  quiet:         { color: 'AMBER', score: 50 },
+};
+
 class RegimeClassifierAgent extends BaseAgent {
   constructor() {
     super({ name: 'regime_classifier', layer: 'strategy', model: 'claude-sonnet-4-6', costTier: 'grid_knowledge' });
@@ -36,6 +48,11 @@ class RegimeClassifierAgent extends BaseAgent {
       }
       await this.storeRegime(parsed, result?.id);
       console.log(`[REGIME_CLASSIFIER] Stored regime: ${parsed.regime} conf=${parsed.confidence}`);
+
+      // Best-effort: forward regime signal to Brain external_snapshots
+      this.postRegimeToBrain(parsed).catch(err =>
+        console.warn('[REGIME_CLASSIFIER] Brain POST skipped (non-fatal):', err.message)
+      );
     }
 
     return result;
@@ -86,6 +103,39 @@ class RegimeClassifierAgent extends BaseAgent {
       JSON.stringify(r.recommended_adjustments || {}),
       highest_transition
     ]);
+  }
+
+  async postRegimeToBrain(parsed) {
+    if (!BRAIN_API_SECRET) {
+      console.log('[REGIME_CLASSIFIER] BRAIN_API_SECRET not set — skipping Brain POST');
+      return;
+    }
+
+    const { color, score } = REGIME_MAP[parsed.regime] || { color: 'AMBER', score: 50 };
+    const evidenceParts = (parsed.evidence || []).slice(0, 2).map(e => String(e));
+    const signal = evidenceParts.length ? evidenceParts.join(' | ') : `Regime: ${parsed.regime}`;
+
+    const payload = {
+      regime:     parsed.regime,
+      color,
+      confidence: parsed.confidence ?? null,
+      signal,
+      score,
+      timestamp:  new Date().toISOString(),
+    };
+
+    const res = await fetch(`${BRAIN_API_URL}/api/capture/regime-signal`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${BRAIN_API_SECRET}`,
+      },
+      body:   JSON.stringify(payload),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) throw new Error(`Brain API HTTP ${res.status}`);
+    console.log(`[REGIME_CLASSIFIER] Brain POST OK — ${parsed.regime} (${color})`);
   }
 
   parseOutput(text) {

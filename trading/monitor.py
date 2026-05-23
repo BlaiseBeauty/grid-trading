@@ -16,6 +16,10 @@ PRIMARY_EXCHANGE = os.getenv('CCXT_EXCHANGE', 'kucoin')
 class PositionMonitor:
     TAKER_FEE = 0.001  # 0.10% — must match PaperTrader.TAKER_FEE
 
+    # Trailing stop config
+    TRAIL_ACTIVATE_PCT = 1.0   # profit % required before trailing starts
+    TRAIL_DISTANCE_PCT = 2.0   # % drop from peak that triggers close
+
     def __init__(self):
         self.db_url = os.getenv('DATABASE_URL', 'postgresql://localhost:5432/grid')
         self.market_data = MarketData()
@@ -73,16 +77,18 @@ class PositionMonitor:
             cur.execute("""
                 SELECT id, symbol, side, quantity, entry_price, tp_price, sl_price,
                        exchange, entry_fee, mode,
-                       exchange_sl_order_id, exchange_tp_order_id
+                       exchange_sl_order_id, exchange_tp_order_id,
+                       peak_price, trail_activated
                 FROM trades
-                WHERE status = 'open' AND (tp_price IS NOT NULL OR sl_price IS NOT NULL)
+                WHERE status = 'open'
             """)
             positions = cur.fetchall()
             results = []
 
             for pos in positions:
                 (trade_id, symbol, side, quantity, entry_price, tp_price, sl_price,
-                 exchange, entry_fee, mode, exchange_sl_id, exchange_tp_id) = pos
+                 exchange, entry_fee, mode, exchange_sl_id, exchange_tp_id,
+                 peak_price, trail_activated) = pos
 
                 if mode == 'live' and (exchange_sl_id or exchange_tp_id):
                     # Live trade: reconcile via exchange order status
@@ -95,7 +101,8 @@ class PositionMonitor:
                     # Paper trade (or live trade missing exchange orders): poll prices
                     result = self._check_paper_trade(
                         cur, trade_id, symbol, side, quantity, entry_price,
-                        tp_price, sl_price, exchange, entry_fee
+                        tp_price, sl_price, exchange, entry_fee,
+                        peak_price, trail_activated
                     )
                     results.append(result)
 
@@ -106,8 +113,9 @@ class PositionMonitor:
         return results
 
     def _check_paper_trade(self, cur, trade_id, symbol, side, quantity, entry_price,
-                           tp_price, sl_price, exchange, entry_fee):
-        """Original price-polling logic for paper trades."""
+                           tp_price, sl_price, exchange, entry_fee,
+                           peak_price=None, trail_activated=False):
+        """Price-polling logic for paper trades, with trailing stop."""
         try:
             current_price = self._fetch_price(symbol, exchange)
         except Exception as e:
@@ -117,19 +125,68 @@ class PositionMonitor:
         if not entry_price or float(entry_price) <= 0:
             return {'trade_id': trade_id, 'error': f'Invalid entry_price: {entry_price}'}
 
+        entry = float(entry_price)
+
+        # ── Trailing stop logic ───────────────────────────────────────────────
+        # Track the best price seen since entry. Once profit >= TRAIL_ACTIVATE_PCT,
+        # trailing is active. If price then drops TRAIL_DISTANCE_PCT from peak → close.
+        current_peak = float(peak_price) if peak_price else None
+        currently_activated = bool(trail_activated)
+
+        if side == 'buy':
+            unrealised_pct = ((current_price - entry) / entry) * 100
+            new_peak = max(current_peak, current_price) if current_peak else current_price
+        else:
+            unrealised_pct = ((entry - current_price) / entry) * 100
+            # For shorts, peak = lowest price seen (most profitable point)
+            new_peak = min(current_peak, current_price) if current_peak else current_price
+
+        # Activate trailing once profit threshold is reached
+        new_activated = currently_activated or (unrealised_pct >= self.TRAIL_ACTIVATE_PCT)
+
+        # Persist peak_price and trail_activated updates (best-effort, separate from close)
+        if new_peak != current_peak or new_activated != currently_activated:
+            try:
+                cur.execute(
+                    "UPDATE trades SET peak_price = %s, trail_activated = %s WHERE id = %s AND status = 'open'",
+                    (new_peak, new_activated, trade_id)
+                )
+            except Exception as e:
+                print(f'[MONITOR] Failed to update peak for trade #{trade_id}: {e}')
+
+        # Check if trailing stop triggered
+        trail_hit = False
+        if new_activated and new_peak:
+            if side == 'buy':
+                drop_from_peak = ((new_peak - current_price) / new_peak) * 100
+                trail_hit = drop_from_peak >= self.TRAIL_DISTANCE_PCT
+            else:
+                rise_from_peak = ((current_price - new_peak) / new_peak) * 100
+                trail_hit = rise_from_peak >= self.TRAIL_DISTANCE_PCT
+
+        if trail_hit:
+            print(f'[MONITOR] TRAIL_HIT — trade #{trade_id} {symbol} {side} '
+                  f'peak={new_peak} current={current_price} '
+                  f'drop={((new_peak - current_price) / new_peak * 100):.2f}%')
+        # ─────────────────────────────────────────────────────────────────────
+
         action = None
         if side == 'buy':
-            pnl_pct = ((current_price - float(entry_price)) / float(entry_price)) * 100
+            pnl_pct = ((current_price - entry) / entry) * 100
             if tp_price and current_price >= float(tp_price):
                 action = 'tp_hit'
             elif sl_price and current_price <= float(sl_price):
                 action = 'sl_hit'
+            elif trail_hit:
+                action = 'trail_hit'
         else:
-            pnl_pct = ((float(entry_price) - current_price) / float(entry_price)) * 100
+            pnl_pct = ((entry - current_price) / entry) * 100
             if tp_price and current_price <= float(tp_price):
                 action = 'tp_hit'
             elif sl_price and current_price >= float(sl_price):
                 action = 'sl_hit'
+            elif trail_hit:
+                action = 'trail_hit'
 
         if action:
             if side == 'buy':

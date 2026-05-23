@@ -17,12 +17,13 @@ import Learnings from './pages/Learnings';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 import Backtest from './pages/Backtest';
+import Observation from './pages/Observation';
 import CompassDashboard from './systems/compass/CompassDashboard';
 import OracleDashboard from './systems/oracle/OracleDashboard';
 import PlatformOverview from './systems/platform/PlatformOverview';
 
 // GRID pages get the sidebar; COMPASS/ORACLE/PLATFORM pages don't
-const GRID_ROUTES = ['/', '/agents', '/trades', '/strategy', '/learnings', '/analytics', '/backtest', '/settings'];
+const GRID_ROUTES = ['/', '/agents', '/trades', '/strategy', '/learnings', '/analytics', '/backtest', '/observation', '/settings'];
 
 function Layout({ children }) {
   useWebSocket();
@@ -111,6 +112,7 @@ export default function App() {
           <Route path="/learnings" element={<Learnings />} />
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/observation" element={<Observation />} />
           <Route path="/settings" element={<Settings />} />
 
           {/* COMPASS, ORACLE, PLATFORM pages */}

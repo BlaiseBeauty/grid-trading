@@ -5,8 +5,8 @@
   "main": "server.js",
   "scripts": {
     "build": "cd frontend && npm install && npm run build",
-    "start": "node db/migrate.js && node server.js",
-    "dev": "node --watch server.js",
+    "start": "source scripts/load-secrets.sh && node db/migrate.js && node server.js",
+    "dev": "source scripts/load-secrets.sh && node --watch server.js",
     "migrate": "node db/migrate.js",
     "test:scenarios": "node scripts/scenario-tests.js",
     "audit": "node scripts/behavioral-audit.js",
