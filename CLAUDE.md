@@ -447,3 +447,36 @@ Loop 7: GRID Internal (Pattern Discovery → Synthesizer)
   Patterns auto-promote to 'confirmed' when sample >= 15 AND win_rate >= 65%
   grid/agents/context-builders.js injects confirmed patterns into Synthesizer prompt
   API: GET /api/patterns, /api/patterns/confirmed, /api/patterns/:symbol
+
+---
+
+## Master Terminal Rules
+<!-- Inherited from ~/Desktop/TECH PROJECTS/Claude Apps/CLAUDE.md -->
+
+NEVER run these commands in this terminal:
+- `npm install` / `npm i`
+- `railway up` / `railway deploy`
+- `prisma migrate deploy` / `prisma db push`
+- `git push`
+- `rm -rf` anything
+- Any command that restarts a server
+- Any command that takes over the terminal for more than 30 seconds
+
+**Instead**, output: `"Run this in a separate terminal: [exact command]"`
+
+WHY: This terminal runs inside Helm. Restarting it kills the session and loses all context.
+
+### Always read first:
+1. CLAUDE.md in this project
+2. BRAIN.md if it exists
+3. `git log --oneline -10`
+
+### End of every session:
+1. Summarise what you did in 3 lines
+2. List any commands the user needs to run
+3. List any follow-up tasks
+4. `/clear` to reset context
+
+### Commit messages:
+Never commit directly. Always use Helm's Ship button.
+If Ship not available: `"Ready to ship: [suggested commit message]"`
