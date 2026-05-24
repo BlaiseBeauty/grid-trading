@@ -9,3 +9,9 @@ __pycache__/
 backup.sql
 backup-clean.sql
 *.sql.bak
+.DS_Store
+**/.DS_Store
+*.png
+*.jpg
+*.jpeg
+"package-lock 2.json"
