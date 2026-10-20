@@ -3,6 +3,19 @@ GRID Backtest Engine
 Replays historical data, matches strategy templates against signals,
 records trades with full metrics.
 
+Accounting conventions (all fees/slippage applied exactly once):
+  * Entry fills at signal-bar close with adverse slippage (default 5 bps).
+  * Entry fee is deducted from equity when the position opens.
+  * Exit fee is deducted when it closes; stored pnl_usd = gross - entry_fee - exit_fee,
+    so  sum(pnl_usd) == final_equity - initial_capital.
+  * Stops fill at the worse of the stop level and the bar open (gap), plus slippage;
+    take-profits fill at the level (or the open if the bar gapped through it).
+  * Equity is marked to market on every bar: max drawdown and Sharpe come from the
+    per-bar equity curve (annualised with the bars-per-year of the timeframe).
+  * No parameters are fitted by this engine (templates come from the DB and
+    indicators are causal), so in_sample_cutoff cannot leak into "training".
+    Instead the run reports in-sample vs out-of-sample metrics separately.
+
 Usage:
   python backtest_engine.py --run-id 1
   python backtest_engine.py --run-id 1 --progress-ws ws://localhost:3100/ws
@@ -26,6 +39,73 @@ from backtest_signals import (
     load_ohlcv, precompute_indicators,
     compute_signals_at_bar, compute_regime_at_bar
 )
+
+
+# ──────────────────────────────────────
+# Pure helpers (unit-testable, no DB)
+# ──────────────────────────────────────
+
+_TF_MINUTES = {'m': 1, 'h': 60, 'd': 1440, 'w': 10080}
+
+
+def timeframe_minutes(timeframe):
+    try:
+        return int(timeframe[:-1]) * _TF_MINUTES[timeframe[-1]]
+    except (KeyError, ValueError, IndexError):
+        raise ValueError(f'Unsupported timeframe: {timeframe!r}')
+
+
+def bars_per_year(timeframe):
+    """Crypto trades 24/7: 365 days of bars (4h -> 2190, 1h -> 8760, 1d -> 365)."""
+    return 365 * 24 * 60 / timeframe_minutes(timeframe)
+
+
+def max_drawdown_pct(equity_values):
+    """Max peak-to-trough drawdown (%) of an equity series (per bar)."""
+    eq = np.asarray(list(equity_values), dtype=float)
+    if eq.size == 0:
+        return 0.0
+    peaks = np.maximum.accumulate(eq)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        dd = np.where(peaks > 0, (peaks - eq) / peaks * 100, 0.0)
+    return float(dd.max())
+
+
+def sharpe_from_equity(equity_values, periods_per_year):
+    """Annualised Sharpe (rf=0) from per-bar equity returns."""
+    eq = np.asarray(list(equity_values), dtype=float)
+    if eq.size < 3:
+        return 0.0
+    prev = eq[:-1]
+    with np.errstate(divide='ignore', invalid='ignore'):
+        rets = np.where(prev > 0, np.diff(eq) / prev, 0.0)
+    sd = rets.std(ddof=1)
+    if not np.isfinite(sd) or sd <= 0:
+        return 0.0
+    return float(rets.mean() / sd * np.sqrt(periods_per_year))
+
+
+def apply_slippage(side, price, bps, is_entry):
+    """Adverse slippage. long entry / short exit buy higher; long exit / short entry sell lower."""
+    f = bps / 10000.0
+    buying = (side == 'long') == is_entry
+    return price * (1 + f) if buying else price * (1 - f)
+
+
+def stop_fill_price(side, level, bar_open, slippage_bps):
+    """Stop-loss fill: worse of the stop level and the bar open (gap), then slippage."""
+    base = min(level, bar_open) if side == 'long' else max(level, bar_open)
+    return apply_slippage(side, base, slippage_bps, is_entry=False)
+
+
+def target_fill_price(side, level, bar_open):
+    """Take-profit limit fill: at the level, or the open if the bar gapped through it."""
+    return max(level, bar_open) if side == 'long' else min(level, bar_open)
+
+
+def _to_utc(ts):
+    t = pd.Timestamp(ts)
+    return t.tz_localize('UTC') if t.tzinfo is None else t.tz_convert('UTC')
 
 
 # ──────────────────────────────────────
@@ -158,15 +238,16 @@ def match_template_against_signals(template, signals, regime, ind, i):
                 vol = c.get('volume', 0)
                 avg = c.get('vol_avg20', 1)
                 actual = vol / avg if avg and avg > 0 else 0
-            elif indicator_lower == 'bb_pct' or indicator_lower == 'bb_bandwidth':
-                actual = c.get('bb_width')
-                if actual is not None:
-                    actual = actual / 100  # normalize to 0-1 range
+            elif indicator_lower == 'bb_pct':
+                actual = c.get('bb_pct')            # %B, same definition as live indicators.py
+            elif indicator_lower == 'bb_bandwidth':
+                actual = c.get('bb_bandwidth')      # (upper-lower)/mid ratio, same as live
             elif indicator_lower == 'macd_histogram':
                 actual = c.get('macd_hist')
             elif indicator_lower == 'stoch_k':
-                # Approximate stochastic from RSI range
-                actual = c.get('rsi14')
+                actual = c.get('stoch_k')           # real %K(14), same as live
+            elif indicator_lower == 'stoch_d':
+                actual = c.get('stoch_d')
 
             if actual is not None and not pd.isna(actual):
                 try:
@@ -184,8 +265,9 @@ def match_template_against_signals(template, signals, regime, ind, i):
                     elif operator == '>=' and actual >= value:
                         matched_conditions += 1
                         matched_signal_types.append(indicator)
-                except (ValueError, TypeError):
-                    pass
+                except (ValueError, TypeError) as e:
+                    print(f'[ENGINE] Template {template.get("name")}: bad condition on {indicator!r} '
+                          f'(value={value!r}, actual={actual!r}): {e}')
 
         # Match against computed signals by category/type
         if signal_category:
@@ -244,6 +326,7 @@ def determine_side(template, signals, regime):
 
 class BacktestEngine:
     FEE_BPS = 10  # 10 basis points per side
+    SLIPPAGE_BPS = 5  # default adverse slippage per side (configurable via config['slippage_bps'])
 
     def __init__(self, run_id, config):
         self.run_id = run_id
@@ -254,22 +337,26 @@ class BacktestEngine:
         self.date_to = config['date_to']
         self.in_sample_cutoff = config.get('in_sample_cutoff')
         self.initial_capital = config.get('initial_capital', 10000)
+        self.slippage_bps = float(config.get('slippage_bps', self.SLIPPAGE_BPS))
+        self.fee_bps = float(config.get('fee_bps', self.FEE_BPS))
+        self.periods_per_year = bars_per_year(self.timeframe)
 
         self.conn = get_db()
         self.templates = load_templates(self.conn)
 
         # Portfolio state
-        self.equity = self.initial_capital
-        self.peak_equity = self.initial_capital
-        self.max_drawdown = 0.0
+        self.equity = self.initial_capital          # realised cash equity (entry fees already paid)
+        self.mtm_equity = self.initial_capital      # realised + unrealised, updated every bar
+        self.peak_mtm = self.initial_capital
+        self.max_drawdown = 0.0                     # per-bar, mark-to-market
         self.open_positions = {}  # symbol -> position dict
         self.closed_trades = []
-        self.equity_curve = []  # (timestamp, equity)
-        self.hourly_returns = []
+        self.equity_curve = []  # (timestamp, mtm equity) one point per bar
 
         # Pre-load and pre-compute data for all symbols
         self.data = {}
         self.indicators = {}
+        self.bar_index = {}   # symbol -> {timestamp: row index}  (O(1) lookups)
         for symbol in self.symbols:
             print(f'[ENGINE] Loading {symbol} {self.timeframe}...')
             df = load_ohlcv(symbol, self.timeframe)
@@ -285,11 +372,13 @@ class BacktestEngine:
             df = df.reset_index(drop=True)
 
             self.data[symbol] = df
+            self.bar_index[symbol] = {ts: i for i, ts in enumerate(df['timestamp'].tolist())}
             print(f'[ENGINE] Pre-computing indicators for {symbol} ({len(df)} bars)...')
             self.indicators[symbol] = precompute_indicators(df)
 
         print(f'[ENGINE] Loaded {len(self.templates)} active templates')
         print(f'[ENGINE] Data loaded for {list(self.data.keys())}')
+        print(f'[ENGINE] Costs: fee {self.fee_bps} bps/side, slippage {self.slippage_bps} bps/side')
 
     def run(self):
         """Main backtest loop."""
@@ -315,7 +404,7 @@ class BacktestEngine:
                 if (bar_idx + 1) % 500 == 0 or bar_idx == total_bars - 1:
                     pct = (bar_idx + 1) / total_bars * 100
                     print(f'[ENGINE] Progress: {pct:.0f}% ({bar_idx+1}/{total_bars}) | '
-                          f'Equity: ${self.equity:.2f} | Open: {len(self.open_positions)} | '
+                          f'Equity: ${self.mtm_equity:.2f} | Open: {len(self.open_positions)} | '
                           f'Closed: {len(self.closed_trades)}', end='\r')
 
                     # Write progress file for WebSocket relay
@@ -323,6 +412,7 @@ class BacktestEngine:
 
             # Close any remaining open positions at end of data
             self._close_all_positions(timeline[-1], 'end_of_data')
+            self._record_equity(timeline[-1], replace_last=True)
 
             # Compute and store statistics
             print(f'\n[ENGINE] Computing statistics...')
@@ -335,6 +425,7 @@ class BacktestEngine:
                 insert_trade(self.conn, trade)
 
             self._print_summary(stats)
+            self._write_oos_report(stats)
             return stats
 
         except Exception as e:
@@ -343,6 +434,8 @@ class BacktestEngine:
             import traceback
             traceback.print_exc()
             raise
+
+    # ── bar loop ─────────────────────────────────────────────────────────────
 
     def _process_bar(self, ts):
         """Process a single timestamp across all symbols."""
@@ -359,10 +452,9 @@ class BacktestEngine:
             ind = self.indicators[symbol]
 
             # Find the bar index for this timestamp
-            mask = df['timestamp'] == ts
-            if not mask.any():
+            i = self.bar_index[symbol].get(ts)
+            if i is None:
                 continue
-            i = mask.idxmax()
 
             # Compute signals at this bar
             signals = compute_signals_at_bar(ind, i, symbol, self.timeframe, ts)
@@ -388,8 +480,8 @@ class BacktestEngine:
                 if not self._passes_risk_check(symbol, confidence):
                     continue
 
-                # Open position
-                entry_price = float(df.iloc[i]['close'])
+                # Open position (signal at bar close -> fill at close +/- slippage)
+                signal_price = float(df.iloc[i]['close'])
                 side = determine_side(template, signals, regime)
 
                 self._open_position(
@@ -398,18 +490,18 @@ class BacktestEngine:
                     template=template,
                     regime=regime,
                     confidence=confidence,
-                    entry_price=entry_price,
+                    signal_price=signal_price,
                     entry_time=ts,
                     signals_matched=matched_sigs,
                 )
                 break  # Only one entry per symbol per bar
 
-        # Record equity
-        self.equity_curve.append((ts, self.equity))
+        # 3. Mark to market -> one equity point per bar
+        self._record_equity(ts)
 
     def _passes_risk_check(self, symbol, confidence):
-        """Deterministic risk checks."""
-        drawdown = (self.peak_equity - self.equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
+        """Deterministic risk checks (drawdown measured on mark-to-market equity)."""
+        drawdown = (self.peak_mtm - self.mtm_equity) / self.peak_mtm * 100 if self.peak_mtm > 0 else 0
 
         # Hard stop at 25% drawdown
         if drawdown > 25:
@@ -428,20 +520,22 @@ class BacktestEngine:
         return True
 
     def _open_position(self, symbol, side, template, regime, confidence,
-                       entry_price, entry_time, signals_matched):
-        """Open a new position."""
+                       signal_price, entry_time, signals_matched):
+        """Open a new position (entry fee deducted from equity here, once)."""
         # Position size: confidence% of 5% of portfolio
         position_size_pct = confidence / 100 * 5
 
         # Reduce size by 50% when in drawdown > 15%
-        drawdown = (self.peak_equity - self.equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
+        drawdown = (self.peak_mtm - self.mtm_equity) / self.peak_mtm * 100 if self.peak_mtm > 0 else 0
         if drawdown > 15:
             position_size_pct *= 0.5
 
         position_usd = self.equity * position_size_pct / 100
 
-        # Apply entry fee
-        fee = position_usd * self.FEE_BPS / 10000
+        entry_price = apply_slippage(side, signal_price, self.slippage_bps, is_entry=True)
+
+        # Entry fee (once, here)
+        fee = position_usd * self.fee_bps / 10000
         self.equity -= fee
 
         # Get SL/TP from template exit conditions
@@ -465,6 +559,7 @@ class BacktestEngine:
             'regime': regime,
             'confidence': confidence,
             'entry_price': entry_price,
+            'signal_price': signal_price,
             'entry_time': entry_time,
             'position_size_pct': position_size_pct,
             'position_usd': position_usd,
@@ -473,6 +568,7 @@ class BacktestEngine:
             'time_stop_hours': time_stop_hours,
             'signals_matched': signals_matched,
             'entry_fee': fee,
+            'last_price': signal_price,
         }
 
     def _check_open_positions(self, ts):
@@ -484,12 +580,12 @@ class BacktestEngine:
                 continue
 
             df = self.data[symbol]
-            mask = df['timestamp'] == ts
-            if not mask.any():
+            i = self.bar_index[symbol].get(ts)
+            if i is None:
                 continue
-            i = mask.idxmax()
             bar = df.iloc[i]
 
+            bar_open = float(bar['open'])
             high = float(bar['high'])
             low = float(bar['low'])
             close = float(bar['close'])
@@ -497,20 +593,21 @@ class BacktestEngine:
             close_reason = None
             exit_price = None
 
+            # Stop is tested before the target inside a bar (conservative).
             if pos['side'] == 'long':
                 if low <= pos['sl_price']:
                     close_reason = 'stop_loss'
-                    exit_price = pos['sl_price']
+                    exit_price = stop_fill_price('long', pos['sl_price'], bar_open, self.slippage_bps)
                 elif high >= pos['tp_price']:
                     close_reason = 'take_profit'
-                    exit_price = pos['tp_price']
+                    exit_price = target_fill_price('long', pos['tp_price'], bar_open)
             else:  # short
                 if high >= pos['sl_price']:
                     close_reason = 'stop_loss'
-                    exit_price = pos['sl_price']
+                    exit_price = stop_fill_price('short', pos['sl_price'], bar_open, self.slippage_bps)
                 elif low <= pos['tp_price']:
                     close_reason = 'take_profit'
-                    exit_price = pos['tp_price']
+                    exit_price = target_fill_price('short', pos['tp_price'], bar_open)
 
             # Time stop
             if close_reason is None and pos.get('time_stop_hours'):
@@ -521,7 +618,7 @@ class BacktestEngine:
                     elapsed_hours = 0
                 if elapsed_hours > pos['time_stop_hours']:
                     close_reason = 'time_stop'
-                    exit_price = close
+                    exit_price = apply_slippage(pos['side'], close, self.slippage_bps, is_entry=False)
 
             if close_reason:
                 to_close.append((symbol, exit_price, ts, close_reason))
@@ -530,45 +627,32 @@ class BacktestEngine:
             self._close_position(symbol, exit_price, exit_time, reason)
 
     def _close_position(self, symbol, exit_price, exit_time, close_reason):
-        """Close a position and record the trade."""
+        """Close a position and record the trade. `exit_price` is the actual
+        fill (slippage/gap already applied)."""
         pos = self.open_positions.pop(symbol, None)
         if not pos:
             return
 
-        # Exit fee
-        exit_fee = pos['position_usd'] * self.FEE_BPS / 10000
-        total_fees = pos['entry_fee'] + exit_fee
-
-        # PnL calculation
+        # Gross move on the position
         if pos['side'] == 'long':
-            pnl_pct = (exit_price - pos['entry_price']) / pos['entry_price'] * 100
+            move_pct = (exit_price - pos['entry_price']) / pos['entry_price']
         else:
-            pnl_pct = (pos['entry_price'] - exit_price) / pos['entry_price'] * 100
+            move_pct = (pos['entry_price'] - exit_price) / pos['entry_price']
+        gross_usd = pos['position_usd'] * move_pct
 
-        pnl_usd = pos['position_usd'] * pnl_pct / 100 - total_fees
+        # Fees: entry fee was already deducted from equity at open; exit fee now.
+        exit_notional = pos['position_usd'] * (exit_price / pos['entry_price'])
+        exit_fee = exit_notional * self.fee_bps / 10000
+        total_fees = pos['entry_fee'] + exit_fee
+        pnl_usd = gross_usd - total_fees                # stored, net of ALL fees (once)
+        pnl_pct_net = pnl_usd / pos['position_usd'] * 100 if pos['position_usd'] else 0.0
 
-        # Update equity
-        self.equity += pnl_usd - exit_fee  # entry fee already deducted
-        if self.equity > self.peak_equity:
-            self.peak_equity = self.equity
+        self.equity += gross_usd - exit_fee             # entry fee already in self.equity
 
-        # Track drawdown
-        current_dd = (self.peak_equity - self.equity) / self.peak_equity * 100 if self.peak_equity > 0 else 0
-        if current_dd > self.max_drawdown:
-            self.max_drawdown = current_dd
-
-        # Track returns for Sharpe
-        self.hourly_returns.append(pnl_pct)
-
-        # Is in-sample?
+        # Is in-sample? (by entry time)
         is_in_sample = True
         if self.in_sample_cutoff:
-            try:
-                entry_dt = pd.Timestamp(pos['entry_time'])
-                cutoff_dt = pd.Timestamp(self.in_sample_cutoff)
-                is_in_sample = entry_dt < cutoff_dt
-            except Exception:
-                is_in_sample = str(pos['entry_time'])[:10] < str(self.in_sample_cutoff)[:10]
+            is_in_sample = _to_utc(pos['entry_time']) < _to_utc(self.in_sample_cutoff)
 
         trade = {
             'run_id': self.run_id,
@@ -582,7 +666,7 @@ class BacktestEngine:
             'exit_price': exit_price,
             'entry_time': pos['entry_time'],
             'exit_time': exit_time,
-            'pnl_pct': round(pnl_pct, 4),
+            'pnl_pct': round(pnl_pct_net, 4),           # net % of position notional
             'pnl_usd': round(pnl_usd, 4),
             'position_size_pct': pos['position_size_pct'],
             'close_reason': close_reason,
@@ -593,57 +677,108 @@ class BacktestEngine:
         self.closed_trades.append(trade)
 
     def _close_all_positions(self, ts, reason):
-        """Close all remaining open positions."""
+        """Close all remaining open positions at the last known price."""
         for symbol in list(self.open_positions.keys()):
-            if symbol in self.data:
-                df = self.data[symbol]
-                mask = df['timestamp'] == ts
-                if mask.any():
-                    i = mask.idxmax()
-                    exit_price = float(df.iloc[i]['close'])
-                    self._close_position(symbol, exit_price, ts, reason)
+            pos = self.open_positions[symbol]
+            i = self.bar_index.get(symbol, {}).get(ts)
+            if i is not None:
+                price = float(self.data[symbol].iloc[i]['close'])
+            else:
+                price = pos['last_price']      # symbol had no bar at the final timestamp
+            fill = apply_slippage(pos['side'], price, self.slippage_bps, is_entry=False)
+            self._close_position(symbol, fill, ts, reason)
+
+    # ── equity / statistics ──────────────────────────────────────────────────
+
+    def _record_equity(self, ts, replace_last=False):
+        """Mark open positions to market at this bar's close and record the
+        equity point; drawdown is tracked on every bar."""
+        unrealised = 0.0
+        for symbol, pos in self.open_positions.items():
+            i = self.bar_index.get(symbol, {}).get(ts)
+            if i is not None:
+                pos['last_price'] = float(self.data[symbol].iloc[i]['close'])
+            move = (pos['last_price'] - pos['entry_price']) / pos['entry_price']
+            if pos['side'] == 'short':
+                move = -move
+            unrealised += pos['position_usd'] * move
+        self.mtm_equity = self.equity + unrealised
+
+        if replace_last and self.equity_curve:
+            self.equity_curve[-1] = (ts, self.mtm_equity)
+        else:
+            self.equity_curve.append((ts, self.mtm_equity))
+
+        if self.mtm_equity > self.peak_mtm:
+            self.peak_mtm = self.mtm_equity
+        dd = (self.peak_mtm - self.mtm_equity) / self.peak_mtm * 100 if self.peak_mtm > 0 else 0
+        if dd > self.max_drawdown:
+            self.max_drawdown = dd
+
+    def _segment_stats(self, trades, curve):
+        """Stats for a subset of trades and a slice of the equity curve."""
+        values = [e for _, e in curve]
+        n = len(trades)
+        wins = sum(1 for t in trades if t['pnl_usd'] > 0)       # win = positive NET pnl
+        ret = (values[-1] / values[0] - 1) * 100 if len(values) >= 2 and values[0] > 0 else 0.0
+        return {
+            'total_trades': n,
+            'win_rate': round(wins / n * 100, 2) if n else 0,
+            'total_return': round(ret, 4),
+            'sharpe_ratio': round(sharpe_from_equity(values, self.periods_per_year), 4),
+            'max_drawdown': round(max_drawdown_pct(values), 4),
+        }
 
     def _compute_stats(self):
-        """Compute final run statistics."""
+        """Compute final run statistics (net of fees+slippage, per-bar MTM)."""
         trades = self.closed_trades
         total = len(trades)
+        values = [e for _, e in self.equity_curve]
 
         if total == 0:
             return {
                 'total_trades': 0, 'win_rate': 0, 'total_return': 0,
-                'sharpe_ratio': 0, 'max_drawdown': 0,
+                'sharpe_ratio': 0, 'max_drawdown': round(self.max_drawdown, 4),
             }
 
-        wins = sum(1 for t in trades if t['pnl_pct'] > 0)
+        wins = sum(1 for t in trades if t['pnl_usd'] > 0)        # net pnl, not gross price move
         win_rate = wins / total * 100
-
         total_return = (self.equity - self.initial_capital) / self.initial_capital * 100
+        sharpe = sharpe_from_equity(values, self.periods_per_year)
 
-        # Sharpe ratio (annualized)
-        if self.hourly_returns:
-            returns = np.array(self.hourly_returns)
-            if returns.std() > 0:
-                # Annualize based on timeframe
-                if self.timeframe == '1h':
-                    periods_per_year = 8760
-                elif self.timeframe == '4h':
-                    periods_per_year = 2190
-                else:
-                    periods_per_year = 365
-
-                sharpe = (returns.mean() / returns.std()) * np.sqrt(periods_per_year)
-            else:
-                sharpe = 0
-        else:
-            sharpe = 0
-
-        return {
+        stats = {
             'total_trades': total,
             'win_rate': round(win_rate, 2),
             'total_return': round(total_return, 4),
             'sharpe_ratio': round(float(sharpe), 4),
             'max_drawdown': round(self.max_drawdown, 4),
         }
+
+        if self.in_sample_cutoff:
+            cutoff = _to_utc(self.in_sample_cutoff)
+            is_curve = [(t, e) for t, e in self.equity_curve if _to_utc(t) < cutoff]
+            oos_curve = [(t, e) for t, e in self.equity_curve if _to_utc(t) >= cutoff]
+            # OOS segment starts from the equity level at the cutoff, so its return is OOS-only
+            if is_curve and oos_curve:
+                oos_curve = [is_curve[-1]] + oos_curve
+            stats['segments'] = {
+                'in_sample': self._segment_stats([t for t in trades if t['is_in_sample']], is_curve),
+                'out_of_sample': self._segment_stats([t for t in trades if not t['is_in_sample']], oos_curve),
+                'cutoff': str(self.in_sample_cutoff),
+            }
+        return stats
+
+    def _write_oos_report(self, stats):
+        """Persist IS/OOS metrics (backtest_runs has no columns for them)."""
+        if 'segments' not in stats:
+            return
+        path = f'/tmp/backtest_oos_{self.run_id}.json'
+        try:
+            with open(path, 'w') as f:
+                json.dump({'run_id': self.run_id, **stats['segments']}, f)
+            print(f'[ENGINE] OOS report written to {path}')
+        except OSError as e:
+            print(f'[ENGINE] Could not write OOS report {path}: {e}')
 
     def _write_progress(self, current, total, current_date):
         """Write progress to a temp file for WebSocket relay."""
@@ -652,15 +787,15 @@ class BacktestEngine:
             'progress_pct': round(current / total * 100, 1),
             'trades_so_far': len(self.closed_trades),
             'current_date': str(current_date),
-            'equity': round(self.equity, 2),
+            'equity': round(self.mtm_equity, 2),
             'open_positions': len(self.open_positions),
         }
         try:
             progress_file = f'/tmp/backtest_progress_{self.run_id}.json'
             with open(progress_file, 'w') as f:
                 json.dump(progress, f)
-        except Exception:
-            pass
+        except OSError as e:
+            print(f'\n[ENGINE] Could not write progress file: {e}')
 
     def _print_summary(self, stats):
         """Print backtest results summary."""
@@ -671,11 +806,12 @@ class BacktestEngine:
         print(f'  BACKTEST COMPLETE — Run #{self.run_id}')
         print(f'═══════════════════════════════════════════════')
         print(f'  Total Trades:   {stats["total_trades"]}')
-        print(f'  Win Rate:       {stats["win_rate"]:.1f}%')
+        print(f'  Win Rate:       {stats["win_rate"]:.1f}%  (net of fees)')
         print(f'  Total Return:   {stats["total_return"]:.2f}%')
-        print(f'  Sharpe Ratio:   {stats["sharpe_ratio"]:.4f}')
-        print(f'  Max Drawdown:   {stats["max_drawdown"]:.2f}%')
+        print(f'  Sharpe Ratio:   {stats["sharpe_ratio"]:.4f}  (per-bar equity, {self.periods_per_year:.0f} bars/yr)')
+        print(f'  Max Drawdown:   {stats["max_drawdown"]:.2f}%  (per-bar mark-to-market)')
         print(f'  Final Equity:   ${self.equity:.2f} (from ${self.initial_capital})')
+        print(f'  Costs:          {self.fee_bps} bps fee + {self.slippage_bps} bps slippage per side')
         print()
 
         # Breakdown by regime
@@ -685,7 +821,7 @@ class BacktestEngine:
             if r not in regime_stats:
                 regime_stats[r] = {'count': 0, 'wins': 0, 'total_pnl': 0}
             regime_stats[r]['count'] += 1
-            if t['pnl_pct'] > 0:
+            if t['pnl_usd'] > 0:
                 regime_stats[r]['wins'] += 1
             regime_stats[r]['total_pnl'] += t['pnl_pct']
 
@@ -705,7 +841,7 @@ class BacktestEngine:
             if tn not in template_stats:
                 template_stats[tn] = {'count': 0, 'wins': 0, 'total_pnl': 0}
             template_stats[tn]['count'] += 1
-            if t['pnl_pct'] > 0:
+            if t['pnl_usd'] > 0:
                 template_stats[tn]['wins'] += 1
             template_stats[tn]['total_pnl'] += t['pnl_pct']
 
@@ -718,18 +854,15 @@ class BacktestEngine:
             avg = s['total_pnl'] / s['count'] if s['count'] > 0 else 0
             print(f'  {tn[:29]:<30} {s["count"]:<8} {wr:.1f}%     {avg:+.2f}%')
 
-        # In-sample vs Out-of-sample
-        if self.in_sample_cutoff:
-            is_trades = [t for t in trades if t['is_in_sample']]
-            oos_trades = [t for t in trades if not t['is_in_sample']]
-            print(f'\n  IN-SAMPLE vs OUT-OF-SAMPLE:')
-            for label, group in [('In-Sample', is_trades), ('Out-of-Sample', oos_trades)]:
-                if group:
-                    wr = sum(1 for t in group if t['pnl_pct'] > 0) / len(group) * 100
-                    avg = sum(t['pnl_pct'] for t in group) / len(group)
-                    print(f'  {label:<20} {len(group)} trades, {wr:.1f}% win rate, {avg:+.2f}% avg')
-                else:
-                    print(f'  {label:<20} 0 trades')
+        # In-sample vs Out-of-sample (separate, fully-computed metrics)
+        if 'segments' in stats:
+            seg = stats['segments']
+            print(f'\n  IN-SAMPLE vs OUT-OF-SAMPLE (cutoff {seg["cutoff"]}):')
+            print(f'  {"Segment":<16} {"Trades":<8} {"Win Rate":<10} {"Return":<10} {"Sharpe":<9} {"MaxDD":<8}')
+            for label, key in (('In-Sample', 'in_sample'), ('Out-of-Sample', 'out_of_sample')):
+                s = seg[key]
+                print(f'  {label:<16} {s["total_trades"]:<8} {s["win_rate"]:<10.1f} {s["total_return"]:<+10.2f} '
+                      f'{s["sharpe_ratio"]:<9.3f} {s["max_drawdown"]:<8.2f}')
 
         # By close reason
         reason_counts = {}
@@ -744,7 +877,8 @@ class BacktestEngine:
 
 
 def get_equity_curve(conn, run_id):
-    """Get equity curve data for a completed run (reconstructed from trades)."""
+    """Get equity curve data for a completed run (reconstructed from trades:
+    realised, trade-close granularity — sum(pnl_usd) equals final-initial)."""
     cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
     # Get run config
@@ -785,6 +919,10 @@ def get_equity_curve(conn, run_id):
 def main():
     parser = argparse.ArgumentParser(description='GRID Backtest Engine')
     parser.add_argument('--run-id', type=int, required=True, help='Backtest run ID')
+    parser.add_argument('--slippage-bps', type=float, default=float(os.getenv('BACKTEST_SLIPPAGE_BPS', '5')),
+                        help='Adverse slippage per side in bps (default 5)')
+    parser.add_argument('--fee-bps', type=float, default=float(os.getenv('BACKTEST_FEE_BPS', '10')),
+                        help='Taker fee per side in bps (default 10)')
     args = parser.parse_args()
 
     conn = get_db()
@@ -806,6 +944,8 @@ def main():
         'date_to': run['date_to'],
         'in_sample_cutoff': run.get('in_sample_cutoff'),
         'initial_capital': 10000,
+        'slippage_bps': args.slippage_bps,
+        'fee_bps': args.fee_bps,
     }
 
     engine = BacktestEngine(args.run_id, config)

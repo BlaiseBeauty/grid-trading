@@ -1,20 +1,48 @@
 require('dotenv').config();
 const path = require('path');
-const fastify = require('fastify')({ logger: true });
+const fastify = require('fastify')({
+  logger: true,
+  bodyLimit: 1024 * 1024,     // 1 MB — no route needs more
+  requestTimeout: 30_000,     // abort slow/stalled request bodies
+  // Behind Railway's proxy: without this every client shares the proxy IP and
+  // per-IP rate limits (login etc.) would be global. Set TRUST_PROXY=false if exposed directly.
+  trustProxy: process.env.TRUST_PROXY !== 'false',
+});
 const { migrate } = require('./db/migrate');
 const logger = require('./services/logger');
 const orchestrator = require('./systems/grid/agents/orchestrator');
+const cycleGate = require('./shared/cycle-gate');
+const { withAdvisoryLock } = require('./db/connection');
+const prices = require('./services/prices');
+const { CANDLE_SYMBOLS, PYTHON_ENGINE_URL, fetchLivePrice, refreshCandles, checkStopLossesFallback, getLivePricesWithChange, getOldPrices24h } = prices;
 
 const PORT = process.env.PORT || 3100;
 
+// Routes that failed to register at boot — surfaced by /api/system/ready
+const failedRoutes = [];
+
 // ---------- Plugins ----------
 async function registerPlugins() {
+  if (!process.env.CORS_ORIGINS && process.env.NODE_ENV === 'production') {
+    console.warn('[GRID] WARNING: CORS_ORIGINS is not set in production — only localhost origins are allowed, so browsers on the real domain will be blocked.');
+  }
   const allowedOrigins = process.env.CORS_ORIGINS
     ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
     : ['http://localhost:5173', 'http://localhost:3100']; // Explicit dev whitelist — never allow *
   await fastify.register(require('@fastify/cors'), {
     origin: allowedOrigins,
     credentials: true,
+  });
+
+  // Basic security headers (no extra dependency)
+  fastify.addHook('onSend', async (request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (process.env.NODE_ENV === 'production') {
+      reply.header('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+    }
+    return payload;
   });
 
   await fastify.register(require('@fastify/cookie'));
@@ -45,7 +73,8 @@ async function registerPlugins() {
     prefix: '/',
   });
 
-  await fastify.register(require('@fastify/websocket'));
+  // maxPayload: the only client → server message is a small {type:'auth', token}
+  await fastify.register(require('@fastify/websocket'), { options: { maxPayload: 8 * 1024 } });
 }
 
 // ---------- Auth Decorator ----------
@@ -68,6 +97,8 @@ fastify.decorate('authenticate', verifyToken);
 
 // ---------- WebSocket ----------
 const wsClients = new Set();
+const MAX_WS_CLIENTS = parseInt(process.env.MAX_WS_CLIENTS) || 50;
+let wsPending = 0; // sockets connected but not yet authenticated
 
 function broadcast(type, data) {
   const msg = JSON.stringify({ type, data, ts: Date.now() });
@@ -108,7 +139,8 @@ async function registerRoutes() {
     try {
       await fastify.register(require(path), opts);
     } catch (err) {
-      console.error(`[ROUTES] ✗ ${label} failed to register: ${err.message}`);
+      failedRoutes.push({ label, error: err.message });
+      console.error(`[ROUTES] ✗✗✗ ${label} FAILED TO REGISTER — its endpoints are DOWN: ${err.message}`);
       console.error(err.stack);
     }
   };
@@ -119,36 +151,55 @@ async function registerRoutes() {
   // Public healthcheck (no auth — used by Railway)
   fastify.get('/api/system/health', async () => ({ status: 'ok', timestamp: Date.now() }));
 
-  // Live prices from exchange (no auth — used for real-time display)
-  const { queryOne: queryOnePriceLive } = require('./db/connection');
-  fastify.get('/api/prices/live', async (request, reply) => {
-    reply.header('Cache-Control', 'no-store');
-    const results = await Promise.all(
-      CANDLE_SYMBOLS.map(async (symbol) => {
-        const result = await fetchLivePrice(symbol);
-        if (!result) return null;
-        // Use CoinGecko's 24h change if available, otherwise compute from DB
-        let change24h = result.change24h ?? null;
-        if (change24h == null) {
-          try {
-            const old24h = await queryOnePriceLive(
-              `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
-              [symbol]
-            );
-            const oldPrice = old24h ? parseFloat(old24h.close) : null;
-            change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
-          } catch (err) {
-            logger.debug('24h price change query failed', { err, symbol, error_type: 'price_fallback' });
-          }
-        }
-        return { symbol: result.dashSym, price: result.price, change24h };
-      })
-    );
-    const prices = {};
-    for (const r of results) {
-      if (r) prices[r.symbol] = { price: r.price, change24h: r.change24h };
+  // Readiness: DB + Python engine + route registration. 503 when anything is down.
+  // (Liveness stays on /api/system/health — Railway healthcheck path is unchanged.)
+  fastify.get('/api/system/ready', async (request, reply) => {
+    const checks = { db: false, engine: false, routes: failedRoutes.length === 0 };
+    const { queryOne: readyQ } = require('./db/connection');
+    try {
+      await Promise.race([
+        readyQ('SELECT 1 AS ok'),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+      ]);
+      checks.db = true;
+    } catch (err) {
+      console.error('[READY] DB check failed:', err.message);
     }
-    return prices;
+    try {
+      const res = await fetch(`${PYTHON_ENGINE_URL}/health`, { signal: AbortSignal.timeout(3000) });
+      checks.engine = res.ok;
+    } catch (err) {
+      console.error('[READY] Python engine check failed:', err.message);
+    }
+    let busLag = null;
+    if (checks.db) {
+      try {
+        busLag = await require('./shared/intelligence-bus').getBusLag();
+      } catch (err) {
+        console.error('[READY] bus lag check failed:', err.message);
+      }
+    }
+    const ready = checks.db && checks.engine && checks.routes;
+    reply.header('Cache-Control', 'no-store');
+    return reply.code(ready ? 200 : 503).send({
+      status: ready ? 'ready' : 'degraded',
+      checks,
+      bus_lag: busLag,
+      failed_routes: failedRoutes,
+      timestamp: Date.now(),
+    });
+  });
+
+  // Live prices from exchange — authenticated; one DB lookup for all symbols
+  fastify.get('/api/prices/live', {
+    preHandler: fastify.authenticate,
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const rows = await getLivePricesWithChange(CANDLE_SYMBOLS);
+    const out = {};
+    for (const r of rows) out[r.symbol] = { price: r.price, change24h: r.change24h };
+    return out;
   });
 
   // Protected API routes (GRID system)
@@ -194,6 +245,18 @@ async function registerRoutes() {
     await fastify.register(async function (fastify) {
       fastify.get('/ws', { websocket: true }, (socket) => {
         let authenticated = false;
+        let expiryTimer = null;
+
+        // Connection cap (authenticated + pending) — protects memory/fan-out
+        if (wsClients.size + wsPending >= MAX_WS_CLIENTS) {
+          socket.close(1013, 'Too many connections');
+          return;
+        }
+        wsPending++;
+        let pendingCounted = true;
+        const releasePending = () => {
+          if (pendingCounted) { pendingCounted = false; wsPending--; }
+        };
 
         // Close unauthenticated connections after 5s
         const authTimeout = setTimeout(() => {
@@ -201,31 +264,46 @@ async function registerRoutes() {
         }, 5000);
 
         socket.on('message', (raw) => {
-          if (authenticated) return; // ignore subsequent messages
           try {
             const msg = JSON.parse(raw.toString());
             if (msg.type === 'auth' && msg.token) {
-              jwt.verify(msg.token, process.env.JWT_SECRET);
+              // Also used for in-place re-auth after the frontend refreshes its access token
+              const payload = jwt.verify(msg.token, process.env.JWT_SECRET);
               authenticated = true;
               clearTimeout(authTimeout);
+              releasePending();
               wsClients.add(socket);
-            } else {
+
+              // Close the socket when this access token expires (client reconnects / re-auths)
+              if (expiryTimer) clearTimeout(expiryTimer);
+              const msLeft = payload.exp ? payload.exp * 1000 - Date.now() : 15 * 60 * 1000;
+              expiryTimer = setTimeout(() => socket.close(4401, 'Token expired'), Math.max(msLeft, 0));
+            } else if (!authenticated) {
               socket.close(4401, 'Authentication required');
             }
-          } catch {
+            // authenticated + non-auth messages are ignored (server → client feed only)
+          } catch (err) {
+            console.warn('[WS] Auth/message rejected:', err.message);
             socket.close(4401, 'Invalid token');
           }
         });
 
         socket.on('close', () => {
           clearTimeout(authTimeout);
+          if (expiryTimer) clearTimeout(expiryTimer);
+          releasePending();
           wsClients.delete(socket);
         });
+
+        socket.on('error', (err) => {
+          console.warn('[WS] Socket error:', err.message);
+        });
       });
-    });
+    }, {});
     console.log('[ROUTES] ✓ WebSocket /ws registered');
   } catch (err) {
-    console.error('[ROUTES] ✗ WebSocket failed to register:', err.message);
+    failedRoutes.push({ label: 'websocket', error: err.message });
+    console.error('[ROUTES] ✗✗✗ WebSocket FAILED TO REGISTER:', err.message);
     console.error(err.stack);
   }
 
@@ -238,187 +316,20 @@ async function registerRoutes() {
   });
 }
 
-// ---------- Market Data ----------
-const PYTHON_ENGINE_URL = process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
-const { symbols: trackedSymbolsConfig } = require('./config/symbols');
-const CANDLE_SYMBOLS = trackedSymbolsConfig.map(s => s.symbol);
-const BINANCE_MAP = { 'BTC/USDT': 'BTCUSDT', 'ETH/USDT': 'ETHUSDT', 'SOL/USDT': 'SOLUSDT' };
-const COINGECKO_MAP = { 'BTC/USDT': 'bitcoin', 'ETH/USDT': 'ethereum', 'SOL/USDT': 'solana' };
-
-// Cached CoinGecko prices (fetched in batch, shared across symbols)
-let coingeckoCache = { prices: {}, fetchedAt: 0 };
-
-async function fetchCoinGeckoPrices() {
-  if (Date.now() - coingeckoCache.fetchedAt < 20_000) return coingeckoCache.prices;
-  try {
-    const res = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana&vs_currencies=usd&include_24hr_change=true',
-      { signal: AbortSignal.timeout(8000) }
-    );
-    if (res.ok) {
-      const data = await res.json();
-      coingeckoCache = { prices: data, fetchedAt: Date.now() };
-      console.log('[PRICE] CoinGecko fetch OK');
-      return data;
-    }
-  } catch (err) {
-    console.error('[PRICE] CoinGecko failed:', err.message);
-  }
-  return coingeckoCache.prices;
-}
-
-async function fetchLivePrice(symbol) {
-  const dashSym = symbol.replace('/', '-');
-
-  // 1. Try Python engine
-  try {
-    const res = await fetch(`${PYTHON_ENGINE_URL}/price/${dashSym}`, { signal: AbortSignal.timeout(3000) });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.price) return { dashSym, price: data.price, source: 'engine' };
-    }
-  } catch (err) {
-    logger.debug('Python engine price unavailable', { err, symbol, error_type: 'price_fallback' });
-  }
-
-  // 2. Try CoinGecko (skip Binance — geo-blocked on Railway)
-  try {
-    const cgId = COINGECKO_MAP[symbol];
-    if (cgId) {
-      const cgData = await fetchCoinGeckoPrices();
-      if (cgData[cgId]?.usd) {
-        return { dashSym, price: cgData[cgId].usd, change24h: cgData[cgId].usd_24h_change, source: 'coingecko' };
-      }
-    }
-  } catch (err) {
-    logger.debug('CoinGecko price unavailable', { err, symbol, error_type: 'price_fallback' });
-  }
-
-  // 3. Latest DB candle
-  try {
-    const { queryOne: qo } = require('./db/connection');
-    const row = await qo(`SELECT close FROM market_data WHERE symbol = $1 ORDER BY timestamp DESC LIMIT 1`, [symbol]);
-    if (row?.close) return { dashSym, price: parseFloat(row.close), source: 'db' };
-  } catch (err) {
-    logger.debug('DB candle fallback failed', { err, symbol, error_type: 'price_fallback' });
-  }
-
-  return null;
-}
-
-/**
- * Node.js fallback for stop-loss enforcement when Python engine is unreachable.
- * Uses the same fetchLivePrice() chain (Python → CoinGecko → DB candle).
- */
-async function checkStopLossesFallback() {
-  const tradesDb = require('./db/queries/trades');
-  const openTrades = await tradesDb.getOpen();
-  const closed = [];
-
-  for (const trade of openTrades) {
-    const sl = parseFloat(trade.sl_price);
-    const tp = parseFloat(trade.tp_price);
-    if (!sl && !tp) continue;
-
-    const priceData = await fetchLivePrice(trade.symbol);
-    if (!priceData?.price) {
-      console.warn(`[FALLBACK] Could not fetch price for ${trade.symbol} — skipping trade #${trade.id}`);
-      continue;
-    }
-
-    const currentPrice = priceData.price;
-    const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
-    const qty = parseFloat(trade.quantity);
-    let action = null;
-
-    if (trade.side === 'buy') {
-      if (tp && currentPrice >= tp) action = 'tp_hit';
-      else if (sl && currentPrice <= sl) action = 'sl_hit';
-    } else {
-      if (tp && currentPrice <= tp) action = 'tp_hit';
-      else if (sl && currentPrice >= sl) action = 'sl_hit';
-    }
-
-    if (action) {
-      // Use atomic close with SELECT FOR UPDATE to prevent race with position review
-      const result = await tradesDb.closeTradeAtomic(
-        trade.id,
-        async () => {
-          const pnl = trade.side === 'buy'
-            ? (currentPrice - entry) * qty
-            : (entry - currentPrice) * qty;
-          const pnlPct = trade.side === 'buy'
-            ? ((currentPrice - entry) / entry) * 100
-            : ((entry - currentPrice) / entry) * 100;
-          return {
-            exit_price: currentPrice,
-            pnl: Math.round(pnl * 10000) / 10000,
-            pnlPct: Math.round(pnlPct * 10000) / 10000,
-          };
-        },
-        {
-          outcome_reasoning: `Node.js fallback: ${action} @ ${currentPrice} (source: ${priceData.source})`,
-          close_reason: action,
-        }
-      );
-
-      if (result) {
-        console.log(`[FALLBACK] ${action} — trade #${trade.id} ${trade.symbol} ${trade.side} closed @ ${currentPrice} (P&L: ${result.pnl_pct}%)`);
-        closed.push({ trade_id: trade.id, action, exit_price: currentPrice, pnl_pct: result.pnl_pct });
-      } else {
-        console.log(`[FALLBACK] Trade #${trade.id} already closed — skipping`);
-      }
-    }
-  }
-
-  return closed;
-}
-
-async function refreshCandles({ backfill = false } = {}) {
-  for (const symbol of CANDLE_SYMBOLS) {
-    for (const tf of ['5m', '1h', '4h']) {
-      try {
-        // On boot/backfill fetch 200 candles for 5m (covers ~16h), otherwise just 10 for incremental
-        const limit = backfill ? 200 : 10;
-        const res = await fetch(`${PYTHON_ENGINE_URL}/fetch-ohlcv`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ symbol, timeframe: tf, limit }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-      } catch (err) {
-        console.error(`[CANDLES] ${symbol} ${tf}:`, err.message);
-      }
-    }
-  }
-}
-
 // ---------- Cron ----------
 const cron = require('node-cron');
 
 // ── MASTER PAUSE SWITCH ────────────────────────────────────────────────────
-// Set to false to re-enable all AI agent cycles (GRID / COMPASS / ORACLE).
+// AI agent cycles (GRID / COMPASS / ORACLE) are gated by shared/cycle-gate.js:
+//   CYCLES_PAUSED env (default true), AI_DAILY_BUDGET_USD, 10 cycles / 24h.
 // Non-AI crons (SL monitor, data fetch, cleanup) are unaffected.
-const CYCLES_PAUSED = true;
 
-// Rate limit: max 10 GRID cycles per 24 hours (normal schedule = 6)
-const GRID_CYCLE_LIMIT_24H = 10;
-async function gridCycleAllowed(queryOneFn) {
-  try {
-    const row = await queryOneFn(
-      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
-    );
-    const count = parseInt(row?.cnt || '0');
-    if (count >= GRID_CYCLE_LIMIT_24H) {
-      console.warn(`[CYCLE_GUARD] Blocked — ${count} cycles already ran in the last 24h (limit: ${GRID_CYCLE_LIMIT_24H})`);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.error('[CYCLE_GUARD] Rate limit check failed — allowing cycle:', err.message);
-    return true; // fail open so a DB hiccup doesn't kill the system
-  }
+// Cron/boot gate: pause + daily budget (+ optional 10-cycles/24h). Fails closed on DB errors.
+async function cycleAllowedNow(label, { checkCycles = false } = {}) {
+  if (cycleGate.isPaused()) { console.log(`[CRON] ${label} skipped — CYCLES_PAUSED`); return false; }
+  const g = await cycleGate.gate({ checkCycles });
+  if (!g.ok) { console.warn(`[CRON] ${label} skipped — ${g.error}`); return false; }
+  return true;
 }
 
 function setupCron() {
@@ -440,40 +351,43 @@ function setupCron() {
 
   // --- GRID: 4-hour agent cycle ---
   cron.schedule('0 */4 * * *', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] GRID cycle skipped — CYCLES_PAUSED'); return; }
     console.log('[CRON] 4-hour cycle triggered at', new Date().toISOString());
-    if (!await gridCycleAllowed(queryOneTrade)) return;
-    console.log('[CRON] Starting agent cycle...');
-    const cycleStart = Date.now();
-    try {
-      const result = await orchestrator.runCycle({ broadcast });
-      if (result?.aborted) {
-        console.error(`[CRON] Cycle aborted: ${result.reason}`);
-        broadcast('cycle_error', { reason: result.reason });
+    // Pause switch + daily AI budget + 10-cycles/24h (fails closed)
+    if (!await cycleAllowedNow('GRID cycle', { checkCycles: true })) return;
+    // Advisory lock: a second replica skips instead of running a duplicate cycle
+    await withAdvisoryLock('grid_cycle', async () => {
+      console.log('[CRON] Starting agent cycle...');
+      const cycleStart = Date.now();
+      try {
+        const result = await orchestrator.runCycle({ broadcast });
+        if (result?.aborted) {
+          console.error(`[CRON] Cycle aborted: ${result.reason}`);
+          broadcast('cycle_error', { reason: result.reason });
+        }
+
+        // Record successful heartbeat
+        await recordHeartbeat({
+          system_name:       'grid',
+          status:            (result?.aborted || result?.agentsFailed > 0) ? 'degraded' : 'healthy',
+          last_cycle_at:     new Date(cycleStart),
+          next_cycle_at:     new Date(cycleStart + 4 * 60 * 60 * 1000),
+          cycle_duration_ms: Date.now() - cycleStart,
+          agents_succeeded:  result?.agentsSucceeded ?? null,
+          agents_failed:     result?.agentsFailed || 0,
+        });
+      } catch (err) {
+        console.error('[CRON] Agent cycle failed:', err.message);
+        broadcast('cycle_error', { error: err.message });
+
+        await recordHeartbeat({
+          system_name:       'grid',
+          status:            'down',
+          last_cycle_at:     new Date(cycleStart),
+          cycle_duration_ms: Date.now() - cycleStart,
+          error_message:     err.message,
+        });
       }
-
-      // Record successful heartbeat
-      await recordHeartbeat({
-        system_name:       'grid',
-        status:            'healthy',
-        last_cycle_at:     new Date(cycleStart),
-        next_cycle_at:     new Date(cycleStart + 4 * 60 * 60 * 1000),
-        cycle_duration_ms: Date.now() - cycleStart,
-        agents_succeeded:  result?.agentsRun || null,
-        agents_failed:     result?.agentsFailed || 0,
-      });
-    } catch (err) {
-      console.error('[CRON] Agent cycle failed:', err.message);
-      broadcast('cycle_error', { error: err.message });
-
-      await recordHeartbeat({
-        system_name:       'grid',
-        status:            'down',
-        last_cycle_at:     new Date(cycleStart),
-        cycle_duration_ms: Date.now() - cycleStart,
-        error_message:     err.message,
-      });
-    }
+    });
   });
 
   /**
@@ -514,7 +428,7 @@ function setupCron() {
             payload:         { trade_id: trade.id, symbol: trade.symbol, side: trade.side, pnl_usd: trade.pnl_realised, close_reason: c.action },
             affected_assets: [trade.symbol],
           });
-        } catch (e) { /* bus publish is best-effort */ }
+        } catch (e) { console.error(`[LEARNING] bus publish failed for trade #${trade.id} (best-effort):`, e.message); }
       } catch (err) {
         console.error(`[LEARNING] processTradeCloseOutcomes failed for trade #${c.trade_id}:`, err.message);
       }
@@ -531,30 +445,38 @@ function setupCron() {
     if (slCheckRunning) return; // skip if previous check still running
     slCheckRunning = true;
     try {
-      const result = await orchestrator.monitorPositions();
-      const closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit' || r.action === 'trail_hit');
-      if (closed.length > 0) {
-        console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
-        broadcast('positions_closed', { closed });
-        processTradeCloseOutcomes(closed).catch(err =>
-          console.error('[LEARNING] processTradeCloseOutcomes (monitor) failed:', err.message)
-        );
-      }
-    } catch (err) {
-      console.error('[CRON] Python position monitor failed:', err.message);
-      console.log('[CRON] Running Node.js stop-loss fallback...');
-      try {
-        const closed = await checkStopLossesFallback();
-        if (closed.length > 0) {
-          console.log(`[CRON] ${closed.length} position(s) closed by Node.js fallback`);
-          broadcast('positions_closed', { closed });
-          processTradeCloseOutcomes(closed).catch(err =>
-            console.error('[LEARNING] processTradeCloseOutcomes (fallback) failed:', err.message)
-          );
+      // Advisory lock: only one replica monitors positions per tick
+      // (the learning step below runs only for trades THIS process closed — closes are
+      // already exclusive via SELECT ... FOR UPDATE — so it is deliberately not locked:
+      // a skipped lock there would silently drop learning outcomes).
+      await withAdvisoryLock('grid_sl_monitor', async () => {
+        try {
+          const result = await orchestrator.monitorPositions();
+          const closed = (result?.results || []).filter(r => r.action === 'sl_hit' || r.action === 'tp_hit' || r.action === 'trail_hit');
+          if (closed.length > 0) {
+            console.log(`[CRON] ${closed.length} position(s) closed by Python monitor`);
+            broadcast('positions_closed', { closed });
+            processTradeCloseOutcomes(closed).catch(err =>
+              console.error('[LEARNING] processTradeCloseOutcomes (monitor) failed:', err.message)
+            );
+          }
+        } catch (err) {
+          console.error('[CRON] Python position monitor failed:', err.message);
+          console.log('[CRON] Running Node.js stop-loss fallback...');
+          try {
+            const closed = await checkStopLossesFallback();
+            if (closed.length > 0) {
+              console.log(`[CRON] ${closed.length} position(s) closed by Node.js fallback`);
+              broadcast('positions_closed', { closed });
+              processTradeCloseOutcomes(closed).catch(err =>
+                console.error('[LEARNING] processTradeCloseOutcomes (fallback) failed:', err.message)
+              );
+            }
+          } catch (fallbackErr) {
+            console.error('[CRON] Node.js stop-loss fallback also failed:', fallbackErr.message);
+          }
         }
-      } catch (fallbackErr) {
-        console.error('[CRON] Node.js stop-loss fallback also failed:', fallbackErr.message);
-      }
+      });
     } finally {
       slCheckRunning = false;
     }
@@ -621,7 +543,7 @@ function setupCron() {
   // Runs BEFORE ORACLE's Monday cycle so ORACLE has fresh data immediately
   const { buildDigest } = require('./systems/grid/agents/performance-digest');
   cron.schedule('0 6 * * 1', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] Digest skipped — CYCLES_PAUSED'); return; }
+    if (cycleGate.isPaused()) { console.log('[CRON] Digest skipped — CYCLES_PAUSED'); return; }
     console.log('[CRON] Building weekly performance digest...');
     try {
       await buildDigest();
@@ -632,7 +554,7 @@ function setupCron() {
 
   // Hourly position review (independent of 4h cycle, runs at :30)
   cron.schedule('30 * * * *', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] Position review skipped — CYCLES_PAUSED'); return; }
+    if (!await cycleAllowedNow('Position review')) return;
     if (orchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping hourly position review — GRID cycle in progress');
       return;
@@ -784,22 +706,29 @@ function setupCron() {
 
   // Broadcast live prices every 10 seconds
 
+  let priceBroadcastRunning = false;
   setInterval(async () => {
-    for (const symbol of CANDLE_SYMBOLS) {
-      try {
-        const result = await fetchLivePrice(symbol);
-        if (!result) continue;
+    if (priceBroadcastRunning) return; // don't stack if a round is slow
+    priceBroadcastRunning = true;
+    try {
+      // One batched 24h-ago lookup for all symbols (was one query per symbol)
+      const oldPrices = await getOldPrices24h(CANDLE_SYMBOLS);
+      for (const symbol of CANDLE_SYMBOLS) {
+        try {
+          const result = await fetchLivePrice(symbol);
+          if (!result) continue;
 
-        const old24h = await queryOneDb(
-          `SELECT close FROM market_data WHERE symbol = $1 AND timestamp <= NOW() - interval '24 hours' ORDER BY timestamp DESC LIMIT 1`,
-          [symbol]
-        );
-        const oldPrice = old24h ? parseFloat(old24h.close) : null;
-        const change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
-        broadcast('price_update', { symbol: result.dashSym, price: result.price, change24h });
-      } catch (err) {
-        console.error(`[PRICE] ${symbol} broadcast failed:`, err.message);
+          const oldPrice = oldPrices[symbol] ?? null;
+          const change24h = oldPrice && oldPrice > 0 ? ((result.price - oldPrice) / oldPrice) * 100 : null;
+          broadcast('price_update', { symbol: result.dashSym, price: result.price, change24h });
+        } catch (err) {
+          console.error(`[PRICE] ${symbol} broadcast failed:`, err.message);
+        }
       }
+    } catch (err) {
+      console.error('[PRICE] broadcast round failed:', err.message);
+    } finally {
+      priceBroadcastRunning = false;
     }
   }, 10_000);
 
@@ -807,17 +736,19 @@ function setupCron() {
   // COMPASS cycle — runs at :15 past 1,7,13,19 (45min after ORACLE finishes)
   const compassOrchestrator = require('./systems/compass/agents/orchestrator');
   cron.schedule('15 1,7,13,19 * * *', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] COMPASS cycle skipped — CYCLES_PAUSED'); return; }
+    if (!await cycleAllowedNow('COMPASS cycle')) return;
     if (compassOrchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping COMPASS cycle — previous still running');
       return;
     }
-    console.log('[CRON] Starting COMPASS cycle...');
-    try {
-      await compassOrchestrator.runCycle({ broadcast });
-    } catch (err) {
-      console.error('[CRON] COMPASS cycle failed:', err.message);
-    }
+    await withAdvisoryLock('compass_cycle', async () => {
+      console.log('[CRON] Starting COMPASS cycle...');
+      try {
+        await compassOrchestrator.runCycle({ broadcast });
+      } catch (err) {
+        console.error('[CRON] COMPASS cycle failed:', err.message);
+      }
+    });
   });
 
   // --- ORACLE cron ---
@@ -827,7 +758,7 @@ function setupCron() {
   // ORACLE ingestion — runs at :00 of 0,6,12,18 (30 min BEFORE agent cycle)
   let ingestionRunning = false;
   cron.schedule('0 0,6,12,18 * * *', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] ORACLE ingestion skipped — CYCLES_PAUSED'); return; }
+    if (cycleGate.isPaused()) { console.log('[CRON] ORACLE ingestion skipped — CYCLES_PAUSED'); return; }
     if (ingestionRunning) {
       console.log('[CRON] Skipping ORACLE ingestion — previous still running');
       return;
@@ -845,23 +776,25 @@ function setupCron() {
 
   // ORACLE agent cycle — runs at :30 of 0,6,12,18 (after ingestion)
   cron.schedule('30 0,6,12,18 * * *', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] ORACLE cycle skipped — CYCLES_PAUSED'); return; }
+    if (!await cycleAllowedNow('ORACLE cycle')) return;
     if (oracleOrchestrator.isCycleRunning()) {
       console.log('[CRON] Skipping ORACLE cycle — previous still running');
       return;
     }
-    console.log('[CRON] Starting ORACLE cycle...');
-    try {
-      await oracleOrchestrator.runCycle({ broadcast });
-    } catch (err) {
-      console.error('[CRON] ORACLE cycle failed:', err.message);
-    }
+    await withAdvisoryLock('oracle_cycle', async () => {
+      console.log('[CRON] Starting ORACLE cycle...');
+      try {
+        await oracleOrchestrator.runCycle({ broadcast });
+      } catch (err) {
+        console.error('[CRON] ORACLE cycle failed:', err.message);
+      }
+    });
   });
 
   // ORACLE: Graveyard Auditor — every Tuesday at 07:00
   // Runs after Monday's digest (06:00) so trade outcomes are fresh
   cron.schedule('0 7 * * 2', async () => {
-    if (CYCLES_PAUSED) { console.log('[CRON] Graveyard Auditor skipped — CYCLES_PAUSED'); return; }
+    if (!await cycleAllowedNow('Graveyard Auditor')) return;
     console.log('[CRON] Starting Graveyard Auditor...');
     try {
       const { runGraveyardAuditor } = require('./systems/oracle/agents/graveyard-auditor');
@@ -946,19 +879,20 @@ async function start() {
 
     // One-time boot cycle — confirm orchestrator works on this deployment
     // Skipped when CYCLES_PAUSED (observation mode) to avoid AI spend on deploy
-    const orchestrator = require('./systems/grid/agents/orchestrator');
-    const { queryOne: queryOneBoot } = require('./db/connection');
+    // (uses the module-level `orchestrator`; a local const here would put the earlier
+    //  boot-time phase check in the temporal dead zone)
     setTimeout(async () => {
-      if (CYCLES_PAUSED) {
+      if (cycleGate.isPaused()) {
         console.log('[BOOT] Boot cycle skipped — CYCLES_PAUSED (observation mode)');
         return;
       }
       console.log('[BOOT] Firing one-time cycle 10s after startup...');
-      if (!await gridCycleAllowed(queryOneBoot)) {
-        console.log('[BOOT] Boot cycle skipped — rate limit already reached');
+      // Daily budget + 10-cycles/24h, fail closed
+      if (!await cycleAllowedNow('Boot cycle', { checkCycles: true })) {
+        console.log('[BOOT] Boot cycle skipped — gate closed');
         return;
       }
-      orchestrator.runCycle({ broadcast }).catch(err => {
+      withAdvisoryLock('grid_cycle', () => orchestrator.runCycle({ broadcast })).catch(err => {
         console.error('[BOOT] One-time cycle failed:', err.message);
       });
     }, 10000);

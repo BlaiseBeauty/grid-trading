@@ -1,6 +1,7 @@
 'use strict';
 
 const { query, queryAll, queryOne } = require('../db/connection');
+const { toBullBear } = require('./conflict-resolver');
 
 /**
  * Called when a GRID trade closes.
@@ -28,12 +29,12 @@ async function linkTradeToTheses(trade) {
     );
     if (!theses.length) return;
 
-    const tradeDirection = trade.side === 'buy' ? 'bull' : 'bear';
+    const tradeDirection = toBullBear(trade.side) || 'bear';
     const pnlUsd = parseFloat(trade.pnl_usd || 0);
     const outcome = pnlUsd > 0.5 ? 'win' : pnlUsd < -0.5 ? 'loss' : 'breakeven';
 
     for (const thesis of theses) {
-      const aligned = thesis.direction === tradeDirection;
+      const aligned = toBullBear(thesis.direction) === tradeDirection;
 
       try {
         await query(
@@ -57,7 +58,8 @@ async function linkTradeToTheses(trade) {
           ]
         );
       } catch (err) {
-        // Skip individual link failures
+        // Skip individual link failures — one bad row must not abort the rest, but never silently
+        console.warn(`[THESIS-LINKER] Link failed for thesis ${thesis.thesis_id} / trade ${trade.id} (non-critical):`, err.message);
       }
     }
 

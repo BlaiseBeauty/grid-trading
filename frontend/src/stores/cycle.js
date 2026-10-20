@@ -36,6 +36,20 @@ function buildAgentList() {
 let elapsedInterval = null;
 let autoDismissTimer = null;
 
+// Always go through these so a stale interval/timer can never survive a state transition.
+function clearElapsed() {
+  if (elapsedInterval !== null) {
+    clearInterval(elapsedInterval);
+    elapsedInterval = null;
+  }
+}
+function clearAutoDismiss() {
+  if (autoDismissTimer !== null) {
+    clearTimeout(autoDismissTimer);
+    autoDismissTimer = null;
+  }
+}
+
 export const useCycleStore = create((set, get) => ({
   // State machine: idle | confirming | starting | running | success | error
   phase: 'idle',
@@ -74,7 +88,7 @@ export const useCycleStore = create((set, get) => ({
 
   dismissError: () => set({ phase: 'idle', errorMessage: null }),
   dismissSuccess: () => {
-    clearTimeout(autoDismissTimer);
+    clearAutoDismiss();
     set({ phase: 'idle', panelMode: 'collapsed' });
   },
 
@@ -87,13 +101,14 @@ export const useCycleStore = create((set, get) => ({
 
   // WebSocket event handlers
   onCycleStart: (data) => {
-    clearInterval(elapsedInterval);
-    clearTimeout(autoDismissTimer);
+    clearElapsed();
+    clearAutoDismiss();
 
     const now = Date.now();
     set({
       phase: 'running',
-      panelMode: 'expanded',
+      // Start as the compact pill: the full monitor is a >=680px DetailPanel and opens when the user asks
+      panelMode: 'collapsed',
       cycleNumber: data.cycleNumber,
       agents: buildAgentList(),
       startedAt: now,
@@ -108,6 +123,9 @@ export const useCycleStore = create((set, get) => ({
       const s = get();
       if (s.phase === 'running' && s.startedAt) {
         set({ elapsed: Math.floor((Date.now() - s.startedAt) / 1000) });
+      } else {
+        // Not running any more (e.g. phase reset elsewhere): stop ticking
+        clearElapsed();
       }
     }, 1000);
   },
@@ -149,7 +167,8 @@ export const useCycleStore = create((set, get) => ({
   },
 
   onCycleComplete: (data) => {
-    clearInterval(elapsedInterval);
+    clearElapsed();
+    clearAutoDismiss();
     const s = get();
 
     set({
@@ -178,7 +197,7 @@ export const useCycleStore = create((set, get) => ({
   },
 
   onCycleAborted: (data) => {
-    clearInterval(elapsedInterval);
+    clearElapsed();
     set({
       phase: 'error',
       errorMessage: data.reason || 'Cycle aborted',
@@ -188,15 +207,15 @@ export const useCycleStore = create((set, get) => ({
   },
 
   onCycleError: (data) => {
-    clearInterval(elapsedInterval);
+    clearElapsed();
     set({
       phase: 'error',
       errorMessage: data.error || data.message || 'Cycle failed',
     });
   },
 
-  onCycleReport: (data) => {
-    // Store for potential display — forwarded to cycleReport store in useWebSocket
+  onCycleReport: () => {
+    // Intentionally empty: the report itself is stored by the cycleReport store (see useWebSocket)
   },
 
   onTradesExecuted: () => {

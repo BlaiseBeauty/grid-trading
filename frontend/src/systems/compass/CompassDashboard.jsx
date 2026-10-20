@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/api';
+import { fmtMoney, fmtPlainPct } from '../../lib/format';
+import { ErrorState } from '../../components/StateBlock';
 
 export default function CompassDashboard() {
   const [portfolio,    setPortfolio]    = useState(null);
@@ -8,13 +10,14 @@ export default function CompassDashboard() {
   const [rebalance,    setRebalance]    = useState([]);
   const [history,      setHistory]      = useState([]);
   const [loading,      setLoading]      = useState(true);
+  const [error,        setError]        = useState(null);
+  const [actionError,  setActionError]  = useState(null);
   const [lastCycleAt,  setLastCycleAt]  = useState(null);
   const [drawdownPct,  setDrawdownPct]  = useState(null);
 
-  useEffect(() => { fetchAll(); }, []);
-
-  async function fetchAll() {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
       const [p, r, a, rb, h] = await Promise.all([
         api('/compass/portfolio'),
@@ -29,20 +32,46 @@ export default function CompassDashboard() {
       setRebalance(rb?.pending || []);
       setHistory(h?.history || []);
       setLastCycleAt(p?.last_cycle_at || null);
-      setDrawdownPct(p?.current_drawdown_pct ?? null);
+      // NUMERIC arrives as a string; parse before any .toFixed
+      const dd = parseFloat(p?.current_drawdown_pct);
+      setDrawdownPct(Number.isFinite(dd) ? dd : null);
+    } catch (err) {
+      // Failed load is an error state with Retry, never an empty "run a cycle" state
+      console.error('[COMPASS] load failed:', err);
+      setError(err?.message || 'Failed to load COMPASS data');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  function acknowledge(id) {
+    setActionError(null);
+    api(`/compass/rebalance/${id}/acknowledge`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }).then(fetchAll).catch((err) => {
+      console.error('[COMPASS] acknowledge failed:', err);
+      setActionError(`Could not acknowledge recommendation: ${err?.message || 'unknown error'}`);
+    });
   }
 
-  if (loading) return <LoadingState />;
+  if (loading && !portfolio && !error) return <LoadingState />;
+  if (error && !portfolio && !risk) {
+    return <ErrorState error={error} onRetry={fetchAll} title="Could not load COMPASS data" />;
+  }
 
+  // Green is reserved for profit/loss: an aggressive posture uses the UI cyan
   const postureColour = {
-    aggressive: 'var(--profit)',
+    aggressive: 'var(--cyan)',
     neutral:    'var(--t2)',
     defensive:  'var(--warn)',
     cash:       'var(--loss)',
   }[portfolio?.risk_posture] || 'var(--t4)';
+
+  const cashWeight = parseFloat(portfolio?.cash_weight);
+  const riskFlags = parseFlags(risk?.flags);
 
   return (
     <div style={{
@@ -50,9 +79,19 @@ export default function CompassDashboard() {
       maxWidth: 1400,
       margin: '0 auto',
       display: 'grid',
-      gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))',
+      gridTemplateColumns: 'repeat(auto-fit, minmax(min(380px, 100%), 1fr))',
       gap: 12,
     }}>
+      {error && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ErrorState error={error} onRetry={fetchAll} title="Refresh failed — showing the last loaded data" />
+        </div>
+      )}
+      {actionError && (
+        <div style={{ gridColumn: '1 / -1' }}>
+          <ErrorState error={actionError} title="Action failed" />
+        </div>
+      )}
 
       {/* Panel 1: Portfolio Status */}
       <div style={panelStyle}>
@@ -93,7 +132,7 @@ export default function CompassDashboard() {
                 Cash Buffer
               </span>
               <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 13, color: 'var(--t1)' }}>
-                {(parseFloat(portfolio.cash_weight) * 100).toFixed(0)}%
+                {Number.isFinite(cashWeight) ? fmtPlainPct(cashWeight * 100, 0) : '—'}
               </span>
             </div>
 
@@ -108,7 +147,7 @@ export default function CompassDashboard() {
                      : drawdownPct <= 10  ? 'var(--warn)'
                      : 'var(--loss)',
               }}>
-                {drawdownPct !== null ? `${drawdownPct.toFixed(1)}%` : '—'}
+                {drawdownPct !== null ? fmtPlainPct(drawdownPct, 1) : '—'}
               </span>
             </div>
 
@@ -135,18 +174,17 @@ export default function CompassDashboard() {
             <RiskScoreGauge score={parseFloat(risk.risk_score)} />
 
             <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <LimitRow label="Max Position" value={`$${Number(risk.max_single_position_usd).toLocaleString()}`} />
-              <LimitRow label="Max Exposure"  value={`$${Number(risk.max_total_exposure_usd).toLocaleString()}`} />
+              <LimitRow label="Max Position" value={fmtMoney(risk.max_single_position_usd, 0)} />
+              <LimitRow label="Max Exposure"  value={fmtMoney(risk.max_total_exposure_usd, 0)} />
               <LimitRow label="Max Positions" value={risk.max_open_positions} />
-              <LimitRow label="SCRAM Threshold" value={`${risk.scram_threshold_pct}%`} />
+              <LimitRow label="SCRAM Threshold" value={fmtPlainPct(risk.scram_threshold_pct, 0)} />
             </div>
 
-            {risk.flags?.length > 0 && (
+            {riskFlags.length > 0 && (
               <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {(typeof risk.flags === 'string' ? JSON.parse(risk.flags) : risk.flags)
-                  .map((flag, i) => (
-                    <FlagItem key={i} flag={flag} />
-                  ))}
+                {riskFlags.map((flag, i) => (
+                  <FlagItem key={i} flag={flag} />
+                ))}
               </div>
             )}
           </>
@@ -175,12 +213,7 @@ export default function CompassDashboard() {
           <PanelTitle>Rebalance Recommendations ({rebalance.length})</PanelTitle>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             {rebalance.map(r => (
-              <RebalanceItem key={r.id} item={r} onAcknowledge={() => {
-                api(`/compass/rebalance/${r.id}/acknowledge`, {
-                  method: 'POST',
-                  body: JSON.stringify({}),
-                }).then(fetchAll);
-              }} />
+              <RebalanceItem key={r.id} item={r} onAcknowledge={() => acknowledge(r.id)} />
             ))}
           </div>
         </div>
@@ -197,7 +230,20 @@ export default function CompassDashboard() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
+// risk.flags may arrive as a JSON string; a malformed value must not crash the page
+function parseFlags(raw) {
+  if (!raw) return [];
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(v) ? v : [];
+  } catch (err) {
+    console.warn('[COMPASS] risk.flags is not valid JSON:', err?.message || err);
+    return [];
+  }
+}
+
 function RiskScoreGauge({ score }) {
+  if (!Number.isFinite(score)) return null;
   const colour = score <= 3 ? 'var(--profit)' : score <= 6 ? 'var(--warn)' : 'var(--loss)';
   const label  = score <= 3 ? 'LOW' : score <= 6 ? 'MODERATE' : 'HIGH';
   const pct    = (score / 10) * 100;
@@ -251,8 +297,9 @@ function FlagItem({ flag }) {
 }
 
 function AllocationRow({ allocation }) {
-  const dirColour = allocation.direction_bias === 'long'    ? 'var(--profit)'
-                  : allocation.direction_bias === 'short'   ? 'var(--loss)'
+  // Direction bias is a stance, not a result, so it uses UI colours (green/red are for profit/loss)
+  const dirColour = allocation.direction_bias === 'long'    ? 'var(--cyan)'
+                  : allocation.direction_bias === 'short'   ? 'var(--warn)'
                   : 'var(--t3)';
   return (
     <div style={{
@@ -266,7 +313,7 @@ function AllocationRow({ allocation }) {
         {allocation.direction_bias || 'neutral'}
       </span>
       <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 12, color: 'var(--t2)', marginLeft: 'auto' }}>
-        max ${Number(allocation.max_position_usd).toLocaleString()}
+        max {fmtMoney(allocation.max_position_usd, 0)}
       </span>
     </div>
   );
@@ -314,7 +361,7 @@ function PostureHistory({ history }) {
     <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
       {history.map(h => {
         const colour = {
-          aggressive: 'var(--profit)', neutral: 'var(--t3)',
+          aggressive: 'var(--cyan)', neutral: 'var(--t3)',
           defensive: 'var(--warn)', cash: 'var(--loss)',
         }[h.risk_posture] || 'var(--t4)';
         return (

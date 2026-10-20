@@ -1,34 +1,84 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
-import { formatMoney, formatPct, timeAgo } from '../lib/format';
+import { formatMoney, formatPct, timeAgo, fmtPlainPct } from '../lib/format';
 import { SignalBadge } from './ui';
-import Modal from './Modal';
+import DetailPanel from './DetailPanel';
+import { ErrorState } from './StateBlock';
+
+function parseDomains(raw) {
+  if (!raw) return [];
+  try {
+    const v = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(v) ? v : [];
+  } catch (err) {
+    console.warn('[TradeDetail] signal_domains is not valid JSON:', err?.message || err);
+    return [];
+  }
+}
 
 export default function TradeDetail({ trade, open, onClose }) {
   const [signals, setSignals] = useState([]);
+  const [signalsError, setSignalsError] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
+  const [explainError, setExplainError] = useState(null);
+
+  const tradeId = trade?.id;
+
+  function loadSignals() {
+    if (!tradeId) return;
+    setSignalsError(null);
+    api(`/trades/${tradeId}/signals`)
+      .then(setSignals)
+      .catch((err) => {
+        console.error('[TradeDetail] signals failed:', err);
+        setSignals([]);
+        setSignalsError(err?.message || 'Failed to load signals');
+      });
+  }
 
   useEffect(() => {
-    if (!trade?.id || !open) return;
-    api(`/trades/${trade.id}/signals`).then(setSignals).catch(() => setSignals([]));
-  }, [trade?.id, open]);
+    if (!tradeId || !open) return;
+    setExplanation(null);
+    setExplainError(null);
+    loadSignals();
+    // loadSignals only depends on tradeId
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tradeId, open]);
+
+  async function explain() {
+    setExplainLoading(true);
+    setExplainError(null);
+    try {
+      const res = await api(`/trades/${tradeId}/explain`, { method: 'POST', body: '{}' });
+      setExplanation({ text: res.explanation, cost: res.cost_usd });
+    } catch (err) {
+      console.error('[TradeDetail] explain failed:', err);
+      setExplainError(err?.message || 'Failed to generate explanation');
+    }
+    setExplainLoading(false);
+  }
 
   if (!trade) return null;
 
   const pnl = parseFloat(trade.pnl_realised || 0);
   const isLong = trade.side === 'buy';
+  const domains = parseDomains(trade.signal_domains);
 
   return (
-    <Modal open={open} onClose={onClose} title={`${trade.symbol} \u2014 ${isLong ? 'LONG' : 'SHORT'}`}>
+    <DetailPanel
+      open={open}
+      onClose={onClose}
+      title={`${trade.symbol || 'Trade'} — ${isLong ? 'LONG' : 'SHORT'}`}
+    >
       <div className="v2-td-grid">
         <div className="v2-td-section">
           <div className="v2-td-section-title">Position</div>
           <Row label="Symbol" value={trade.symbol} />
-          <Row label="Side" value={isLong ? 'LONG' : 'SHORT'} className={isLong ? 'v2-profit' : 'v2-loss'} />
+          <Row label="Side" value={isLong ? 'LONG' : 'SHORT'} />
           <Row label="Status" value={trade.status} />
           <Row label="Mode" value={trade.mode || 'paper'} />
-          <Row label="Confidence" value={`${trade.confidence || '\u2014'}%`} />
+          <Row label="Confidence" value={fmtPlainPct(trade.confidence, 0)} />
           <Row label="Cycle" value={trade.cycle_number} />
           <Row label="Opened" value={trade.opened_at ? timeAgo(trade.opened_at) : timeAgo(trade.created_at)} />
         </div>
@@ -36,17 +86,17 @@ export default function TradeDetail({ trade, open, onClose }) {
         <div className="v2-td-section">
           <div className="v2-td-section-title">Prices</div>
           <Row label="Entry" value={formatMoney(parseFloat(trade.entry_price))} />
-          {trade.exit_price && <Row label="Exit" value={formatMoney(parseFloat(trade.exit_price))} />}
-          <Row label="TP" value={trade.tp_price ? formatMoney(parseFloat(trade.tp_price)) : '\u2014'} />
-          <Row label="SL" value={trade.sl_price ? formatMoney(parseFloat(trade.sl_price)) : '\u2014'} />
+          {parseFloat(trade.exit_price) > 0 && <Row label="Exit" value={formatMoney(parseFloat(trade.exit_price))} />}
+          <Row label="TP" value={parseFloat(trade.tp_price) > 0 ? formatMoney(parseFloat(trade.tp_price)) : '—'} />
+          <Row label="SL" value={parseFloat(trade.sl_price) > 0 ? formatMoney(parseFloat(trade.sl_price)) : '—'} />
           <Row label="Quantity" value={parseFloat(trade.quantity || 0).toFixed(6)} />
         </div>
 
         {trade.status === 'closed' && (
           <div className="v2-td-section">
             <div className="v2-td-section-title">Result</div>
-            <Row label="P&L" value={formatMoney(pnl)} className={pnl >= 0 ? 'v2-profit' : 'v2-loss'} />
-            <Row label="Return" value={formatPct(parseFloat(trade.pnl_pct || 0), 2)} className={pnl >= 0 ? 'v2-profit' : 'v2-loss'} />
+            <Row label="P&L" value={formatMoney(pnl)} />
+            <Row label="Return" value={formatPct(parseFloat(trade.pnl_pct || 0), 2)} />
             {trade.outcome_class && <Row label="Outcome" value={trade.outcome_class} />}
             {trade.close_reason && <Row label="Close Reason" value={trade.close_reason} />}
             {trade.closed_at && <Row label="Closed" value={timeAgo(trade.closed_at)} />}
@@ -68,22 +118,25 @@ export default function TradeDetail({ trade, open, onClose }) {
               <div className="v2-td-explain-meta">haiku · ${Number(explanation.cost || 0).toFixed(4)}</div>
             </>
           ) : (
-            <button
-              className="v2-explain-btn"
-              disabled={explainLoading}
-              onClick={async () => {
-                setExplainLoading(true);
-                try {
-                  const res = await api(`/trades/${trade.id}/explain`, { method: 'POST', body: '{}' });
-                  setExplanation({ text: res.explanation, cost: res.cost_usd });
-                } catch { setExplanation({ text: 'Failed to generate explanation.', cost: 0 }); }
-                setExplainLoading(false);
-              }}
-            >
-              {explainLoading ? 'Generating...' : 'Explain This Trade'}
-            </button>
+            <>
+              {explainError && <div className="v2-td-error" role="alert">{explainError}</div>}
+              <button
+                type="button"
+                className="v2-explain-btn"
+                disabled={explainLoading}
+                onClick={explain}
+              >
+                {explainLoading ? 'Generating...' : explainError ? 'Retry' : 'Explain This Trade'}
+              </button>
+            </>
           )}
         </div>
+
+        {signalsError && (
+          <div className="v2-td-section v2-td-full">
+            <ErrorState error={signalsError} onRetry={loadSignals} title="Could not load contributing signals" />
+          </div>
+        )}
 
         {signals.length > 0 && (
           <div className="v2-td-section v2-td-full">
@@ -101,11 +154,11 @@ export default function TradeDetail({ trade, open, onClose }) {
           </div>
         )}
 
-        {trade.signal_domains && (
+        {domains.length > 0 && (
           <div className="v2-td-section v2-td-full">
             <div className="v2-td-section-title">Signal Domains</div>
             <div className="v2-td-tags">
-              {(() => { try { return typeof trade.signal_domains === 'string' ? JSON.parse(trade.signal_domains) : trade.signal_domains || []; } catch { return []; } })().map((d, i) => (
+              {domains.map((d, i) => (
                 <span key={i} className="v2-tag">{d}</span>
               ))}
             </div>
@@ -115,7 +168,7 @@ export default function TradeDetail({ trade, open, onClose }) {
 
       <style>{`
         .v2-td-grid {
-          display: grid; grid-template-columns: 1fr 1fr;
+          display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr));
           gap: var(--v2-space-lg);
         }
         .v2-td-full { grid-column: 1 / -1; }
@@ -134,12 +187,11 @@ export default function TradeDetail({ trade, open, onClose }) {
           font-family: var(--v2-font-data); font-size: 12px;
           font-variant-numeric: tabular-nums; color: var(--v2-text-primary);
         }
-        .v2-profit { color: var(--v2-accent-green); }
-        .v2-loss { color: var(--v2-accent-red); }
         .v2-td-reasoning {
           font-size: 12px; color: var(--v2-text-secondary);
           line-height: 1.6; white-space: pre-wrap;
         }
+        .v2-td-error { color: var(--v2-accent-red); font-size: 12px; margin-bottom: var(--v2-space-xs); }
         .v2-td-signal-row {
           display: flex; align-items: center; gap: var(--v2-space-sm);
           padding: 4px 0; border-bottom: 1px solid var(--v2-border);
@@ -151,16 +203,16 @@ export default function TradeDetail({ trade, open, onClose }) {
         }
         .v2-td-signal-type { font-size: 11px; color: var(--v2-text-secondary); flex: 1; }
         .v2-td-signal-str {
-          font-family: var(--v2-font-data); font-size: 11px;
+          font-family: var(--v2-font-data); font-size: 11px; font-variant-numeric: tabular-nums;
           color: var(--v2-text-primary); min-width: 30px; text-align: right;
         }
         .v2-explain-btn {
           font-family: var(--v2-font-data); font-size: 11px; font-weight: 500;
           padding: 6px 14px; border-radius: var(--v2-radius-sm); cursor: pointer;
-          background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
+          background: var(--v2-fill-2); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border); transition: all 0.15s;
         }
-        .v2-explain-btn:hover:not(:disabled) { background: rgba(255,255,255,0.1); color: var(--v2-text-primary); }
+        .v2-explain-btn:hover:not(:disabled) { background: var(--v2-fill-3); color: var(--v2-text-primary); }
         .v2-explain-btn:disabled { opacity: 0.5; cursor: wait; }
         .v2-td-explain-meta {
           font-family: var(--v2-font-data); font-size: 9px;
@@ -171,19 +223,19 @@ export default function TradeDetail({ trade, open, onClose }) {
         .v2-tag {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
           padding: 2px 6px; border-radius: var(--v2-radius-sm);
-          background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
+          background: var(--v2-fill-2); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border);
         }
       `}</style>
-    </Modal>
+    </DetailPanel>
   );
 }
 
-function Row({ label, value, className = '' }) {
+function Row({ label, value }) {
   return (
     <div className="v2-td-row">
       <span className="v2-td-row-label">{label}</span>
-      <span className={`v2-td-row-value ${className}`}>{value}</span>
+      <span className="v2-td-row-value">{value}</span>
     </div>
   );
 }

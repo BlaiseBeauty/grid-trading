@@ -1,45 +1,75 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, AreaSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
-import { formatMoney, formatPct } from '../lib/format';
+import useApiResource from '../hooks/useApiResource';
+import { formatMoney, formatPct, fmtMoney, fmtPlainPct } from '../lib/format';
 import { GlowCard, TickingNumber, ProgressRing } from '../components/ui';
-import { CHART_OPTIONS, EQUITY_AREA_OPTIONS, DRAWDOWN_AREA_OPTIONS } from '../lib/chartConfig';
+import { ErrorState, LoadingState } from '../components/StateBlock';
+import {
+  getChartOptions, getEquityAreaOptions, getDrawdownAreaOptions, useChartTheme,
+} from '../lib/chartConfig';
 
 export default function Analytics() {
-  const [summary, setSummary] = useState(null);
-  const [pnlData, setPnlData] = useState([]);
+  const summaryRes = useApiResource('/analytics/summary', { initial: null });
+  const byAgentRes = useApiResource('/analytics/by-agent', { initial: [] });
+  const accuracyRes = useApiResource('/analytics/signal-accuracy', { initial: [] });
+  const costRes = useApiResource('/analytics/costs-over-time', { initial: [] });
   const [pnlPeriod, setPnlPeriod] = useState('daily');
-  const [byAgent, setByAgent] = useState([]);
-  const [signalAccuracy, setSignalAccuracy] = useState([]);
-  const [costData, setCostData] = useState([]);
+  const pnlRes = useApiResource(`/analytics/pnl?period=${pnlPeriod}`, { initial: [] });
   const [maxDrawdown, setMaxDrawdown] = useState(null);
+  const [chartsError, setChartsError] = useState(null);
+  const [chartsLoaded, setChartsLoaded] = useState(false);
+  const [chartsKey, setChartsKey] = useState(0);
   const equityRef = useRef(null);
   const drawdownRef = useRef(null);
+  const chartsRef = useRef(null);
 
+  const summary = summaryRes.data;
+  const pnlData = pnlRes.data || [];
+  const byAgent = byAgentRes.data || [];
+  const signalAccuracy = accuracyRes.data || [];
+  const costData = costRes.data || [];
+
+  // Create both charts once
   useEffect(() => {
-    api('/analytics/summary').then(setSummary).catch(console.error);
-    api('/analytics/by-agent').then(setByAgent).catch(console.error);
-    api('/analytics/signal-accuracy').then(setSignalAccuracy).catch(console.error);
-    api('/analytics/costs-over-time').then(setCostData).catch(console.error);
+    if (!equityRef.current || !drawdownRef.current) return undefined;
+
+    const eqChart = createChart(equityRef.current, getChartOptions());
+    const eqSeries = eqChart.addSeries(AreaSeries, getEquityAreaOptions());
+
+    const ddChart = createChart(drawdownRef.current, getChartOptions());
+    const ddSeries = ddChart.addSeries(AreaSeries, getDrawdownAreaOptions());
+
+    chartsRef.current = { eqChart, eqSeries, ddChart, ddSeries };
+
+    const eqObs = new ResizeObserver(e => { const { width, height } = e[0].contentRect; eqChart.applyOptions({ width, height }); });
+    const ddObs = new ResizeObserver(e => { const { width, height } = e[0].contentRect; ddChart.applyOptions({ width, height }); });
+    eqObs.observe(equityRef.current);
+    ddObs.observe(drawdownRef.current);
+
+    return () => {
+      eqObs.disconnect(); ddObs.disconnect(); eqChart.remove(); ddChart.remove();
+      chartsRef.current = null;
+    };
   }, []);
 
+  useChartTheme(() => [
+    [chartsRef.current?.eqChart, getChartOptions],
+    [chartsRef.current?.ddChart, getChartOptions],
+    [chartsRef.current?.eqSeries, getEquityAreaOptions],
+    [chartsRef.current?.ddSeries, getDrawdownAreaOptions],
+  ]);
+
+  // Load chart data (re-runs on Retry via chartsKey)
   useEffect(() => {
-    api(`/analytics/pnl?period=${pnlPeriod}`).then(setPnlData).catch(console.error);
-  }, [pnlPeriod]);
-
-  useEffect(() => {
-    if (!equityRef.current || !drawdownRef.current) return;
-
-    const eqChart = createChart(equityRef.current, CHART_OPTIONS);
-    const eqSeries = eqChart.addSeries(AreaSeries, EQUITY_AREA_OPTIONS);
-
-    const ddChart = createChart(drawdownRef.current, CHART_OPTIONS);
-    const ddSeries = ddChart.addSeries(AreaSeries, DRAWDOWN_AREA_OPTIONS);
-
+    let cancelled = false;
+    setChartsError(null);
     Promise.all([
       api('/system/equity'),
       api('/analytics/drawdown'),
     ]).then(([equity, drawdown]) => {
+      if (cancelled || !chartsRef.current) return;
+      const { eqChart, eqSeries, ddChart, ddSeries } = chartsRef.current;
       if (equity?.length) {
         eqSeries.setData(equity.map(s => ({
           time: Math.floor(new Date(s.created_at).getTime() / 1000),
@@ -50,44 +80,38 @@ export default function Analytics() {
       if (drawdown?.length) {
         ddSeries.setData(drawdown.map(s => ({
           time: Math.floor(new Date(s.time).getTime() / 1000),
-          value: s.drawdown,
+          value: parseFloat(s.drawdown),
         })));
         ddChart.timeScale().fitContent();
-        const maxDD = Math.min(...drawdown.map(d => d.drawdown));
-        setMaxDrawdown(maxDD);
+        setMaxDrawdown(Math.min(...drawdown.map(d => parseFloat(d.drawdown))));
       }
+      setChartsLoaded(true);
+    }).catch((err) => {
+      console.error('[Analytics] chart data failed:', err);
+      if (!cancelled) setChartsError(err?.message || 'Failed to load chart data');
     });
-
-    const eqObs = new ResizeObserver(e => { const { width, height } = e[0].contentRect; eqChart.applyOptions({ width, height }); });
-    const ddObs = new ResizeObserver(e => { const { width, height } = e[0].contentRect; ddChart.applyOptions({ width, height }); });
-    eqObs.observe(equityRef.current);
-    ddObs.observe(drawdownRef.current);
-
-    return () => { eqObs.disconnect(); ddObs.disconnect(); eqChart.remove(); ddChart.remove(); };
-  }, []);
+    return () => { cancelled = true; };
+  }, [chartsKey]);
 
   const winRate = parseFloat(summary?.win_rate || 0);
   const totalPnl = parseFloat(summary?.total_pnl || 0);
   const totalCost = parseFloat(summary?.total_cost || 0);
-  const totalTrades = summary?.total_trades || 0;
+  const totalTrades = parseInt(summary?.total_trades || 0, 10);
   const costPerTrade = totalTrades > 0 ? totalCost / totalTrades : 0;
-  // Cumulative cost for sparkline
-  const cumCosts = costData.slice(-14).reduce((acc, c) => {
-    const prev = acc.length ? acc[acc.length - 1] : 0;
-    acc.push(prev + parseFloat(c.daily_cost || 0));
-    return acc;
-  }, []);
 
   return (
     <div className="v2-analytics">
       <h1 className="v2-title v2-animate-in">ANALYTICS</h1>
 
       {/* KPI Strip */}
+      {summaryRes.error && !summaryRes.loaded && (
+        <ErrorState error={summaryRes.error} onRetry={summaryRes.reload} title="Could not load summary" />
+      )}
       {summary && (
         <div className="v2-kpi-strip">
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-1">
             <div className="v2-kpi-label">Total Trades</div>
-            <span className="v2-kpi-big">{summary.total_trades}</span>
+            <span className="v2-kpi-big num">{totalTrades}</span>
           </GlowCard>
           <GlowCard className="v2-kpi v2-kpi--ring v2-animate-in v2-stagger-2">
             <div className="v2-kpi-label">Win Rate</div>
@@ -116,7 +140,7 @@ export default function Analytics() {
           </GlowCard>
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-7">
             <div className="v2-kpi-label">Max Drawdown</div>
-            <span className="v2-kpi-big v2-loss">{maxDrawdown != null ? `${Number(maxDrawdown).toFixed(2)}%` : '\u2014'}</span>
+            <span className="v2-kpi-big v2-loss num">{maxDrawdown != null ? fmtPlainPct(maxDrawdown, 2) : '\u2014'}</span>
           </GlowCard>
           <GlowCard className="v2-kpi v2-animate-in v2-stagger-8" glowColor="magenta">
             <div className="v2-kpi-label">AI Cost</div>
@@ -128,6 +152,10 @@ export default function Analytics() {
       {/* Charts */}
       <GlowCard className="v2-chart-card v2-animate-in v2-stagger-3">
         <div className="v2-section-title">Equity Curve</div>
+        {chartsError && (
+          <ErrorState error={chartsError} onRetry={() => setChartsKey(k => k + 1)} title="Could not load chart data" />
+        )}
+        {!chartsError && !chartsLoaded && <LoadingState />}
         <div ref={equityRef} className="v2-chart-area" />
       </GlowCard>
 
@@ -149,7 +177,11 @@ export default function Analytics() {
               ))}
             </div>
           </div>
-          {pnlData.length === 0 ? (
+          {pnlRes.error && !pnlRes.loaded ? (
+            <ErrorState error={pnlRes.error} onRetry={pnlRes.reload} title="Could not load P&L" />
+          ) : !pnlRes.loaded ? (
+            <LoadingState />
+          ) : pnlData.length === 0 ? (
             <div className="v2-empty">No closed trades yet</div>
           ) : (
             <div className="v2-table">
@@ -179,7 +211,11 @@ export default function Analytics() {
         {/* Performance by Agent */}
         <GlowCard className="v2-animate-in v2-stagger-6">
           <div className="v2-section-title">Performance by Agent</div>
-          {byAgent.length === 0 ? (
+          {byAgentRes.error && !byAgentRes.loaded ? (
+            <ErrorState error={byAgentRes.error} onRetry={byAgentRes.reload} title="Could not load agent performance" />
+          ) : !byAgentRes.loaded ? (
+            <LoadingState />
+          ) : byAgent.length === 0 ? (
             <div className="v2-empty">No signal-linked trades yet</div>
           ) : byAgent.map((a, i) => (
             <div key={i} className="v2-agent-row">
@@ -197,7 +233,11 @@ export default function Analytics() {
         {/* Signal Accuracy */}
         <GlowCard className="v2-animate-in v2-stagger-7">
           <div className="v2-section-title">Signal Accuracy</div>
-          {signalAccuracy.length === 0 ? (
+          {accuracyRes.error && !accuracyRes.loaded ? (
+            <ErrorState error={accuracyRes.error} onRetry={accuracyRes.reload} title="Could not load signal accuracy" />
+          ) : !accuracyRes.loaded ? (
+            <LoadingState />
+          ) : signalAccuracy.length === 0 ? (
             <div className="v2-empty">Need more trades to calculate accuracy</div>
           ) : signalAccuracy.map((s, i) => (
             <div key={i} className="v2-acc-row">
@@ -223,14 +263,18 @@ export default function Analytics() {
           <div className="v2-cost-kpi-row">
             <div className="v2-cost-kpi">
               <span className="v2-cost-kpi-label">Cost/Trade</span>
-              <span className="v2-cost-kpi-val">${costPerTrade.toFixed(3)}</span>
+              <span className="v2-cost-kpi-val num">{fmtMoney(costPerTrade, 3)}</span>
             </div>
             <div className="v2-cost-kpi">
               <span className="v2-cost-kpi-label">Total Cost</span>
-              <span className="v2-cost-kpi-val">${totalCost.toFixed(2)}</span>
+              <span className="v2-cost-kpi-val num">{fmtMoney(totalCost, 2)}</span>
             </div>
           </div>
-          {costData.length === 0 ? (
+          {costRes.error && !costRes.loaded ? (
+            <ErrorState error={costRes.error} onRetry={costRes.reload} title="Could not load cost data" />
+          ) : !costRes.loaded ? (
+            <LoadingState />
+          ) : costData.length === 0 ? (
             <div className="v2-empty">No cost data yet</div>
           ) : costData.slice(-14).reverse().map((c, i) => (
             <div key={i} className="v2-cost-row">
@@ -268,7 +312,7 @@ export default function Analytics() {
         .v2-panel-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--v2-space-md); }
         .v2-period-pills { display: flex; gap: 2px; }
         .v2-pill-sm { padding: 3px 8px; font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; color: var(--v2-text-muted); background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border); border-radius: var(--v2-radius-sm); cursor: pointer; transition: all var(--v2-duration-fast); }
-        .v2-pill-sm.active { color: var(--v2-accent-cyan); background: rgba(79,195,247,0.08); border-color: rgba(79,195,247,0.2); }
+        .v2-pill-sm.active { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan); border-color: var(--v2-tint-cyan-strong); }
 
         .v2-table { overflow-x: auto; }
         .v2-tbl-header, .v2-tbl-row { display: flex; gap: var(--v2-space-sm); align-items: center; padding: var(--v2-space-xs) 0; }

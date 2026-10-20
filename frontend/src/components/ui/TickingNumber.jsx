@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
+import { fmtMoney, fmtNumber, fmtSignedPct } from '../../lib/format';
+
+function prefersReducedMotion() {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch (err) {
+    console.warn('[TickingNumber] matchMedia unavailable:', err?.message || err);
+    return false;
+  }
+}
 
 /**
  * TickingNumber — Animates between numeric values using requestAnimationFrame.
@@ -35,12 +45,19 @@ export default function TickingNumber({
 
     if (from === to) return;
 
+    // Reduced motion: jump straight to the value, no tween and no flash
+    if (prefersReducedMotion()) {
+      setDisplay(to);
+      return;
+    }
+
     // Determine flash direction
     if (flash) {
       setFlashing(to > from ? 'green' : 'red');
     }
 
     const start = performance.now();
+    let flashTimer = null;
 
     function tick(now) {
       const elapsed = now - start;
@@ -55,7 +72,7 @@ export default function TickingNumber({
         setDisplay(to);
         // Clear flash after animation
         if (flash) {
-          setTimeout(() => setFlashing(null), 100);
+          flashTimer = setTimeout(() => setFlashing(null), 100);
         }
       }
     }
@@ -63,6 +80,7 @@ export default function TickingNumber({
     rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (flashTimer) clearTimeout(flashTimer);
     };
   }, [value, duration, flash]);
 
@@ -96,25 +114,14 @@ export default function TickingNumber({
   );
 }
 
+// Formatting is delegated to lib/format.jsx (U+2212 minus, grouping, em dash for invalid).
 function formatValue(val, format, decimals, prefix) {
-  const num = Number(val);
-  if (isNaN(num)) return '—';
-
-  const sign = num >= 0 ? '' : '';
-  const abs = Math.abs(num).toFixed(decimals);
-
   switch (format) {
     case 'money':
-      return `${prefix ?? '$'}${num < 0 ? '-' : ''}${commaSplit(Math.abs(num).toFixed(decimals))}`;
+      return fmtMoney(val, decimals, prefix ?? '$');
     case 'pct':
-      return `${num >= 0 ? '+' : ''}${num.toFixed(decimals)}%`;
+      return fmtSignedPct(val, decimals);
     default:
-      return `${prefix ?? ''}${commaSplit(num.toFixed(decimals))}`;
+      return fmtNumber(val, decimals, prefix ?? '');
   }
-}
-
-function commaSplit(str) {
-  const [int, dec] = str.split('.');
-  const withCommas = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  return dec !== undefined ? `${withCommas}.${dec}` : withCommas;
 }

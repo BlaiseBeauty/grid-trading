@@ -39,6 +39,7 @@ async function getCostSummary() {
       COALESCE(SUM(output_tokens), 0) as total_output_tokens,
       COALESCE(SUM(cost_usd), 0) as total_cost
     FROM agent_decisions
+    WHERE source_system = 'grid'
     GROUP BY agent_name, agent_layer
     ORDER BY total_cost DESC
   `);

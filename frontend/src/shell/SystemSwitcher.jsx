@@ -1,5 +1,7 @@
 import { useNavigate } from 'react-router-dom';
+import { useShallow } from 'zustand/react/shallow';
 import usePlatformStore from '../stores/platform';
+import { fmtMoney } from '../lib/format';
 
 const SYSTEMS = [
   {
@@ -37,7 +39,13 @@ const SYSTEMS = [
 ];
 
 export default function SystemSwitcher() {
-  const { activeSystem, setActiveSystem, unreadCount, toggleDrawer, monthlyCostUsd } = usePlatformStore();
+  const { activeSystem, setActiveSystem, unreadCount, toggleDrawer, monthlyCostUsd } = usePlatformStore(useShallow(s => ({
+    activeSystem: s.activeSystem,
+    setActiveSystem: s.setActiveSystem,
+    unreadCount: s.unreadCount,
+    toggleDrawer: s.toggleDrawer,
+    monthlyCostUsd: s.monthlyCostUsd,
+  })));
   const navigate = useNavigate();
 
   function handleSystemClick(system) {
@@ -86,7 +94,10 @@ export default function SystemSwitcher() {
           const isActive = activeSystem === sys.id;
           return (
             <button
+              type="button"
               key={sys.id}
+              aria-current={isActive ? 'page' : undefined}
+              aria-label={`${sys.shortLabel} system`}
               onClick={() => handleSystemClick(sys)}
               style={{
                 display: 'flex',
@@ -135,11 +146,13 @@ export default function SystemSwitcher() {
             color: 'var(--t3)',
             letterSpacing: '0.5px',
           }}>
-            ${parseFloat(monthlyCostUsd).toFixed(2)}/mo
+            {fmtMoney(monthlyCostUsd, 2)}/mo
           </div>
         )}
         <button
+          type="button"
           onClick={toggleDrawer}
+          aria-label={unreadCount > 0 ? `Platform events, ${unreadCount} unread` : 'Platform events'}
           style={{
             position: 'relative',
             background: 'transparent',
@@ -154,7 +167,7 @@ export default function SystemSwitcher() {
           }}
         >
           {/* Bell SVG */}
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
             <path d="M8 1a5 5 0 0 0-5 5v3l-1 2h12l-1-2V6a5 5 0 0 0-5-5z"
               stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round"/>
             <path d="M6.5 13a1.5 1.5 0 0 0 3 0" stroke="currentColor" strokeWidth="1.5"/>
@@ -166,8 +179,8 @@ export default function SystemSwitcher() {
               position: 'absolute',
               top: 2,
               right: 2,
-              background: 'var(--loss)',
-              color: 'white',
+              background: 'var(--cyan)',
+              color: 'var(--v2-on-accent)',
               fontFamily: 'IBM Plex Mono, monospace',
               fontSize: 7,
               fontWeight: 700,

@@ -6,6 +6,7 @@
  */
 
 const http = require('http');
+const crypto = require('crypto');
 const decisionsDb = require('../../../db/queries/decisions');
 const costsDb = require('../../../db/queries/costs');
 const signalsDb = require('../../../db/queries/signals');
@@ -16,12 +17,12 @@ const equityDb = require('../../../db/queries/equity');
 const cycleReportsDb = require('../../../db/queries/cycle-reports');
 const positionReviewsDb = require('../../../db/queries/position-reviews');
 const marketDataDb = require('../../../db/queries/market-data');
-const { queryOne: dbQueryOne, queryAll: dbQueryAll, query: dbQuery } = require('../../../db/connection');
+const { queryOne: dbQueryOne, queryAll: dbQueryAll, query: dbQuery, pool: dbPool } = require('../../../db/connection');
 const { notifications } = require('../../../services/notifications');
 const logger = require('../../../services/logger');
 const { symbols: trackedSymbols, timeframes } = require('../../../config/symbols');
-const { getRiskLimits, BOOTSTRAP, SCRAM: SCRAM_OVERRIDES } = require('../config/risk-limits');
-const { getLatestCorrelations } = require('./correlation-calculator');
+const { getRiskLimits, BOOTSTRAP, isManualScram, scramCloseMode } = require('../config/risk-limits');
+const { normalizeDirection, toFiniteNumber } = require('./risk-enforcement');
 const { linkTradeToTheses } = require('../../../shared/thesis-linker');
 
 // Knowledge agents (8 total — all run in parallel)
@@ -64,6 +65,80 @@ const patternDiscovery = new PatternDiscoveryAgent();
 const tradesDb = require('../../../db/queries/trades');
 
 const PYTHON_ENGINE_TIMEOUT_MS = 30000; // 30s timeout for Python engine calls
+
+function engineBaseUrl() {
+  return process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100';
+}
+
+/** Headers for every call to the Python engine (X-Engine-Key enforced by the engine when it is set). */
+function engineHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (process.env.ENGINE_API_KEY) headers['X-Engine-Key'] = process.env.ENGINE_API_KEY;
+  return headers;
+}
+
+/** 'live' only when LIVE_TRADING_ENABLED=true — sent explicitly on every execute-trade. */
+function engineMode() {
+  return process.env.LIVE_TRADING_ENABLED === 'true' ? 'live' : 'paper';
+}
+
+/**
+ * JSON request to the Python engine. Timeouts reject with err.isTimeout = true so callers can
+ * tell "outcome unknown" apart from a clean failure. Engine `{error}` bodies reject unless
+ * rejectOnError is false.
+ */
+function engineRequest(method, path, body = null, { rejectOnError = true, timeoutMs = PYTHON_ENGINE_TIMEOUT_MS } = {}) {
+  return new Promise((resolve, reject) => {
+    const postData = body == null ? null : JSON.stringify(body);
+    const url = new URL(`${engineBaseUrl()}${path}`);
+    const headers = engineHeaders(postData == null ? {} : {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(postData),
+    });
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname + url.search,
+      method,
+      headers,
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (rejectOnError && parsed.error) reject(new Error(parsed.error));
+          else resolve(parsed);
+        } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      const err = new Error(`Python engine timeout (${Math.round(timeoutMs / 1000)}s)`);
+      err.isTimeout = true;
+      req.destroy(err);
+    });
+    if (postData != null) req.write(postData);
+    req.end();
+  });
+}
+
+/** Fetch a price from the engine with the shared auth header; null when unavailable. */
+async function fetchEnginePrice(symbol, timeoutMs = 3000) {
+  try {
+    const res = await fetch(`${engineBaseUrl()}/price/${symbol.replace('/', '-')}`, {
+      headers: engineHeaders(),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (res.ok) {
+      const price = parseFloat((await res.json()).price);
+      if (Number.isFinite(price) && price > 0) return price;
+    }
+  } catch (err) {
+    logger.debug('Live price unavailable', { err, symbol, error_type: 'price_fallback' });
+  }
+  return null;
+}
 
 /**
  * Detect system operating mode: BOOTSTRAP or LEARNED.
@@ -136,6 +211,57 @@ async function checkAndPromoteBootstrapPhase() {
 let cycleNumber = null;
 let cycleRunning = false;
 let cycleStartedAt = null;
+let currentCycle = null; // { id, cancelled, stats, releaseLock } — the cycle that currently owns the mutex
+const CYCLE_ADVISORY_LOCK_KEY = 7340011; // pg_try_advisory_lock key for runCycle (cross-process guard)
+
+/**
+ * Take the cross-process advisory lock for a cycle. The lock is session-level, so it is held on a
+ * dedicated pool client until released. Returns { release } or null when another process holds it.
+ * Throws if the database cannot be reached.
+ */
+async function acquireCycleLock() {
+  const client = await dbPool.connect();
+  try {
+    const { rows } = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [CYCLE_ADVISORY_LOCK_KEY]);
+    if (!rows[0]?.locked) {
+      client.release();
+      return null;
+    }
+  } catch (err) {
+    client.release(err);
+    throw err;
+  }
+  let released = false;
+  return {
+    release: async () => {
+      if (released) return;
+      released = true;
+      try {
+        await client.query('SELECT pg_advisory_unlock($1)', [CYCLE_ADVISORY_LOCK_KEY]);
+        client.release();
+      } catch (err) {
+        console.warn('[ORCHESTRATOR] Advisory unlock failed (connection discarded):', err.message);
+        client.release(err); // destroying the connection drops the session lock
+      }
+    },
+  };
+}
+
+function recordAgentOutcome(cycle, ok) {
+  if (!cycle) return;
+  cycle.stats.run++;
+  if (ok) cycle.stats.ok++; else cycle.stats.failed++;
+}
+
+function abortedResult(cycle, extra = {}) {
+  return {
+    ...extra,
+    aborted: true,
+    agentsRun: cycle?.stats.run || 0,
+    agentsSucceeded: cycle?.stats.ok || 0,
+    agentsFailed: cycle?.stats.failed || 0,
+  };
+}
 const MAX_CYCLE_DURATION_MS = 15 * 60 * 1000; // 15 minute timeout (was 60min — too long, caused stale locks)
 const ANALYSIS_EVERY_N_CYCLES = 6; // Run analysis every 6 cycles (every 24h at 4h intervals)
 const ANALYSIS_INFANT_EVERY_N = 1;  // Run every cycle during INFANT phase for maximum learning
@@ -143,114 +269,85 @@ const ANALYSIS_INFANT_EVERY_N = 1;  // Run every cycle during INFANT phase for m
 /**
  * Fetch indicators from Python engine for a symbol.
  */
-function fetchIndicators(symbol, timeframe = '4h') {
+async function fetchIndicators(symbol, timeframe = '4h') {
   const urlSymbol = symbol.replace('/', '-');
-  return new Promise((resolve, reject) => {
-    const url = `${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/indicators/${urlSymbol}?timeframe=${timeframe}`;
-    const req = http.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) reject(new Error(parsed.error));
-          else resolve(parsed.indicators || parsed);
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
-  });
+  const parsed = await engineRequest('GET', `/indicators/${urlSymbol}?timeframe=${encodeURIComponent(timeframe)}`);
+  return parsed.indicators || parsed;
 }
 
 /**
  * Fetch OHLCV data from Python engine.
  */
 function fetchOHLCV(symbol, timeframe = '4h', limit = 200) {
-  return new Promise((resolve, reject) => {
-    const postData = JSON.stringify({ symbol, timeframe, limit });
-    const url = new URL(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/fetch-ohlcv`);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) reject(new Error(parsed.error));
-          else resolve(parsed);
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
-    req.write(postData);
-    req.end();
-  });
+  return engineRequest('POST', '/fetch-ohlcv', { symbol, timeframe, limit });
 }
 
 /**
  * Execute approved trade via Python engine.
  */
 function executeTrade(tradeData) {
-  return new Promise((resolve, reject) => {
-    const postData = JSON.stringify(tradeData);
-    const url = new URL(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/execute-trade`);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) reject(new Error(parsed.error));
-          else resolve(parsed);
-        } catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
-    req.write(postData);
-    req.end();
-  });
+  return engineRequest('POST', '/execute-trade', tradeData);
+}
+
+/** New idempotency key — one per trade ATTEMPT (standing orders derive a stable one, see below). */
+function newClientOrderId() {
+  return crypto.randomUUID();
+}
+
+/** Stable UUID derived from a seed, so every retry of the same standing order dedupes in the engine. */
+function deterministicClientOrderId(seed) {
+  const h = crypto.createHash('sha1').update(String(seed)).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
+ * Execute a trade with an idempotency key and an explicit mode.
+ *  - sends mode ('live' | 'paper', from LIVE_TRADING_ENABLED) and client_order_id (engine dedupes on it)
+ *  - on TIMEOUT the outcome is unknown: look the trade up by client_order_id. If found, return it
+ *    (flag recovered_after_timeout). If not found, rethrow with err.confirmedAbsent = true;
+ *    if the lookup itself fails, err.confirmedAbsent = false (unknown — caller must NOT retry live).
+ */
+async function executeTradeIdempotent(tradeData) {
+  const data = {
+    ...tradeData,
+    mode: engineMode(), // never trust a caller-supplied mode
+    client_order_id: tradeData.client_order_id || newClientOrderId(),
+  };
+  try {
+    return await executeTrade(data);
+  } catch (err) {
+    if (!err.isTimeout) throw err;
+    console.error(`[ORCHESTRATOR] execute-trade timed out for ${data.symbol} (client_order_id ${data.client_order_id}) — checking whether it was placed`);
+    try {
+      const existing = await dbQueryOne('SELECT * FROM trades WHERE client_order_id = $1', [data.client_order_id]);
+      if (existing) {
+        console.warn(`[ORCHESTRATOR] Trade #${existing.id} exists for client_order_id ${data.client_order_id} — treating timeout as success`);
+        return {
+          trade_id: existing.id,
+          fill_price: existing.actual_fill_price ?? existing.entry_price,
+          recovered_after_timeout: true,
+        };
+      }
+      err.confirmedAbsent = true;
+    } catch (lookupErr) {
+      err.confirmedAbsent = false;
+      console.error('[ORCHESTRATOR] client_order_id lookup failed after timeout:', lookupErr.message);
+    }
+    err.client_order_id = data.client_order_id;
+    throw err;
+  }
+}
+
+/** Amend the exchange SL/TP orders for a live trade via the engine. Throws on any failure. */
+function amendEngineStops(tradeId, { sl_price, tp_price }) {
+  return engineRequest('POST', '/amend-stops', { trade_id: tradeId, sl_price: sl_price ?? null, tp_price: tp_price ?? null });
 }
 
 /**
  * Monitor open positions — check TP/SL via Python engine.
  */
 function monitorPositions() {
-  return new Promise((resolve, reject) => {
-    const postData = '{}';
-    const url = new URL(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/monitor-positions`);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
-    req.write(postData);
-    req.end();
-  });
+  return engineRequest('POST', '/monitor-positions', {}, { rejectOnError: false });
 }
 
 /**
@@ -273,17 +370,7 @@ async function checkStandingOrders(broadcast) {
 
   for (const order of orders) {
     // 2. Get current price — prefer live exchange price, fall back to DB candle close
-    let currentPrice;
-    try {
-      const dashSymbol = order.symbol.replace('/', '-');
-      const res = await fetch(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/price/${dashSymbol}`);
-      if (res.ok) {
-        const data = await res.json();
-        currentPrice = data.price;
-      }
-    } catch (err) {
-      logger.debug('Live price unavailable for standing order', { err, symbol: order.symbol, error_type: 'price_fallback' });
-    }
+    let currentPrice = await fetchEnginePrice(order.symbol, 10000);
 
     if (!currentPrice) {
       try {
@@ -324,152 +411,74 @@ async function checkStandingOrders(broadcast) {
 
       // Position deduplication: skip if symbol already has an open trade
       const existingOpen = await dbQueryOne(
-        "SELECT id FROM trades WHERE symbol = $1 AND status = 'open' LIMIT 1",
+        "SELECT id FROM trades WHERE symbol = $1 AND status IN ('open', 'close_failed') LIMIT 1",
         [order.symbol]
       );
       if (existingOpen) {
         console.log(`[MONITOR] Skipping standing order #${order.id} — open trade #${existingOpen.id} on ${order.symbol} already exists`);
         await standingOrdersDb.markFailed(order.id, 'duplicate_position')
-          .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
+          .catch(() => standingOrdersDb.revertToActive(order.id)
+            .catch(revertErr => logger.error('Failed to fail/revert standing order', { err: revertErr, error_type: 'standing_order', symbol: order.symbol })));
         continue;
       }
 
-      // --- Comprehensive risk pre-flight (mirrors risk-manager.js preflightCheck) ---
-      const limits = getRiskLimits();
-      let maxPositions = limits.MAX_OPEN_POSITIONS;
-      let minConfidence = limits.MIN_CONFIDENCE_TO_TRADE;
-      let scramOverrides = null;
-      let bootstrapPhase = null;
-      try {
-        const bootstrapRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1');
-        bootstrapPhase = bootstrapRow?.phase;
-        if (bootstrapPhase && BOOTSTRAP[bootstrapPhase]?.MAX_OPEN_POSITIONS != null) {
-          maxPositions = BOOTSTRAP[bootstrapPhase].MAX_OPEN_POSITIONS;
-        }
-        if (bootstrapPhase && BOOTSTRAP[bootstrapPhase]?.MIN_CONFIDENCE_TO_TRADE != null) {
-          minConfidence = BOOTSTRAP[bootstrapPhase].MIN_CONFIDENCE_TO_TRADE;
-        }
-      } catch { /* use default */ }
-
-      const rejectReasons = [];
-
-      // SCRAM check — block all new positions during crisis/emergency
-      try {
-        const activeScram = await dbQueryOne("SELECT level FROM scram_events WHERE cleared_at IS NULL ORDER BY activated_at DESC LIMIT 1");
-        if (activeScram) {
-          scramOverrides = SCRAM_OVERRIDES?.[activeScram.level];
-          if (scramOverrides?.NO_NEW_POSITIONS) {
-            rejectReasons.push(`scram_active (${activeScram.level})`);
-          }
-          if (scramOverrides?.MAX_OPEN_POSITIONS != null) {
-            maxPositions = Math.min(maxPositions, scramOverrides.MAX_OPEN_POSITIONS);
-          }
-        }
-      } catch { /* proceed without scram check */ }
-
-      // Drawdown check — block if max drawdown exceeded
-      try {
-        const hwmRow = await dbQueryOne('SELECT MAX(total_value) as high_water_mark FROM equity_snapshots');
-        const highWaterMark = parseFloat(hwmRow?.high_water_mark);
-        if (highWaterMark > 0) {
-          const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
-          const [realisedRow, unrealisedRow] = await Promise.all([
-            dbQueryOne("SELECT COALESCE(SUM(pnl_realised), 0) as total FROM trades WHERE status = 'closed'"),
-            dbQueryOne('SELECT COALESCE(SUM(unrealised_pnl), 0) as total FROM portfolio_state'),
-          ]);
-          const currentEquity = startingCapital + parseFloat(realisedRow?.total || 0) + parseFloat(unrealisedRow?.total || 0);
-          if (currentEquity < highWaterMark) {
-            const drawdownPct = ((highWaterMark - currentEquity) / highWaterMark) * 100;
-            if (drawdownPct >= limits.MAX_DRAWDOWN_PCT) {
-              rejectReasons.push(`max_drawdown_exceeded (${drawdownPct.toFixed(1)}% >= ${limits.MAX_DRAWDOWN_PCT}%)`);
-            }
-          }
-        }
-      } catch { /* proceed without drawdown check */ }
-
-      // Daily loss limit check
-      try {
-        const dailyPnl = await dbQueryOne(`
-          SELECT COALESCE(SUM(pnl_realised), 0) as daily_pnl
-          FROM trades WHERE status = 'closed' AND closed_at > CURRENT_DATE
-        `);
-        const portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
-        const dailyLossPct = Math.abs(Math.min(0, (parseFloat(dailyPnl?.daily_pnl) / portfolioValue) * 100));
-        if (dailyLossPct >= limits.MAX_DAILY_LOSS_PCT) {
-          rejectReasons.push(`daily_loss_limit (${dailyLossPct.toFixed(1)}% >= ${limits.MAX_DAILY_LOSS_PCT}%)`);
-        }
-      } catch { /* proceed without daily loss check */ }
-
-      // Confidence gate
-      if ((order.confidence || 0) < minConfidence) {
-        rejectReasons.push(`low_confidence (${order.confidence} < ${minConfidence})`);
-      }
-
-      // Correlated exposure check
-      try {
-        const openTrades = await dbQueryAll("SELECT symbol, side, entry_price, quantity FROM trades WHERE status = 'open'");
-        if (openTrades.length > 0) {
-          let correlations;
-          try { correlations = await getLatestCorrelations(); } catch { correlations = { BTC_ETH: 0.85, BTC_SOL: 0.85, ETH_SOL: 0.85 }; }
-          const portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
-          const newSymbol = (order.symbol || '').split('/')[0];
-          const newSign = order.side === 'sell' ? -1 : 1;
-          const newSizePct = 3; // default standing order size
-          let correlatedSum = newSizePct;
-          for (const trade of openTrades) {
-            const tradeSymbol = (trade.symbol || '').split('/')[0];
-            if (tradeSymbol === newSymbol) continue;
-            const pairKey1 = `${newSymbol}_${tradeSymbol}`;
-            const pairKey2 = `${tradeSymbol}_${newSymbol}`;
-            const corr = correlations[pairKey1] ?? correlations[pairKey2] ?? 0;
-            if (Math.abs(corr) <= 0.5) continue;
-            const existingSizePct = (parseFloat(trade.entry_price) * parseFloat(trade.quantity) / portfolioValue) * 100;
-            const existingSign = trade.side === 'sell' ? -1 : 1;
-            if (corr * newSign * existingSign > 0) correlatedSum += existingSizePct * Math.abs(corr);
-          }
-          if (correlatedSum > limits.MAX_CORRELATED_EXPOSURE_PCT) {
-            rejectReasons.push(`correlated_exposure (${correlatedSum.toFixed(1)}% > ${limits.MAX_CORRELATED_EXPOSURE_PCT}%)`);
-          }
-        }
-      } catch { /* proceed without correlation check */ }
-
-      // Max open positions check
-      const openCount = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'");
-      if ((openCount?.cnt || 0) >= maxPositions) {
-        rejectReasons.push(`max_positions_reached (${openCount.cnt}/${maxPositions})`);
-      }
-
-      // If any risk check failed, reject the order
-      if (rejectReasons.length > 0) {
-        const reason = rejectReasons.join('; ');
-        console.log(`[MONITOR] Standing order #${order.id} rejected by risk pre-flight: ${reason}`);
-        await standingOrdersDb.markFailed(order.id, reason.slice(0, 200))
-          .catch(() => standingOrdersDb.revertToActive(order.id).catch(() => {}));
-        continue;
-      }
-
-      // Mark risk validated NOW (after passing all checks)
-      await dbQuery('UPDATE standing_orders SET risk_validated_at = NOW() WHERE id = $1', [order.id]).catch(() => {});
-
-      // Parse execution params for TP/SL
+      // Parse execution params for TP/SL / size
       const exec = typeof order.execution_params === 'string' ? JSON.parse(order.execution_params) : (order.execution_params || {});
 
-      // Execute paper trade via Python engine
-      const tradeResult = await executeTrade({
+      // --- Hard-limit pre-flight: the SAME gate the risk manager uses (SCRAM, drawdown with
+      // reset-aware HWM, rolling-24h daily loss incl. unrealised, real size + real pair
+      // correlations, event blackout, max positions, mandatory stop-loss, signed R:R).
+      // Fails CLOSED: any DB/check error rejects with 'risk_check_unavailable'.
+      const verdict = await RiskManagerAgent.checkEntry({
+        symbol: order.symbol,
+        direction: order.side === 'sell' ? 'short' : 'long',
+        confidence: order.confidence,
+        entry_price: currentPrice,
+        sl_price: exec.stop_loss,
+        tp_price: exec.take_profit,
+        approved_size_pct: exec.position_size_pct || 1.0,
+        asset_class: order.asset_class || 'crypto',
+      });
+
+      if (!verdict.ok) {
+        const reason = verdict.reasons.join('; ');
+        console.log(`[MONITOR] Standing order #${order.id} rejected by risk pre-flight: ${reason}`);
+        if (reason.includes('risk_check_unavailable')) {
+          // Infrastructure problem, not a verdict on the order — release the claim so the
+          // next monitor tick re-evaluates it (nothing was executed).
+          await standingOrdersDb.revertToActive(order.id)
+            .catch(revertErr => logger.error('Failed to revert standing order to active', { err: revertErr, error_type: 'standing_order', symbol: order.symbol }));
+        } else {
+          await standingOrdersDb.markFailed(order.id, reason.slice(0, 200))
+            .catch(() => standingOrdersDb.revertToActive(order.id)
+              .catch(revertErr => logger.error('Failed to fail/revert standing order', { err: revertErr, error_type: 'standing_order', symbol: order.symbol })));
+        }
+        continue;
+      }
+      const approvedOrder = verdict.proposal;
+
+      // Mark risk validated NOW (after passing all checks)
+      await dbQuery('UPDATE standing_orders SET risk_validated_at = NOW() WHERE id = $1', [order.id])
+        .catch(e => logger.warn('Failed to stamp risk_validated_at', { err: e, error_type: 'standing_order', symbol: order.symbol }));
+
+      // Execute via Python engine. client_order_id is stable per standing order so any retry
+      // (including after a timeout) dedupes in the engine instead of double-filling.
+      const tradeResult = await executeTradeIdempotent({
         symbol: order.symbol,
         side: order.side,
         quantity: await calculateQuantity({
-          approved_size_pct: exec.position_size_pct || 1.0,
+          approved_size_pct: approvedOrder.approved_size_pct,
           entry_price: currentPrice,
         }),
         entry_price: currentPrice,
-        tp_price: exec.take_profit || null,
-        sl_price: exec.stop_loss || null,
+        tp_price: approvedOrder.tp_price,
+        sl_price: approvedOrder.sl_price,
         confidence: order.confidence,
         agent_decision_id: order.agent_decision_id,
         reasoning: `Standing order #${order.id} triggered at $${currentPrice}`,
         asset_class: order.asset_class || 'crypto',
         exchange: 'kucoin',
+        client_order_id: deterministicClientOrderId(`standing_order:${order.id}`),
       });
 
       // Link trade back to standing order
@@ -492,8 +501,15 @@ async function checkStandingOrders(broadcast) {
       triggered.push({ order_id: order.id, trade_id: tradeResult.trade_id, symbol: order.symbol });
     } catch (err) {
       console.error(`[MONITOR] Failed to execute standing order #${order.id} for ${order.symbol}:`, err.message);
-      // Determine if failure is transient (network/timeout) or permanent
-      const isTransient = err.message.includes('timeout') || err.message.includes('ECONNREFUSED') || err.message.includes('ECONNRESET');
+      // Determine if failure is transient (network) or permanent.
+      // A TIMEOUT on a LIVE order means the outcome is unknown: it is only retryable when the
+      // trade was confirmed absent by client_order_id (the retry reuses the same key, so the
+      // engine dedupes even if the first attempt lands late). Paper timeouts stay transient.
+      // (ECONNRESET can happen after the request was sent, so it is only transient in paper mode)
+      let isTransient = err.message.includes('ECONNREFUSED') || (engineMode() !== 'live' && err.message.includes('ECONNRESET'));
+      if (err.isTimeout || err.message.includes('timeout')) {
+        isTransient = engineMode() === 'live' ? err.confirmedAbsent === true : true;
+      }
       if (isTransient) {
         // Transient failure: mark as pending_retry (auto-retries after 15 min cooldown)
         await standingOrdersDb.markPendingRetry(order.id, err.message.slice(0, 100))
@@ -556,7 +572,10 @@ async function refreshMarketData() {
               const threshold = FRESHNESS_THRESHOLDS_MS[tf] || FRESHNESS_THRESHOLDS_MS['4h'];
               ok = (Date.now() - new Date(latestTimestamp).getTime()) < threshold;
             }
-          } catch { /* DB check failed — assume ok if fetch succeeded */ }
+          } catch (freshErr) {
+            // DB freshness check failed — assume ok if fetch succeeded
+            logger.debug('Market data freshness check failed', { err: freshErr, symbol, timeframe: tf, error_type: 'freshness_check' });
+          }
 
           report[symbol][tf] = { fetched: result.fetched, latestTimestamp, ageMinutes, ok };
           if (ok) {
@@ -677,14 +696,21 @@ async function cacheIndicators(indicators) {
 /**
  * Run all knowledge agents in parallel.
  */
-async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality, bootstrapPhase = 'infant') {
+async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality, bootstrapPhase = 'infant', cycle = null) {
   console.log(`[ORCHESTRATOR] Running knowledge layer (cycle ${cycleNum})...`);
 
   // Run in batches of 2 to stay within rate limits (30k input tokens/min)
   const BATCH_SIZE = 2;
   const allResults = [];
+  // Agents not reached because the cycle was superseded/cancelled are reported as skipped
+  let skippedFrom = knowledgeAgents.length;
 
   for (let i = 0; i < knowledgeAgents.length; i += BATCH_SIZE) {
+    if (cycle?.cancelled) {
+      console.warn(`[ORCHESTRATOR] Cycle ${cycleNum} cancelled — stopping knowledge layer before batch ${Math.floor(i / BATCH_SIZE) + 1}`);
+      skippedFrom = i;
+      break;
+    }
     const batch = knowledgeAgents.slice(i, i + BATCH_SIZE);
     const batchResults = await Promise.allSettled(
       batch.map(agent => {
@@ -731,18 +757,24 @@ async function runKnowledgeLayer(cycleNum, indicators, broadcast, dataQuality, b
     }
   }
 
-  return allResults.map((r, i) => ({
-    agent: knowledgeAgents[i].name,
-    status: r.status,
-    decision: r.status === 'fulfilled' ? r.value : null,
-    error: r.status === 'rejected' ? r.reason.message : null,
-  }));
+  // BaseAgent.run() never rejects — it returns a decision with .error set on failure — so
+  // 'fulfilled' alone does not mean success. An agent is OK only if fulfilled AND decision.error is empty.
+  return allResults.slice(0, skippedFrom).map((r, i) => {
+    const decision = r.status === 'fulfilled' ? r.value : null;
+    const error = r.status === 'rejected'
+      ? (r.reason?.message || String(r.reason))
+      : (decision?.error || null);
+    const ok = r.status === 'fulfilled' && !error;
+    recordAgentOutcome(cycle, ok);
+    return { agent: knowledgeAgents[i].name, status: r.status, decision, error, ok };
+  });
 }
 
 /**
  * Run the strategy layer: Regime → Synthesizer → Risk Manager → Execute.
  */
-async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false, systemMode = 'LEARNED', compassConstraints = null) {
+async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = false, systemMode = 'LEARNED', compassConstraints = null, cycle = null) {
+  const cancelledResult = () => ({ regime: null, proposals: [], approved: [], rejected: [], trades: [], standing_orders: [], cancelled: true });
   console.log(`[ORCHESTRATOR] Running strategy layer (cycle ${cycleNum})${quietMarket ? ' [QUIET MARKET]' : ''}...`);
 
   // Step 1: Classify market regime
@@ -755,6 +787,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       indicators,
       broadcast,
     });
+    recordAgentOutcome(cycle, !regimeResult?.error);
     const oj = regimeResult?.output_json || {};
     let regimeList = oj.regimes || [];
     // Handle flat output: { regime: "ranging", confidence: 62, ... }
@@ -774,6 +807,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       });
     }
   } catch (err) {
+    recordAgentOutcome(cycle, false);
     console.error('[ORCHESTRATOR] Regime classifier failed:', err.message);
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'regime_classifier', layer: 'strategy', error: err.message });
   }
@@ -829,6 +863,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     await new Promise(r => setTimeout(r, 15000));
   }
 
+  if (cycle?.cancelled) { console.warn(`[ORCHESTRATOR] Cycle ${cycleNum} cancelled — skipping Synthesizer`); return cancelledResult(); }
+
   // Step 2: Synthesizer — match signals to templates, produce trade proposals
   console.log('[ORCHESTRATOR] → Synthesizer');
   let proposals = [];
@@ -844,6 +880,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       forcedExploration,
       systemMode,
     });
+    recordAgentOutcome(cycle, !synthDecision?.error);
     // [SYNTH_DEBUG] Log raw synthesizer output for diagnostics
     const outputJson = synthDecision?.output_json || {};
     const noActionReasons = outputJson.no_action_reasons || [];
@@ -922,6 +959,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       });
     }
   } catch (err) {
+    if (!synthDecision) recordAgentOutcome(cycle, false);
     console.error('[ORCHESTRATOR] Synthesizer failed:', err.message);
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'synthesizer', layer: 'strategy', error: err.message });
   }
@@ -976,6 +1014,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
   for (const p of proposals) {
     console.log(`[ORCHESTRATOR]   → ${p.symbol} ${p.direction} conf=${p.confidence} entry=${p.entry_price} sl=${p.sl_price} tp=${p.tp_price}`);
   }
+  if (cycle?.cancelled) { console.warn(`[ORCHESTRATOR] Cycle ${cycleNum} cancelled — skipping Risk Manager`); return cancelledResult(); }
   console.log('[ORCHESTRATOR] → Risk Manager');
   let riskResult = { approved: [], rejected: [] };
   try {
@@ -985,6 +1024,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       proposals,
       broadcast,
     });
+    recordAgentOutcome(cycle, !riskDecision?.decision?.error);
     // Risk Manager returns { approved, rejected, decision } — use directly
     riskResult = {
       approved: (riskDecision?.approved || []).map(t => ({
@@ -1011,6 +1051,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       });
     }
   } catch (err) {
+    recordAgentOutcome(cycle, false);
     console.error('[ORCHESTRATOR] Risk Manager failed:', err.message);
     if (broadcast) broadcast('agent_complete', { cycleNumber: cycleNum, agent_name: 'risk_manager', layer: 'strategy', error: err.message });
   }
@@ -1025,33 +1066,40 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
     if (bsRow?.phase && BOOTSTRAP[bsRow.phase]?.MAX_OPEN_POSITIONS != null) {
       maxPos = BOOTSTRAP[bsRow.phase].MAX_OPEN_POSITIONS;
     }
-  } catch { /* use default */ }
-  let currentOpenCount = parseInt((await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status = 'open'"))?.cnt || 0);
+  } catch (bsErr) {
+    // Fail closed on the stricter side: unknown phase -> infant limits
+    console.error('[ORCHESTRATOR] Bootstrap phase read failed — using infant limits:', bsErr.message);
+    if (BOOTSTRAP.infant?.MAX_OPEN_POSITIONS != null) maxPos = Math.min(maxPos, BOOTSTRAP.infant.MAX_OPEN_POSITIONS);
+  }
+  let currentOpenCount = parseInt((await dbQueryOne("SELECT COUNT(*)::int as cnt FROM trades WHERE status IN ('open', 'close_failed')"))?.cnt || 0);
 
-  // Daily loss gate — use calendar day, not rolling 24h
+  // Daily loss gate — rolling 24h incl. unrealised, % of the same equity used for sizing.
+  // Fails closed: if it cannot be computed, no new trades this cycle.
   let dailyLossBreached = false;
+  let dailyLossUnavailable = false;
   try {
-    const dailyPnl = await dbQueryOne(`
-      SELECT COALESCE(SUM(pnl_realised), 0) as daily_pnl
-      FROM trades WHERE status = 'closed' AND closed_at::date = CURRENT_DATE
-    `);
-    const pv = await portfolioDb.getPortfolioValue();
-    const dailyLossPct = Math.abs(parseFloat(dailyPnl?.daily_pnl || 0)) / (pv.total_value || 10000) * 100;
-    if (parseFloat(dailyPnl?.daily_pnl || 0) < 0 && dailyLossPct >= currentLimits.MAX_DAILY_LOSS_PCT) {
+    const dailyLossPct = await RiskManagerAgent.getRollingDailyLossPct();
+    if (dailyLossPct >= currentLimits.MAX_DAILY_LOSS_PCT) {
       dailyLossBreached = true;
       console.warn(`[ORCHESTRATOR] DAILY LOSS LIMIT BREACHED: ${dailyLossPct.toFixed(1)}% (max ${currentLimits.MAX_DAILY_LOSS_PCT}%) — no new trades`);
     }
   } catch (err) {
-    console.warn('[ORCHESTRATOR] Daily loss check failed:', err.message);
+    dailyLossUnavailable = true;
+    console.error('[ORCHESTRATOR] Daily loss check failed — blocking new trades (fail closed):', err.message);
   }
 
   for (const trade of riskResult.approved) {
+    if (cycle?.cancelled) {
+      console.warn(`[ORCHESTRATOR] Cycle ${cycleNum} cancelled — not executing ${trade.symbol}`);
+      break;
+    }
     try {
       // Check daily loss limit
-      if (dailyLossBreached) {
-        console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — daily loss limit breached`);
-        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'daily_loss_limit', $5, NOW())`,
-          [cycleNum, trade.symbol, trade.direction, trade.confidence, `Daily loss limit breached (max ${currentLimits.MAX_DAILY_LOSS_PCT}%)`]);
+      if (dailyLossBreached || dailyLossUnavailable) {
+        const why = dailyLossUnavailable ? 'risk_check_unavailable (daily_loss)' : `Daily loss limit breached (max ${currentLimits.MAX_DAILY_LOSS_PCT}%)`;
+        console.log(`[ORCHESTRATOR] Skipping ${trade.symbol} — ${why}`);
+        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, $5, $6, NOW())`,
+          [cycleNum, trade.symbol, trade.direction, trade.confidence, dailyLossUnavailable ? 'risk_check_unavailable' : 'daily_loss_limit', why]);
         continue;
       }
 
@@ -1065,7 +1113,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
 
       // Position deduplication: skip if symbol already has an open trade
       const existingOpen = await dbQueryOne(
-        "SELECT id FROM trades WHERE symbol = $1 AND status = 'open' LIMIT 1",
+        "SELECT id FROM trades WHERE symbol = $1 AND status IN ('open', 'close_failed') LIMIT 1",
         [trade.symbol]
       );
       if (existingOpen) {
@@ -1081,8 +1129,8 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
           "SELECT COUNT(*)::int as cnt, COALESCE(SUM(quantity * entry_price), 0) as exposure FROM trades WHERE symbol = $1 AND status = 'open'",
           [trade.symbol]
         );
-        const pv = await portfolioDb.getPortfolioValue();
-        const existingExposurePct = (parseFloat(openSymbolTrades?.exposure || 0) / (pv.total_value || 10000)) * 100;
+        const pv = await RiskManagerAgent.getEquity();
+        const existingExposurePct = (parseFloat(openSymbolTrades?.exposure || 0) / pv.total_value) * 100;
         const proposedSizePct = trade.approved_size_pct || 1.0;
         if (existingExposurePct + proposedSizePct > currentLimits.MAX_CORRELATED_EXPOSURE_PCT) {
           console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — correlated exposure ${(existingExposurePct + proposedSizePct).toFixed(1)}% > max ${currentLimits.MAX_CORRELATED_EXPOSURE_PCT}%`);
@@ -1091,7 +1139,11 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
           continue;
         }
       } catch (err) {
-        console.warn('[ORCHESTRATOR] Correlated exposure check failed:', err.message);
+        // Fail closed: a trade whose exposure cannot be verified is not executed
+        console.error(`[ORCHESTRATOR] Correlated exposure check failed — skipping ${trade.symbol} (fail closed):`, err.message);
+        await dbQuery(`INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'risk_check_unavailable', $5, NOW())`,
+          [cycleNum, trade.symbol, trade.direction, trade.confidence, `exposure check failed: ${err.message}`.slice(0, 200)]);
+        continue;
       }
 
       // Resolve entry_price for market orders
@@ -1099,7 +1151,10 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
         try {
           const row = await marketDataDb.getLatestClose(trade.symbol);
           if (row) trade.entry_price = parseFloat(row.close);
-        } catch (e) { /* will fail at calculateQuantity if still null */ }
+        } catch (e) {
+          // calculateQuantity will throw if entry_price is still null
+          console.warn(`[ORCHESTRATOR] Could not resolve entry_price for ${trade.symbol} at execution:`, e.message);
+        }
       }
       // SL minimum distance: reject stops too tight for crypto 4h noise (< 1.5%)
       if (trade.entry_price && trade.sl_price) {
@@ -1116,10 +1171,20 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
 
       // R:R check (fee-adjusted) — runs AFTER entry_price is resolved so market orders are covered
       // Round-trip cost: ~0.2% (entry fee + slippage + exit fee)
+      // Signed distances: a stop/target on the wrong side of entry yields risk<=0 / reward<=0 (rejected below)
       if (trade.entry_price && trade.tp_price && trade.sl_price) {
         const ROUND_TRIP_COST = trade.entry_price * 0.002;
-        const reward = Math.abs(trade.tp_price - trade.entry_price) - ROUND_TRIP_COST;
-        const risk   = Math.abs(trade.entry_price - trade.sl_price);
+        const dirSign = normalizeDirection(trade.direction) === 'short' ? -1 : 1;
+        const reward = dirSign * (trade.tp_price - trade.entry_price) - ROUND_TRIP_COST;
+        const risk   = dirSign * (trade.entry_price - trade.sl_price);
+        if (!(risk > 0) || !(reward > 0)) {
+          console.warn(`[ORCHESTRATOR] Skipping ${trade.symbol} — stop/target on wrong side of entry (entry=${trade.entry_price}, sl=${trade.sl_price}, tp=${trade.tp_price}, ${trade.direction})`);
+          await dbQuery(
+            `INSERT INTO rejected_opportunities (cycle_number, rejected_by, symbol, direction, confidence, rejection_reason, rejection_detail, created_at) VALUES ($1, 'code_enforced', $2, $3, $4, 'invalid_stop_geometry', $5, NOW())`,
+            [cycleNum, trade.symbol, trade.direction, trade.confidence, `Stop/target on wrong side (entry=${trade.entry_price}, tp=${trade.tp_price}, sl=${trade.sl_price}, ${trade.direction})`]
+          );
+          continue;
+        }
         if (risk > 0) {
           const rrRatio = reward / risk;
           if (rrRatio < currentLimits.MIN_RISK_REWARD_RATIO) {
@@ -1134,7 +1199,7 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
       }
 
       console.log(`[ORCHESTRATOR] Executing ${trade.direction} ${trade.symbol} @ ${trade.entry_price}`);
-      const result = await executeTrade({
+      const result = await executeTradeIdempotent({
         symbol: trade.symbol,
         side: trade.direction === 'long' ? 'buy' : 'sell',
         quantity: await calculateQuantity(trade),
@@ -1159,10 +1224,15 @@ async function runStrategyLayer(cycleNum, indicators, broadcast, quietMarket = f
           const newSl = parseFloat((trade.sl_price * scale).toFixed(2));
           const newTp = parseFloat((trade.tp_price * scale).toFixed(2));
           try {
-            await tradesDb.updateStops(result.trade_id, { sl_price: newSl, tp_price: newTp });
+            // Must be on the correct side of the ACTUAL fill; live trades also amend the exchange orders
+            const dirSign = normalizeDirection(trade.direction) === 'short' ? -1 : 1;
+            if (!(dirSign * (fillPrice - newSl) > 0) || !(dirSign * (newTp - fillPrice) > 0)) {
+              throw new Error(`recalibrated levels on wrong side of fill ${fillPrice} (sl=${newSl}, tp=${newTp}, ${trade.direction})`);
+            }
+            await amendTradeStops({ id: result.trade_id, mode: engineMode() }, { sl_price: newSl, tp_price: newTp });
             console.log(`[ORCHESTRATOR] Recalibrated stops for #${result.trade_id}: SL ${trade.sl_price}→${newSl}, TP ${trade.tp_price}→${newTp} (fill slippage ${(priceDiff * 100).toFixed(2)}%)`);
           } catch (stopErr) {
-            console.warn(`[ORCHESTRATOR] Stop recalibration failed for #${result.trade_id}:`, stopErr.message);
+            console.warn(`[ORCHESTRATOR] Stop recalibration failed for #${result.trade_id} (levels unchanged):`, stopErr.message);
           }
         }
       }
@@ -1231,18 +1301,9 @@ async function linkSignalsToTrade(tradeId, trade) {
  */
 async function calculateQuantity(trade) {
   const sizePct = trade.approved_size_pct || 1.0;
-  let portfolioValue;
-  try {
-    const pv = await portfolioDb.getPortfolioValue();
-    portfolioValue = pv.total_value;
-  } catch (err) {
-    logger.warn('Portfolio value unavailable, using starting capital', { err, error_type: 'portfolio' });
-    portfolioValue = parseFloat(process.env.STARTING_CAPITAL || '10000');
-  }
-  // H-11: Guard against zero/negative portfolio value
-  if (!portfolioValue || portfolioValue <= 0) {
-    throw new Error(`Portfolio value is zero or negative (${portfolioValue}) — cannot calculate position size`);
-  }
+  // ONE equity function (starting capital + realised + unrealised) shared with every % limit.
+  // Fails closed: if equity cannot be determined (or is <= 0) no position is sized (H-11).
+  const portfolioValue = (await RiskManagerAgent.getEquity()).total_value;
   if (!trade.entry_price || trade.entry_price <= 0) {
     throw new Error(`Invalid entry_price: ${trade.entry_price}`);
   }
@@ -1264,7 +1325,7 @@ async function calculateQuantity(trade) {
  * Run the analysis layer: Performance Analyst → Pattern Discovery.
  * Runs periodically (not every cycle) to review and learn from trades.
  */
-async function runAnalysisLayer(cycleNum, broadcast) {
+async function runAnalysisLayer(cycleNum, broadcast, cycle = null) {
   console.log(`[ORCHESTRATOR] Running analysis layer (cycle ${cycleNum})...`);
   const results = [];
 
@@ -1275,14 +1336,19 @@ async function runAnalysisLayer(cycleNum, broadcast) {
       cycleNumber: cycleNum,
       broadcast,
     });
+    // BaseAgent.run() returns decision.error instead of throwing
+    const perfOk = !perfResult?.error;
+    recordAgentOutcome(cycle, perfOk);
     results.push({
       agent: 'performance_analyst',
-      status: 'fulfilled',
+      status: perfOk ? 'fulfilled' : 'rejected',
       decision: perfResult,
+      error: perfResult?.error || undefined,
       learnings: perfResult?.output_json?.learnings?.length || 0,
     });
     console.log(`[ORCHESTRATOR] Performance Analyst: ${perfResult?.output_json?.learnings?.length || 0} learnings extracted`);
   } catch (err) {
+    recordAgentOutcome(cycle, false);
     results.push({ agent: 'performance_analyst', status: 'rejected', error: err.message });
     console.error('[ORCHESTRATOR] performanceAnalyst failed:', err.stack);
   }
@@ -1294,15 +1360,19 @@ async function runAnalysisLayer(cycleNum, broadcast) {
       cycleNumber: cycleNum,
       broadcast,
     });
+    const patternOk = !patternResult?.error;
+    recordAgentOutcome(cycle, patternOk);
     results.push({
       agent: 'pattern_discovery',
-      status: 'fulfilled',
+      status: patternOk ? 'fulfilled' : 'rejected',
       decision: patternResult,
+      error: patternResult?.error || undefined,
       templates_created: patternResult?.output_json?.new_templates?.length || 0,
       anti_patterns: patternResult?.output_json?.anti_patterns?.length || 0,
     });
     console.log(`[ORCHESTRATOR] Pattern Discovery: ${patternResult?.output_json?.new_templates?.length || 0} templates, ${patternResult?.output_json?.anti_patterns?.length || 0} anti-patterns`);
   } catch (err) {
+    recordAgentOutcome(cycle, false);
     results.push({ agent: 'pattern_discovery', status: 'rejected', error: err.message });
     console.error('[ORCHESTRATOR] patternDiscovery failed:', err.stack);
   }
@@ -1493,31 +1563,162 @@ async function recordTradeCloseLearningOutcome(tradeId, pnl) {
  * Close a trade via Python engine's /close-trade endpoint.
  */
 function closeTradePython(tradeId) {
-  return new Promise((resolve, reject) => {
-    const postData = JSON.stringify({ trade_id: tradeId });
-    const url = new URL(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/close-trade`);
-    const req = http.request({
-      hostname: url.hostname,
-      port: url.port,
-      path: url.pathname,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          if (parsed.error) reject(new Error(parsed.error));
-          else resolve(parsed);
-        } catch (e) { reject(e); }
-      });
+  return engineRequest('POST', '/close-trade', { trade_id: tradeId });
+}
+
+/**
+ * Post-close bookkeeping shared by every close path (learning credit + thesis link).
+ */
+async function afterTradeClosed(tradeId, symbol, closed, closeReason) {
+  const pnl = closed.pnl_realised || closed.pnl || 0;
+  await recordTradeCloseLearningOutcome(tradeId, pnl);
+  try {
+    await linkTradeToTheses({
+      id: tradeId, symbol, side: closed.side || 'buy',
+      pnl_usd: pnl, pnl_pct: closed.pnl_pct || 0,
+      close_reason: closeReason, hold_hours: closed.hold_hours || 0,
     });
-    req.on('error', reject);
-    req.setTimeout(PYTHON_ENGINE_TIMEOUT_MS, () => { req.destroy(new Error('Python engine timeout (30s)')); });
-    req.write(postData);
-    req.end();
-  });
+  } catch (linkErr) {
+    console.warn(`[ORCHESTRATOR] Thesis linking failed for #${tradeId} (non-critical):`, linkErr.message);
+  }
+}
+
+/**
+ * Close a trade through the engine, with the exchange/DB-divergence rules:
+ *  - engine close OK                       -> closed
+ *  - engine close FAILS, trade is LIVE     -> NEVER close in the DB only (the exchange position
+ *                                              would stay open untracked). Mark status 'close_failed',
+ *                                              raise a critical notification, leave it for retry.
+ *  - engine close FAILS, trade is PAPER    -> atomic DB fallback (no exchange position exists)
+ * @returns {Promise<{closed: boolean, closeFailed?: boolean, result?: object}>}
+ */
+async function closeTradeWithFallback(tradeId, { symbol, reasoning, closeReason = 'position_review' } = {}) {
+  const trade = await tradesDb.getById(tradeId);
+  if (!trade) {
+    console.warn(`[ORCHESTRATOR] close: trade #${tradeId} not found`);
+    return { closed: false };
+  }
+  if (trade.status === 'closed') return { closed: false };
+  const sym = symbol || trade.symbol;
+
+  try {
+    const result = await closeTradePython(tradeId);
+    console.log(`[ORCHESTRATOR] Closed trade #${tradeId} via Python — P&L: ${result.pnl_pct}%`);
+    await afterTradeClosed(tradeId, sym, result, closeReason);
+    return { closed: true, result };
+  } catch (pyErr) {
+    if (trade.mode === 'live') {
+      console.error(`[ORCHESTRATOR] LIVE close failed for #${tradeId} (${sym}) — NOT closing in DB:`, pyErr.message);
+      try {
+        await dbQuery("UPDATE trades SET status = 'close_failed' WHERE id = $1 AND status IN ('open', 'close_failed')", [tradeId]);
+      } catch (dbErr) {
+        console.error(`[ORCHESTRATOR] Could not mark #${tradeId} close_failed:`, dbErr.message);
+      }
+      if (trade.status !== 'close_failed') {
+        notifications.systemError('close_failed',
+          `LIVE close of trade #${tradeId} ${sym} failed: ${pyErr.message}. Position may still be open on the exchange — retrying each cycle.`)
+          .catch(nErr => logger.error('close_failed notification failed', { err: nErr, error_type: 'notification' }));
+      }
+      return { closed: false, closeFailed: true };
+    }
+
+    console.warn(`[ORCHESTRATOR] Python close failed for paper #${tradeId}, using DB fallback:`, pyErr.message);
+    // Fallback: close directly in DB using atomic transaction (SELECT FOR UPDATE)
+    const closed = await tradesDb.closeTradeAtomic(
+      tradeId,
+      async (t) => {
+        const priceRow = await marketDataDb.getLatestClose(t.symbol);
+        const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(t.entry_price);
+        const entryPrice = parseFloat(t.entry_price);
+        const pnl = t.side === 'buy'
+          ? (exitPrice - entryPrice) * parseFloat(t.quantity)
+          : (entryPrice - exitPrice) * parseFloat(t.quantity);
+        const pnlPct = t.side === 'buy'
+          ? ((exitPrice - entryPrice) / entryPrice) * 100
+          : ((entryPrice - exitPrice) / entryPrice) * 100;
+        return { exit_price: exitPrice, pnl, pnlPct };
+      },
+      { outcome_reasoning: reasoning, close_reason: closeReason }
+    );
+    if (!closed) {
+      console.log(`[ORCHESTRATOR] Trade #${tradeId} already closed — skipping`);
+      return { closed: false };
+    }
+    console.log(`[ORCHESTRATOR] Closed trade #${tradeId} via DB fallback (atomic) — P&L: ${closed.pnl_pct}%`);
+    await afterTradeClosed(tradeId, sym, closed, closeReason);
+    return { closed: true, result: closed };
+  }
+}
+
+/**
+ * Retry closes that previously failed on the engine (status 'close_failed'). Runs at cycle start.
+ * Contract: the engine's /close-trade must accept trades in status 'open' OR 'close_failed'.
+ */
+async function retryFailedCloses() {
+  let failed;
+  try {
+    failed = await dbQueryAll("SELECT id, symbol FROM trades WHERE status = 'close_failed' ORDER BY id");
+  } catch (err) {
+    console.error('[ORCHESTRATOR] close_failed lookup failed:', err.message);
+    return { retried: 0, closed: 0 };
+  }
+  let closedCount = 0;
+  for (const t of failed) {
+    try {
+      const out = await closeTradeWithFallback(t.id, { symbol: t.symbol, reasoning: 'retry after close_failed', closeReason: 'close_retry' });
+      if (out.closed) closedCount++;
+    } catch (err) {
+      console.error(`[ORCHESTRATOR] Retry close of #${t.id} threw:`, err.message);
+    }
+  }
+  if (failed.length > 0) console.log(`[ORCHESTRATOR] close_failed retry: ${closedCount}/${failed.length} closed`);
+  return { retried: failed.length, closed: closedCount };
+}
+
+/**
+ * Execute the closing action a SCRAM row asks for (CLOSE_ALL_POSITIONS / CLOSE_LOSING_POSITIONS),
+ * through the same close path as position reviews. Manual SCRAMs only do this when close_mode is set.
+ */
+async function executeScramActions(scramRow) {
+  const mode = scramCloseMode(scramRow);
+  if (!mode) return { mode: null, closed: 0 };
+
+  const open = await dbQueryAll("SELECT * FROM trades WHERE status IN ('open', 'close_failed') ORDER BY id");
+  let closedCount = 0;
+  for (const t of open) {
+    try {
+      if (mode === 'losing') {
+        const price = (await fetchEnginePrice(t.symbol, 3000))
+          || parseFloat((await marketDataDb.getLatestClose(t.symbol))?.close);
+        const entry = parseFloat(t.actual_fill_price || t.entry_price);
+        if (!Number.isFinite(price) || !(entry > 0)) {
+          console.warn(`[SCRAM] No price for ${t.symbol} — cannot classify #${t.id} as losing, leaving it`);
+          continue;
+        }
+        const pnlPositive = t.side === 'buy' ? price >= entry : price <= entry;
+        if (pnlPositive) continue;
+      }
+      const out = await closeTradeWithFallback(t.id, { symbol: t.symbol, reasoning: `SCRAM ${scramRow.level} (${mode})`, closeReason: 'scram' });
+      if (out.closed) closedCount++;
+    } catch (err) {
+      console.error(`[SCRAM] Failed to close #${t.id} ${t.symbol}:`, err.message);
+    }
+  }
+  console.log(`[SCRAM] ${scramRow.level} close_mode=${mode}: closed ${closedCount}/${open.length} open position(s)`);
+  return { mode, closed: closedCount };
+}
+
+/**
+ * Change SL/TP on a trade. LIVE trades amend the exchange orders FIRST via the engine; if that
+ * fails we throw and the DB levels are left untouched (DB must never claim a stop the exchange lacks).
+ */
+async function amendTradeStops(trade, { sl_price, tp_price }) {
+  if (trade.mode === 'live') {
+    await amendEngineStops(trade.id, { sl_price, tp_price });
+  }
+  const updated = await tradesDb.updateStops(trade.id, { sl_price, tp_price });
+  if (!updated) throw new Error(`trade #${trade.id} not open — stops not updated`);
+  return updated;
 }
 
 /**
@@ -1562,18 +1763,15 @@ async function executeReviewDecision(review, cycleNum) {
               (trade.side === 'buy' && r === 'trending_down') ||
               (trade.side === 'sell' && r === 'trending_up');
           }
-        } catch { /* regime check failure — enforce hold */ }
+        } catch (regimeErr) {
+          // regime check failure — enforce hold
+          console.warn(`[ORCHESTRATOR] Regime check failed for #${review.trade_id} (enforcing hold):`, regimeErr.message);
+        }
 
         // Reason 3: Bleeding out — unrealised P&L worse than -3%
         let bleedingOut = false;
         try {
-          let currentPrice;
-          const dashSymbol = trade.symbol.replace('/', '-');
-          try {
-            const res = await fetch(`${process.env.PYTHON_ENGINE_URL || 'http://127.0.0.1:5100'}/price/${dashSymbol}`,
-              { signal: AbortSignal.timeout(3000) });
-            if (res.ok) currentPrice = (await res.json()).price;
-          } catch { /* fall through to DB */ }
+          let currentPrice = await fetchEnginePrice(trade.symbol, 3000); // falls through to DB when null
           if (!currentPrice) {
             const row = await marketDataDb.getLatestClose(trade.symbol);
             if (row) currentPrice = parseFloat(row.close);
@@ -1585,7 +1783,10 @@ async function executeReviewDecision(review, cycleNum) {
               : ((entry - currentPrice) / entry) * 100;
             bleedingOut = pnlPct <= -3;
           }
-        } catch { /* price fetch failure — enforce hold */ }
+        } catch (priceErr) {
+          // price fetch failure — enforce hold
+          console.warn(`[ORCHESTRATOR] Price check failed for #${review.trade_id} (enforcing hold):`, priceErr.message);
+        }
 
         if (!isSlTpHit && !regimeFlippedAgainst && !bleedingOut) {
           console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): ${review.decision.toUpperCase()} blocked — held only ${hoursHeld.toFixed(1)}h (min ${MIN_HOLD_HOURS}h). Forcing HOLD.`);
@@ -1607,54 +1808,15 @@ async function executeReviewDecision(review, cycleNum) {
     case 'close':
       console.log(`[ORCHESTRATOR] Position #${review.trade_id} (${review.symbol}): CLOSE`);
       try {
-        const result = await closeTradePython(review.trade_id);
-        review.close_executed = true;
-        console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via Python — P&L: ${result.pnl_pct}%`);
-        await recordTradeCloseLearningOutcome(review.trade_id, result.pnl_realised || result.pnl || 0);
-        try {
-          await linkTradeToTheses({
-            id: review.trade_id, symbol: review.symbol, side: result.side || 'buy',
-            pnl_usd: result.pnl_realised || result.pnl || 0, pnl_pct: result.pnl_pct || 0,
-            close_reason: 'position_review', hold_hours: result.hold_hours || 0,
-          });
-        } catch (e) { /* thesis linking non-critical */ }
-      } catch (pyErr) {
-        console.warn(`[ORCHESTRATOR] Python close failed for #${review.trade_id}, using DB fallback:`, pyErr.message);
-        try {
-          // Fallback: close directly in DB using atomic transaction (SELECT FOR UPDATE)
-          const closed = await tradesDb.closeTradeAtomic(
-            review.trade_id,
-            async (trade) => {
-              const priceRow = await marketDataDb.getLatestClose(trade.symbol);
-              const exitPrice = priceRow ? parseFloat(priceRow.close) : parseFloat(trade.entry_price);
-              const entryPrice = parseFloat(trade.entry_price);
-              const pnl = trade.side === 'buy'
-                ? (exitPrice - entryPrice) * parseFloat(trade.quantity)
-                : (entryPrice - exitPrice) * parseFloat(trade.quantity);
-              const pnlPct = trade.side === 'buy'
-                ? ((exitPrice - entryPrice) / entryPrice) * 100
-                : ((entryPrice - exitPrice) / entryPrice) * 100;
-              return { exit_price: exitPrice, pnl, pnlPct };
-            },
-            { outcome_reasoning: review.reasoning, close_reason: 'position_review' }
-          );
-          if (closed) {
-            review.close_executed = true;
-            console.log(`[ORCHESTRATOR] Closed trade #${review.trade_id} via DB fallback (atomic) — P&L: ${closed.pnl_pct}%`);
-            await recordTradeCloseLearningOutcome(review.trade_id, closed.pnl_realised || 0);
-            try {
-              await linkTradeToTheses({
-                id: review.trade_id, symbol: review.symbol, side: closed.side || 'buy',
-                pnl_usd: closed.pnl_realised || 0, pnl_pct: closed.pnl_pct || 0,
-                close_reason: 'position_review', hold_hours: closed.hold_hours || 0,
-              });
-            } catch (e) { /* thesis linking non-critical */ }
-          } else {
-            console.log(`[ORCHESTRATOR] Trade #${review.trade_id} already closed — skipping`);
-          }
-        } catch (dbErr) {
-          console.error(`[ORCHESTRATOR] DB fallback close also failed for #${review.trade_id}:`, dbErr.message);
-        }
+        // Live: engine failure => status 'close_failed' + notification (never a DB-only close).
+        // Paper: atomic DB fallback.
+        const out = await closeTradeWithFallback(review.trade_id, {
+          symbol: review.symbol, reasoning: review.reasoning, closeReason: 'position_review',
+        });
+        if (out.closed) review.close_executed = true;
+        if (out.closeFailed) review.close_failed = true;
+      } catch (closeErr) {
+        console.error(`[ORCHESTRATOR] Close failed for #${review.trade_id}:`, closeErr.message);
       }
       break;
 
@@ -1663,15 +1825,43 @@ async function executeReviewDecision(review, cycleNum) {
       try {
         // Get old stops for audit trail
         const trade = await tradesDb.getById(review.trade_id);
-        if (trade) {
-          review.old_tp = trade.tp_price;
-          review.old_sl = trade.sl_price;
+        if (!trade) throw new Error('trade not found');
+        review.old_tp = trade.tp_price;
+        review.old_sl = trade.sl_price;
+        if (trade.status !== 'open') throw new Error(`trade status is ${trade.status} — not tightening`);
+
+        // Validate: a tighten may only move the stop TOWARD price and must sit on the correct side
+        // of the current price; the target may only move closer, never beyond the current one.
+        const sign = trade.side === 'sell' ? -1 : 1;
+        const price = (await fetchEnginePrice(trade.symbol, 3000))
+          || parseFloat((await marketDataDb.getLatestClose(trade.symbol))?.close);
+        if (!Number.isFinite(price) || price <= 0) throw new Error('no current price — cannot validate tighten');
+
+        const oldSl = parseFloat(trade.sl_price);
+        const oldTp = parseFloat(trade.tp_price);
+        const reqSl = toFiniteNumber(review.new_sl);
+        const reqTp = toFiniteNumber(review.new_tp);
+        let newSl = null;
+        let newTp = null;
+        if (Number.isFinite(reqSl)) {
+          const tighter = !Number.isFinite(oldSl) || sign * (reqSl - oldSl) > 0;   // long: higher stop
+          const correctSide = sign * (price - reqSl) > 0;                          // long: stop below price
+          if (tighter && correctSide) newSl = reqSl;
+          else console.warn(`[ORCHESTRATOR] Rejected new SL ${reqSl} for #${review.trade_id}: tighter=${tighter} correctSide=${correctSide} (old=${oldSl}, price=${price})`);
         }
-        await tradesDb.updateStops(review.trade_id, {
-          tp_price: review.new_tp,
-          sl_price: review.new_sl,
-        });
-        console.log(`[ORCHESTRATOR] Updated stops for trade #${review.trade_id}`);
+        if (Number.isFinite(reqTp)) {
+          const closer = !Number.isFinite(oldTp) || sign * (oldTp - reqTp) > 0;    // long: lower target
+          const correctSide = sign * (reqTp - price) > 0;                          // long: target above price
+          if (closer && correctSide) newTp = reqTp;
+          else console.warn(`[ORCHESTRATOR] Rejected new TP ${reqTp} for #${review.trade_id}: closer=${closer} correctSide=${correctSide} (old=${oldTp}, price=${price})`);
+        }
+        if (newSl == null && newTp == null) throw new Error('no valid tighter stop/target — levels unchanged');
+
+        // Live: amend exchange orders first; on failure the DB levels stay as they are
+        await amendTradeStops(trade, { sl_price: newSl, tp_price: newTp });
+        review.new_sl = newSl;
+        review.new_tp = newTp;
+        console.log(`[ORCHESTRATOR] Updated stops for trade #${review.trade_id} (SL ${oldSl}→${newSl ?? oldSl}, TP ${oldTp}→${newTp ?? oldTp})`);
       } catch (err) {
         console.error(`[ORCHESTRATOR] Failed to tighten stops for #${review.trade_id}:`, err.message);
       }
@@ -1689,7 +1879,7 @@ async function executeReviewDecision(review, cycleNum) {
 /**
  * Review all open positions — Step 3.5 of the cycle.
  */
-async function reviewOpenPositions(cycleNum, broadcast) {
+async function reviewOpenPositions(cycleNum, broadcast, cycle = null) {
   // Quick check: any open positions?
   const countResult = await dbQueryOne("SELECT COUNT(*) as cnt FROM trades WHERE status = 'open'");
   const openCount = parseInt(countResult?.cnt) || 0;
@@ -1703,6 +1893,7 @@ async function reviewOpenPositions(cycleNum, broadcast) {
   const reviewStart = Date.now();
 
   const result = await riskManager.reviewPositions({ cycleNumber: cycleNum, broadcast });
+  recordAgentOutcome(cycle, !result?.decision?.error);
   const reviews = result.reviews || [];
 
   // Execute each decision and store review
@@ -1743,18 +1934,46 @@ async function reviewOpenPositions(cycleNum, broadcast) {
  */
 async function runCycle({ broadcast } = {}) {
   if (cycleRunning) {
-    // Check for stuck cycle — force release after timeout
+    // Check for stuck cycle — take over after timeout, ABORTING the stale one
     if (cycleStartedAt && (Date.now() - cycleStartedAt) > MAX_CYCLE_DURATION_MS) {
-      console.error(`[ORCHESTRATOR] Previous cycle stuck for ${Math.round((Date.now() - cycleStartedAt) / 60000)}min — force releasing mutex`);
+      console.error(`[ORCHESTRATOR] Previous cycle stuck for ${Math.round((Date.now() - cycleStartedAt) / 60000)}min — aborting it and taking over the mutex`);
+      if (currentCycle) {
+        currentCycle.cancelled = true;             // old cycle stops at its next layer/agent boundary
+        await currentCycle.releaseLock().catch(err => console.warn('[ORCHESTRATOR] Stale cycle lock release failed:', err.message));
+      }
       cycleRunning = false;
     } else {
       console.log('[ORCHESTRATOR] Cycle already running — skipping');
       return null;
     }
   }
+
+  // This cycle's identity. Only the cycle that still owns the mutex may release it (see finally).
+  const cycle = {
+    id: crypto.randomUUID(),
+    cancelled: false,
+    stats: { run: 0, ok: 0, failed: 0 },
+    releaseLock: async () => {},
+  };
   cycleRunning = true;
+  currentCycle = cycle;
   cycleStartedAt = Date.now();
   try {
+  // Cross-process guard: a second process (deploy overlap / replica) must not run a cycle concurrently
+  let lock = null;
+  try {
+    lock = await acquireCycleLock();
+  } catch (lockErr) {
+    console.error('[ORCHESTRATOR] Could not acquire cycle advisory lock — skipping cycle (fail closed):', lockErr.message);
+    return null;
+  }
+  if (!lock) {
+    console.log('[ORCHESTRATOR] Another process holds the cycle advisory lock — skipping');
+    return null;
+  }
+  cycle.releaseLock = lock.release;
+  console.log(`[ORCHESTRATOR] Cycle id ${cycle.id}`);
+
   // Resume cycle number from DB on first cycle after restart
   if (cycleNumber === null) {
     try {
@@ -1775,7 +1994,10 @@ async function runCycle({ broadcast } = {}) {
   console.log(`[ORCHESTRATOR] System mode: ${systemMode} (${closedTrades} closed trades, ${activeLearnings} active learnings)`);
 
   // Read bootstrap phase once per cycle — drives phase-gated token budgets in all agents
-  const bootstrapPhaseRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1').catch(() => null);
+  const bootstrapPhaseRow = await dbQueryOne('SELECT phase FROM bootstrap_status ORDER BY id DESC LIMIT 1').catch(err => {
+    console.warn('[ORCHESTRATOR] Bootstrap phase read failed — defaulting to infant:', err.message);
+    return null;
+  });
   const bootstrapPhase = bootstrapPhaseRow?.phase || 'infant';
   console.log(`[ORCHESTRATOR] Bootstrap phase: ${bootstrapPhase}`);
 
@@ -1848,7 +2070,7 @@ async function runCycle({ broadcast } = {}) {
         } catch (dbErr) {
           console.error('[COMPASS_GATE] Failed to record gate decision:', dbErr.message);
         }
-        return { cycleNumber, aborted: true, reason: 'compass_gate', risk_score: riskScore, posture };
+        return abortedResult(cycle, { cycleNumber, reason: 'compass_gate', risk_score: riskScore, posture });
       }
 
       if (shouldReduce) {
@@ -1862,7 +2084,13 @@ async function runCycle({ broadcast } = {}) {
       }
     }
   } catch (gateErr) {
-    console.error('[COMPASS_GATE] Gate check failed — proceeding without gate:', gateErr.message);
+    if (process.env.LIVE_TRADING_ENABLED === 'true' && process.env.COMPASS_POSTURE_REQUIRED !== 'false') {
+      // Live: COMPASS posture is mandatory — an unreadable gate means no cycle (fail closed)
+      console.error('[COMPASS_GATE] Gate check failed in LIVE mode — aborting cycle (fail closed):', gateErr.message);
+      if (broadcast) broadcast('cycle_skipped', { cycleNumber, reason: 'compass_gate_unavailable' });
+      return abortedResult(cycle, { cycleNumber, reason: 'compass_gate_unavailable' });
+    }
+    console.error('[COMPASS_GATE] Gate check failed — proceeding without gate (paper mode):', gateErr.message);
   }
 
 
@@ -1876,25 +2104,50 @@ async function runCycle({ broadcast } = {}) {
     logger.debug('Standing order expiry skipped', { err, cycle_id: cycleNumber, error_type: 'standing_order' });
   }
 
-  // Step 0b: Auto-clear SCRAM if drawdown has recovered below threshold
+  // Step 0a: retry live closes the engine previously rejected (status 'close_failed')
   try {
-    const activeScram = await dbQueryOne("SELECT id, threshold_value FROM scram_events WHERE cleared_at IS NULL ORDER BY activated_at DESC LIMIT 1");
+    await retryFailedCloses();
+  } catch (retryErr) {
+    console.error('[ORCHESTRATOR] close_failed retry pass failed:', retryErr.message);
+  }
+
+  // Step 0b: SCRAM — execute the closing action the SCRAM asks for, then (automatic SCRAMs only)
+  // auto-clear once drawdown has recovered. MANUAL SCRAMs are never auto-cleared: only an explicit
+  // authenticated POST /system/scram/clear lifts them. Any error here leaves the SCRAM in force.
+  try {
+    const activeScram = await RiskManagerAgent.getActiveScram();
     if (activeScram) {
-      const currentDrawdown = await riskManager.computeCurrentDrawdown();
-      const threshold = parseFloat(activeScram.threshold_value) || 10;
-      if (currentDrawdown !== null && currentDrawdown < threshold * 0.7) {
-        await dbQuery("UPDATE scram_events SET cleared_at = NOW() WHERE id = $1", [activeScram.id]);
-        console.log(`[ORCHESTRATOR] SCRAM auto-cleared — drawdown ${currentDrawdown.toFixed(2)}% recovered below ${(threshold * 0.7).toFixed(1)}% (70% of trigger threshold)`);
-      } else if (activeScram) {
-        console.log(`[ORCHESTRATOR] SCRAM still active — drawdown ${currentDrawdown?.toFixed(2) ?? 'unknown'}% vs threshold ${threshold}%`);
+      try {
+        await executeScramActions(activeScram);
+      } catch (actErr) {
+        console.error('[SCRAM] Close action failed (SCRAM stays active):', actErr.message);
+      }
+
+      if (isManualScram(activeScram)) {
+        console.log(`[ORCHESTRATOR] Manual SCRAM ${activeScram.level} active — stays until explicitly reset`);
+      } else {
+        const currentDrawdown = await riskManager.computeCurrentDrawdown();
+        const threshold = parseFloat(activeScram.threshold_value) || 10;
+        if (currentDrawdown < threshold * 0.7) {
+          await dbQuery(
+            "UPDATE scram_events SET cleared_at = NOW(), duration_seconds = EXTRACT(EPOCH FROM (NOW() - activated_at))::int WHERE id = $1",
+            [activeScram.id]
+          );
+          console.log(`[ORCHESTRATOR] SCRAM auto-cleared — drawdown ${currentDrawdown.toFixed(2)}% recovered below ${(threshold * 0.7).toFixed(1)}% (70% of trigger threshold)`);
+        } else {
+          console.log(`[ORCHESTRATOR] SCRAM still active — drawdown ${currentDrawdown.toFixed(2)}% vs threshold ${threshold}%`);
+        }
       }
     }
   } catch (scramErr) {
-    console.warn('[ORCHESTRATOR] SCRAM auto-clear check failed:', scramErr.message);
+    console.error('[ORCHESTRATOR] SCRAM handling failed (state left unchanged):', scramErr.message);
   }
+
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Step 1: Refresh market data
   const { dataQuality, report: dataQualityReport } = await refreshMarketData();
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Gate: abort cycle if data quality is critical (>50% stale/failed)
   if (dataQuality.status === 'critical') {
@@ -1906,11 +2159,12 @@ async function runCycle({ broadcast } = {}) {
         dataQuality,
       });
     }
-    return { cycleNumber, aborted: true, reason: 'data_quality_critical', dataQuality };
+    return abortedResult(cycle, { cycleNumber, reason: 'data_quality_critical', dataQuality });
   }
 
   // Step 2: Get indicators (shared between knowledge and strategy layers)
   const indicators = await getIndicatorsForAll('4h');
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Step 2b: Cache indicators in external_data_cache for context builders
   try {
@@ -1921,19 +2175,22 @@ async function runCycle({ broadcast } = {}) {
 
   // Step 3: Run knowledge agents (parallel — emit signals)
   // Inject data quality status so agents can adjust confidence when degraded
-  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast, dataQuality, bootstrapPhase);
+  const knowledge = await runKnowledgeLayer(cycleNumber, indicators, broadcast, dataQuality, bootstrapPhase, cycle);
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Step 3.5: Active Position Management
   let positionReview = { reviews: [], actions: [] };
   try {
-    positionReview = await reviewOpenPositions(cycleNumber, broadcast);
+    positionReview = await reviewOpenPositions(cycleNumber, broadcast, cycle);
   } catch (err) {
+    recordAgentOutcome(cycle, false);
     console.error('[ORCHESTRATOR] Position review failed:', err.message);
   }
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Step 4: Run strategy layer (sequential — consume signals, produce trades)
   // H-6: Never skip the Synthesizer — in quiet markets, run with a "quiet_market" flag
-  const successfulAgents = knowledge.filter(k => k.status === 'fulfilled' && k.decision?.output_json?.signals?.length > 0);
+  const successfulAgents = knowledge.filter(k => k.ok && k.decision?.output_json?.signals?.length > 0);
   const isQuietMarket = successfulAgents.length < 3;
   let strategy = { regime: null, proposals: [], approved: [], rejected: [], trades: [] };
 
@@ -1949,14 +2206,16 @@ async function runCycle({ broadcast } = {}) {
   // H-8: Rate limit pacing — wait 30s after knowledge layer before starting Layer 2
   console.log('[ORCHESTRATOR] Rate limit pacing — waiting 30s before Layer 2 (strategy)');
   await new Promise(r => setTimeout(r, 30000));
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Always run strategy layer — even in quiet markets, the Synthesizer should evaluate
   // existing standing orders and check for opportunistic entries
   try {
-    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket, systemMode, compassConstraints);
+    strategy = await runStrategyLayer(cycleNumber, indicators, broadcast, isQuietMarket, systemMode, compassConstraints, cycle);
   } catch (err) {
     console.error('[ORCHESTRATOR] Strategy layer failed:', err.message);
   }
+  if (cycle.cancelled) return abortedResult(cycle, { cycleNumber, reason: 'cancelled' });
 
   // Step 5: Run analysis layer (every Nth cycle — not every cycle)
   // cycleNumber is derived from COUNT(cycle_reports) in DB via decisionsDb.getLastCycleNumber()
@@ -1966,7 +2225,7 @@ async function runCycle({ broadcast } = {}) {
   let analysis = [];
   if (shouldRunAnalysis) {
     try {
-      analysis = await runAnalysisLayer(cycleNumber, broadcast);
+      analysis = await runAnalysisLayer(cycleNumber, broadcast, cycle);
     } catch (err) {
       console.error('[ORCHESTRATOR] Analysis layer failed:', err.stack);
     }
@@ -1993,7 +2252,8 @@ async function runCycle({ broadcast } = {}) {
 
   const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(1);
   console.log(`[ORCHESTRATOR] ═══ Cycle ${cycleNumber} complete in ${elapsed}s ═══`);
-  console.log(`[ORCHESTRATOR] Knowledge: ${knowledge.filter(k => k.status === 'fulfilled').length}/${knowledge.length} agents succeeded`);
+  console.log(`[ORCHESTRATOR] Knowledge: ${knowledge.filter(k => k.ok).length}/${knowledge.length} agents succeeded`);
+  console.log(`[ORCHESTRATOR] Agents this cycle: ${cycle.stats.run} run, ${cycle.stats.ok} succeeded, ${cycle.stats.failed} failed`);
   console.log(`[ORCHESTRATOR] Strategy: ${strategy.proposals.length} proposals → ${strategy.approved.length} approved → ${strategy.trades.length} executed`);
   if (analysis.length > 0) {
     console.log(`[ORCHESTRATOR] Analysis: ${analysis.filter(a => a.status === 'fulfilled').length}/${analysis.length} agents succeeded`);
@@ -2008,7 +2268,7 @@ async function runCycle({ broadcast } = {}) {
   const knowledgeReport = knowledge.map(k => ({
     name: k.agent,
     signals: k.decision?.output_json?.signals?.length || 0,
-    status: k.status === 'fulfilled' ? 'ok' : 'error',
+    status: k.ok ? 'ok' : 'error',
     error: k.error || null,
   }));
 
@@ -2028,7 +2288,9 @@ async function runCycle({ broadcast } = {}) {
     const soActiveRow = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM standing_orders WHERE status = 'active'");
     soActive = parseInt(soActiveRow?.cnt) || 0;
     soExpiredThisCycle = expiredStandingOrders;
-  } catch { /* non-critical */ }
+  } catch (soErr) {
+    logger.debug('Standing order count failed (non-critical)', { err: soErr, cycle_id: cycleNumber, error_type: 'standing_order' });
+  }
 
   // Auto-detect warnings
   const warnings = [];
@@ -2053,7 +2315,9 @@ async function runCycle({ broadcast } = {}) {
     const staleRow = await dbQueryOne("SELECT COUNT(*)::int as cnt FROM standing_orders WHERE status = 'active' AND expires_at < NOW()");
     const staleSo = parseInt(staleRow?.cnt) || 0;
     if (staleSo > 0) warnings.push(`${staleSo} standing orders past their expires_at`);
-  } catch { /* non-critical */ }
+  } catch (staleErr) {
+    logger.debug('Stale standing order check failed (non-critical)', { err: staleErr, cycle_id: cycleNumber, error_type: 'standing_order' });
+  }
 
   const cycleReport = {
     cycle_id: cycleNumber,
@@ -2114,9 +2378,10 @@ async function runCycle({ broadcast } = {}) {
       cycleNumber,
       agents: knowledge.map(k => ({
         agent: k.agent,
-        status: k.status,
+        status: k.ok ? k.status : 'rejected', // decision.error counts as failed
         signals: k.decision?.output_json?.signals?.length || 0,
       })),
+      agentStats: { run: cycle.stats.run, succeeded: cycle.stats.ok, failed: cycle.stats.failed },
       positionReview: {
         reviewed: positionReview.reviews?.length || 0,
         actions: positionReview.actions || {},
@@ -2141,9 +2406,21 @@ async function runCycle({ broadcast } = {}) {
     strategy: { proposals: strategy.proposals.length, approved: strategy.approved.length, trades: strategy.trades.length, standing_orders: strategy.standing_orders?.length || 0 },
   }).catch(err => logger.debug('Cycle complete notification failed', { err, cycle_id: cycleNumber, error_type: 'notification' }));
 
-  return { cycleNumber, knowledge, strategy, analysis };
+  return {
+    cycleNumber, knowledge, strategy, analysis,
+    aborted: false,
+    agentsRun: cycle.stats.run,
+    agentsSucceeded: cycle.stats.ok,
+    agentsFailed: cycle.stats.failed,
+  };
   } finally {
-    cycleRunning = false;
+    // Always drop the advisory lock (idempotent), but release the in-process mutex ONLY if this
+    // cycle still owns it — a stale cycle that was taken over must not free the new owner's lock.
+    await cycle.releaseLock().catch(err => console.warn('[ORCHESTRATOR] Cycle lock release failed:', err.message));
+    if (currentCycle === cycle) {
+      cycleRunning = false;
+      currentCycle = null;
+    }
   }
 }
 
@@ -2179,4 +2456,8 @@ module.exports = {
   initCycleNumber,
   recordTradeCloseLearningOutcome,
   checkAndPromoteBootstrapPhase,
+  // SCRAM / close-path executors (also callable from the 15-min monitor)
+  executeScramActions,
+  retryFailedCloses,
+  closeTradeWithFallback,
 };

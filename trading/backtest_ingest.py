@@ -1,6 +1,6 @@
 """
 Backtest Data Ingestion — Download historical OHLCV from exchanges via CCXT.
-Uses Binance for historical depth, KuCoin/OKX as fallback.
+Default source is KuCoin (the live trading venue); Binance/OKX are fallbacks.
 Inserts into historical_ohlcv table with ON CONFLICT DO NOTHING.
 
 Usage:
@@ -34,14 +34,23 @@ def get_db():
     return psycopg2.connect(db_url)
 
 
-def get_exchange():
-    """Try Binance first (best historical data), fall back to KuCoin, then OKX."""
-    for exchange_id in ['binance', 'kucoin', 'okx']:
+def get_exchange(preferred=None):
+    """Default data source = KuCoin (the live trading venue, so backtest candles
+    match what the engine trades on); Binance is the fallback for deeper
+    history, then OKX. Override with --exchange or BACKTEST_EXCHANGE."""
+    preferred = preferred or os.getenv('BACKTEST_EXCHANGE', 'kucoin')
+    order = [preferred] + [e for e in ['kucoin', 'binance', 'okx'] if e != preferred]
+    for exchange_id in order:
         try:
             exchange_class = getattr(ccxt, exchange_id)
             exchange = exchange_class({'enableRateLimit': True})
             exchange.load_markets()
-            print(f'[INGEST] Using exchange: {exchange_id}')
+            role = 'primary (live venue)' if exchange_id == 'kucoin' else (
+                'FALLBACK' if exchange_id != preferred else 'requested')
+            print(f'[INGEST] DATA SOURCE: {exchange_id} [{role}]')
+            if exchange_id != 'kucoin':
+                print(f'[INGEST] WARNING: candles come from {exchange_id}, not the live venue (kucoin); '
+                      'prices/volumes can differ slightly from what the engine trades.')
             return exchange
         except Exception as e:
             print(f'[INGEST] {exchange_id} unavailable: {e}')
@@ -64,6 +73,7 @@ def fetch_and_insert(exchange, conn, symbol, timeframe, start_ts, end_ts):
     current_ts = start_ts
     total_inserted = 0
     total_fetched = 0
+    consecutive_errors = 0
 
     while current_ts < end_ts:
         try:
@@ -72,8 +82,12 @@ def fetch_and_insert(exchange, conn, symbol, timeframe, start_ts, end_ts):
                 since=current_ts,
                 limit=EXCHANGE_FETCH_LIMIT
             )
+            consecutive_errors = 0
         except Exception as e:
+            consecutive_errors += 1
             print(f'[INGEST] Fetch error {symbol} {timeframe} @ {datetime.fromtimestamp(current_ts/1000, tz=timezone.utc)}: {e}')
+            if consecutive_errors >= 10:
+                raise RuntimeError(f'{symbol} {timeframe}: 10 consecutive fetch errors, giving up') from e
             time.sleep(5)
             continue
 
@@ -86,6 +100,8 @@ def fetch_and_insert(exchange, conn, symbol, timeframe, start_ts, end_ts):
             ts = datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc)
             if c[0] > end_ts:
                 break
+            if c[0] + tf_ms > int(time.time() * 1000):
+                continue   # still-forming candle: ON CONFLICT DO NOTHING would freeze it half-built
             rows.append((symbol, timeframe, ts, c[1], c[2], c[3], c[4], c[5]))
 
         if not rows:
@@ -145,6 +161,8 @@ def main():
     parser.add_argument('--timeframes', nargs='+', default=DEFAULT_TIMEFRAMES, help='Timeframes to fetch')
     parser.add_argument('--start', default=DEFAULT_START, help='Start date (ISO format)')
     parser.add_argument('--end', default=None, help='End date (ISO format, default: now)')
+    parser.add_argument('--exchange', default=None,
+                        help='Preferred data source (default: kucoin = live venue; binance is the fallback)')
     args = parser.parse_args()
 
     start_dt = datetime.fromisoformat(args.start.replace('Z', '+00:00'))
@@ -159,7 +177,7 @@ def main():
     print(f'[INGEST] Period:     {start_dt.strftime("%Y-%m-%d")} → {end_dt.strftime("%Y-%m-%d")}')
     print(f'[INGEST] ═══════════════════════════════════════════')
 
-    exchange = get_exchange()
+    exchange = get_exchange(args.exchange)
     conn = get_db()
 
     results = []

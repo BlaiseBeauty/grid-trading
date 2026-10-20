@@ -1,8 +1,22 @@
 const API_BASE = '/api';
+const REQUEST_TIMEOUT_MS = 30000;
 
 // Access token in memory only — never localStorage.
 // Refresh token lives in an HttpOnly cookie set by the server (not accessible to JS).
 let accessToken = null;
+
+// Auth-loss listeners: the auth store registers here so api.js never imports the store
+// (avoids a circular import) and never reloads the page.
+const authLostListeners = new Set();
+export function onAuthLost(fn) {
+  authLostListeners.add(fn);
+  return () => authLostListeners.delete(fn);
+}
+function notifyAuthLost() {
+  for (const fn of authLostListeners) {
+    try { fn(); } catch (err) { console.error('[AUTH] listener failed:', err); }
+  }
+}
 
 export function setTokens(access) {
   accessToken = access;
@@ -14,56 +28,89 @@ export function clearTokens() {
 
 export function getToken() { return accessToken; }
 
-async function refreshAccessToken() {
-  const res = await fetch(`${API_BASE}/auth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include', // Send HttpOnly refreshToken cookie
-    body: JSON.stringify({}),
-  });
-  if (!res.ok) {
-    clearTokens();
-    throw new Error('Refresh failed');
-  }
-  const data = await res.json();
-  setTokens(data.accessToken);
-  return data.accessToken;
+// Auth endpoints must never trigger a refresh-and-retry loop.
+function isAuthPath(path) {
+  return path.startsWith('/auth/');
 }
 
-export async function api(path, opts = {}) {
-  const headers = { 'Content-Type': 'application/json', ...opts.headers };
-  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+function httpError(status, fallback, body) {
+  if (status === 429) {
+    return new Error('Too many attempts. Please wait a minute and try again.');
+  }
+  return new Error((body && body.error) || fallback || 'Request failed');
+}
 
-  let res = await fetch(`${API_BASE}${path}`, {
-    signal: AbortSignal.timeout(30000),
+// One shared in-flight refresh promise: concurrent 401s wait on the same request.
+let refreshInFlight = null;
+
+// Resolves with the new access token, or null when the session cannot be refreshed.
+// Never throws; never retries (the server rate limits /auth/refresh).
+function refreshSession() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // Send HttpOnly refreshToken cookie
+        body: JSON.stringify({}),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data.accessToken) return null;
+      setTokens(data.accessToken);
+      return data.accessToken;
+    } catch (err) {
+      console.error('[AUTH] Refresh failed:', err?.message || err);
+      return null;
+    } finally {
+      refreshInFlight = null;
+    }
+  })();
+  return refreshInFlight;
+}
+
+function buildRequest(path, opts, token) {
+  const headers = { 'Content-Type': 'application/json', ...opts.headers };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return fetch(`${API_BASE}${path}`, {
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     credentials: 'include',
     ...opts,
     headers,
   });
+}
 
-  // Auto-refresh on 401
-  if (res.status === 401) {
-    try {
-      const newToken = await refreshAccessToken();
-      headers.Authorization = `Bearer ${newToken}`;
-      res = await fetch(`${API_BASE}${path}`, { ...opts, credentials: 'include', headers });
-    } catch {
+export async function api(path, opts = {}) {
+  let res = await buildRequest(path, opts, accessToken);
+
+  // Auto-refresh once on 401 (never for auth endpoints)
+  if (res.status === 401 && !isAuthPath(path)) {
+    const newToken = await refreshSession();
+    if (!newToken) {
       clearTokens();
-      window.location.reload();
-      throw new Error('Session expired');
+      notifyAuthLost();
+      throw new Error('Session expired. Please sign in again.');
+    }
+    // Retry once; buildRequest gives the retry its own fresh timeout signal
+    res = await buildRequest(path, opts, newToken);
+    if (res.status === 401) {
+      clearTokens();
+      notifyAuthLost();
+      throw new Error('Session expired. Please sign in again.');
     }
   }
 
   if (!res.ok) {
-    let errMsg = res.statusText || 'Request failed';
+    let body = null;
     try {
       const ct = res.headers.get('content-type');
-      if (ct?.includes('application/json')) {
-        const err = await res.json();
-        errMsg = err.error || errMsg;
-      }
-    } catch { /* ignore parse error */ }
-    throw new Error(errMsg);
+      if (ct?.includes('application/json')) body = await res.json();
+    } catch (err) {
+      console.warn('[API] Could not parse error body:', err?.message || err);
+    }
+    throw httpError(res.status, res.statusText, body);
   }
 
   return res.json();
@@ -75,10 +122,11 @@ export async function login(email, password) {
     credentials: 'include', // Receive HttpOnly refreshToken cookie
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    throw new Error(err.error || 'Login failed');
+    throw httpError(res.status, 'Login failed', err);
   }
   const data = await res.json();
   setTokens(data.accessToken); // Only store access token in memory
@@ -95,21 +143,13 @@ export async function logout() {
   clearTokens();
 }
 
-// Attempt silent refresh using HttpOnly cookie on page reload
-export async function silentRefresh() {
-  try {
-    const res = await fetch(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      credentials: 'include',
-      body: JSON.stringify({}),
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    if (data.accessToken) {
-      setTokens(data.accessToken);
-      return true;
-    }
-  } catch {}
-  return false;
+// Attempt silent refresh using the HttpOnly cookie on page load.
+// De-duplicated: StrictMode double-mounts and concurrent callers share one request.
+let silentInFlight = null;
+export function silentRefresh() {
+  if (silentInFlight) return silentInFlight;
+  silentInFlight = refreshSession()
+    .then((token) => !!token)
+    .finally(() => { silentInFlight = null; });
+  return silentInFlight;
 }

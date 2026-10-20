@@ -5,13 +5,14 @@
  */
 
 const BaseAgent = require('../base-agent');
+const { MODELS } = require('../../../../shared/models');
 const { queryAll, queryOne, query } = require('../../../../db/connection');
 const templatesDb = require('../../../../db/queries/templates');
 const { persistPatterns } = require('../pattern-store');
 
 class PatternDiscoveryAgent extends BaseAgent {
   constructor() {
-    super({ name: 'pattern_discovery', layer: 'analysis', model: 'claude-sonnet-4-6', costTier: 'grid_pattern' });
+    super({ name: 'pattern_discovery', layer: 'analysis', model: MODELS.grid_analysis, costTier: 'grid_pattern' });
   }
 
   /**
@@ -286,7 +287,7 @@ class PatternDiscoveryAgent extends BaseAgent {
       }
     } catch (err) { console.warn('[PATTERN_DISCOVERY] JSON parse failed in parseOutput:', err.message); }
     console.warn('[PATTERN_DISCOVERY] parseOutput fell back to empty — raw output starts with:', text?.slice(0, 200));
-    return { new_templates: [], template_actions: [], anti_patterns: [], signals: [], overallConfidence: null };
+    return { new_templates: [], template_actions: [], anti_patterns: [], signals: [], overallConfidence: null, parse_error: 'no parseable JSON in output' };
   }
 }
 

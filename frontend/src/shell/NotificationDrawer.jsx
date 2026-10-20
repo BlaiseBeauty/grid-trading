@@ -1,5 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import usePlatformStore from '../stores/platform';
+import DetailPanel from '../components/DetailPanel';
+import { fmtSignedMoney } from '../lib/format';
 
 const EVENT_LABELS = {
   thesis_created:             { label: 'New Thesis',          system: 'oracle', accent: 'var(--oc)' },
@@ -16,103 +18,44 @@ const EVENT_LABELS = {
 };
 
 export default function NotificationDrawer() {
-  const { drawerOpen, setDrawerOpen, clearUnread, busEvents } = usePlatformStore();
-  const drawerRef = useRef(null);
+  const drawerOpen = usePlatformStore(s => s.drawerOpen);
+  const setDrawerOpen = usePlatformStore(s => s.setDrawerOpen);
+  const clearUnread = usePlatformStore(s => s.clearUnread);
+  const busEvents = usePlatformStore(s => s.busEvents);
+  const unreadCount = usePlatformStore(s => s.unreadCount);
 
   // Clear unread when drawer opens
   useEffect(() => {
     if (drawerOpen) clearUnread();
-  }, [drawerOpen]);
+  }, [drawerOpen, clearUnread]);
 
-  // Close on Escape
-  useEffect(() => {
-    function handleKey(e) {
-      if (e.key === 'Escape' && drawerOpen) setDrawerOpen(false);
-    }
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [drawerOpen]);
+  const close = useCallback(() => setDrawerOpen(false), [setDrawerOpen]);
 
   return (
     <>
-      {/* Backdrop */}
-      {drawerOpen && (
-        <div
-          onClick={() => setDrawerOpen(false)}
-          style={{
-            position: 'fixed', inset: 0,
-            background: 'rgba(0,0,0,0.5)',
-            zIndex: 1001,
-          }}
-        />
-      )}
+      {/* Screen-reader announcement of new events (visually hidden, polite) */}
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {unreadCount > 0 ? `${unreadCount} new platform event${unreadCount === 1 ? '' : 's'}` : ''}
+      </div>
 
-      {/* Drawer panel */}
-      <div
-        ref={drawerRef}
-        style={{
-          position: 'fixed',
-          top: 0,
-          right: 0,
-          bottom: 0,
-          width: 'var(--shell-drawer-width)',
-          background: 'var(--surface)',
-          borderLeft: '1px solid var(--border-2)',
-          zIndex: 1002,
-          transform: drawerOpen ? 'translateX(0)' : 'translateX(100%)',
-          transition: 'transform 250ms ease',
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}
+      <DetailPanel
+        open={drawerOpen}
+        onClose={close}
+        title="Platform Events"
+        subtitle={`${busEvents.length} events`}
+        ariaLabel="Platform events"
+        zIndex={1002}
+        footer={<SystemHealthFooter />}
       >
-        {/* Header */}
-        <div style={{
-          padding: '16px 16px 12px',
-          borderBottom: '1px solid var(--border-1)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexShrink: 0,
-        }}>
-          <span style={{
-            fontFamily: 'Instrument Sans, sans-serif',
-            fontWeight: 600, fontSize: 13,
-            color: 'var(--t2)', textTransform: 'uppercase',
-            letterSpacing: '1px',
-          }}>
-            Platform Events
-          </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span style={{
-              fontFamily: 'IBM Plex Mono, monospace',
-              fontSize: 9, color: 'var(--t4)',
-            }}>
-              {busEvents.length} events
-            </span>
-            <button
-              onClick={() => setDrawerOpen(false)}
-              style={{
-                background: 'transparent', border: 'none',
-                color: 'var(--t3)', cursor: 'pointer', fontSize: 16,
-                padding: 4, lineHeight: 1,
-              }}
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-
-        {/* Events list */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+        <div style={{ margin: '-16px -20px' }}>
           {busEvents.length === 0 ? (
             <div style={{
               padding: '32px 16px', textAlign: 'center',
               fontFamily: 'Outfit, sans-serif', fontSize: 13,
-              color: 'var(--t4)',
+              color: 'var(--t3)',
             }}>
               No events yet.<br/>
-              <span style={{ fontSize: 11, color: 'var(--t5)' }}>
+              <span style={{ fontSize: 11, color: 'var(--t3)' }}>
                 Events appear here when agents complete cycles.
               </span>
             </div>
@@ -122,10 +65,7 @@ export default function NotificationDrawer() {
             ))
           )}
         </div>
-
-        {/* Footer — system health summary */}
-        <SystemHealthFooter />
-      </div>
+      </DetailPanel>
     </>
   );
 }
@@ -167,7 +107,7 @@ function BusEventItem({ event }) {
           }}>
             {meta.label}
           </span>
-          {event.conviction && (
+          {event.conviction != null && event.conviction !== '' && !isNaN(parseFloat(event.conviction)) && (
             <span style={{
               fontFamily: 'IBM Plex Mono, monospace', fontSize: 9,
               color: 'var(--t4)',
@@ -185,13 +125,13 @@ function BusEventItem({ event }) {
 
         {/* Summary */}
         <EventSummary eventType={event.event_type} summary={summary}
-          direction={event.direction} assets={event.affected_assets} />
+          assets={event.affected_assets} />
       </div>
     </div>
   );
 }
 
-function EventSummary({ eventType, summary, direction, assets }) {
+function EventSummary({ eventType, summary, assets }) {
   if (!summary && !assets?.length) return null;
 
   if (eventType === 'trade_closed' && summary) {
@@ -208,7 +148,7 @@ function EventSummary({ eventType, summary, direction, assets }) {
             fontFamily: 'IBM Plex Mono, monospace', fontSize: 11,
             color: pnl >= 0 ? 'var(--profit)' : 'var(--loss)',
           }}>
-            {pnl >= 0 ? '+' : ''}${Math.abs(pnl).toFixed(2)}
+            {fmtSignedMoney(pnl)}
           </span>
         )}
       </div>
@@ -248,7 +188,7 @@ function EventSummary({ eventType, summary, direction, assets }) {
           fontFamily: 'IBM Plex Mono, monospace', fontSize: 10,
           color: parseFloat(summary.total_pnl_usd) >= 0 ? 'var(--profit)' : 'var(--loss)',
         }}>
-          P&L ${parseFloat(summary.total_pnl_usd || 0).toFixed(2)}
+          P&L {fmtSignedMoney(parseFloat(summary.total_pnl_usd || 0))}
         </span>
       </div>
     );

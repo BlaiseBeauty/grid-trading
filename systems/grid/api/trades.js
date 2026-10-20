@@ -2,6 +2,7 @@ const tradesDb = require('../../../db/queries/trades');
 const { queryAll, queryOne } = require('../../../db/connection');
 const costsDb = require('../../../db/queries/costs');
 const Anthropic = require('@anthropic-ai/sdk');
+const { MODELS, calculateCost } = require('../../../shared/models');
 const anthropic = new Anthropic();
 const bus = require('../../../shared/intelligence-bus');
 const { linkTradeToTheses } = require('../../../shared/thesis-linker');
@@ -12,9 +13,12 @@ async function routes(fastify) {
 
   fastify.get('/trades', async (request) => {
     const { limit, offset, status, symbol } = request.query;
+    // Clamp pagination: limit 1..200, offset >= 0
+    const lim = Math.min(Math.max(parseInt(limit) || 50, 1), 200);
+    const off = Math.max(parseInt(offset) || 0, 0);
     return tradesDb.getAll({
-      limit: parseInt(limit) || 50,
-      offset: parseInt(offset) || 0,
+      limit: lim,
+      offset: off,
       status,
       symbol,
     });
@@ -74,7 +78,7 @@ async function routes(fastify) {
         payload: { trade_id: trade.id, symbol: trade.symbol, side: trade.side, entry_price: trade.entry_price, quantity: trade.quantity, mode: trade.mode },
         affectedAssets: [trade.symbol], direction: trade.side === 'buy' ? 'long' : 'short',
       });
-    } catch (e) { /* best-effort */ }
+    } catch (e) { console.error('[TRADES] bus publish (trade_executed) failed:', e.message); }
     return reply.code(201).send(trade);
   });
 
@@ -93,6 +97,7 @@ async function routes(fastify) {
   // POST /api/trades/:id/explain — AI-generated trade explanation via Haiku
   fastify.post('/trades/:id/explain', {
     schema: { body: { type: 'object', properties: {} } },
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const tradeId = request.params.id;
 
@@ -144,7 +149,7 @@ async function routes(fastify) {
 
     try {
       const response = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODELS.grid_explainer,
         max_tokens: 2048,
         system: `You are GRID's trade narrator. Given the full context of an autonomous trade decision, write a 200-300 word explanation structured as:
 
@@ -161,19 +166,19 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
       const explanation = response.content[0]?.text || '';
       const inputTokens = response.usage?.input_tokens || 0;
       const outputTokens = response.usage?.output_tokens || 0;
-      const costUsd = (inputTokens * 0.8 + outputTokens * 4.0) / 1_000_000;
+      const costUsd = calculateCost(MODELS.grid_explainer, inputTokens, outputTokens);
 
       // Record cost
       try {
         await costsDb.record({
           service: 'anthropic', agent_name: 'trade_explainer',
-          model: 'claude-haiku-4-5-20251001',
+          model: MODELS.grid_explainer,
           input_tokens: inputTokens, output_tokens: outputTokens,
           cost_usd: costUsd, cycle_number: null,
         });
-      } catch (e) { /* non-critical */ }
+      } catch (e) { console.error('[EXPLAIN] cost record failed (non-critical):', e.message); }
 
-      return { explanation, model: 'claude-haiku-4-5-20251001', tokens: inputTokens + outputTokens, cost_usd: costUsd };
+      return { explanation, model: MODELS.grid_explainer, tokens: inputTokens + outputTokens, cost_usd: costUsd };
     } catch (err) {
       console.error('[EXPLAIN] Haiku call failed:', err.message);
       return reply.code(500).send({ error: 'Failed to generate explanation' });
@@ -198,7 +203,7 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
         payload: { trade_id: trade.id, symbol: trade.symbol, side: trade.side, exit_price: trade.exit_price, pnl_realised: trade.pnl_realised, pnl_pct: trade.pnl_pct },
         affectedAssets: [trade.symbol],
       });
-    } catch (e) { /* best-effort */ }
+    } catch (e) { console.error('[TRADES] bus publish (trade_closed) failed:', e.message); }
     try {
       await linkTradeToTheses({
         id:           trade.id,
@@ -209,7 +214,7 @@ Write in clear direct prose. No bullet points. Reference specific signal types, 
         close_reason: 'manual_close',
         hold_hours:   trade.opened_at ? (Date.now() - new Date(trade.opened_at)) / 3600000 : 0,
       });
-    } catch (e) { /* thesis linking is non-critical */ }
+    } catch (e) { console.error('[TRADES] linkTradeToTheses failed (non-critical):', e.message); }
     try {
       await recordTradeCloseLearningOutcome(trade.id, trade.pnl_realised ?? 0);
     } catch (e) { console.error('[TRADES] recordTradeCloseLearningOutcome failed:', e.message); }

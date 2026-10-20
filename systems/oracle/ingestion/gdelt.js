@@ -1,8 +1,9 @@
 'use strict';
 
-const https = require('https');
 const { query } = require('../../../db/connection');
 const crypto = require('crypto');
+const { fetchText, recordSource } = require('./http-fetch');
+const { sanitizeExternal } = require('../agents/validation');
 
 // GDELT V2 API — free, no key required
 // Event codes we care about for trading context
@@ -39,18 +40,21 @@ async function fetchGDELTLastHour() {
       'query=sourcelang:english%20(conflict%20OR%20sanctions%20OR%20trade%20OR%20economy)' +
       '&mode=artlist&maxrecords=25&format=json&timespan=1h';
 
-    https.get(url, { headers: { 'User-Agent': 'GRID-ORACLE/1.0' } }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          resolve(json.articles || []);
-        } catch {
-          resolve([]); // GDELT can return malformed JSON — treat as empty
-        }
-      });
-    }).on('error', () => resolve([])); // Never fail on GDELT issues
+    // https-only, timeout, bounded redirects and body size (see ./http-fetch.js).
+    // GDELT is non-critical: failures are LOGGED and counted per source, and the cycle continues with [].
+    fetchText(url).then((data) => {
+      try {
+        const json = JSON.parse(data);
+        recordSource('gdelt', true);
+        resolve(Array.isArray(json.articles) ? json.articles : []);
+      } catch (err) {
+        recordSource('gdelt', false, new Error(`malformed JSON: ${err.message}`)); // GDELT sometimes returns HTML/garbage
+        resolve([]);
+      }
+    }).catch((err) => {
+      recordSource('gdelt', false, err);
+      resolve([]);
+    });
   });
 }
 
@@ -62,9 +66,10 @@ async function ingestGDELT() {
     const articles = await fetchGDELTLastHour();
 
     for (const article of articles) {
-      const headline = article.title || '';
-      const url      = article.url || '';
-      const domain   = article.domain || '';
+      // External text: strip tags/control chars, cap length (prompt-injection hygiene)
+      const headline = sanitizeExternal(article.title || '', 300);
+      const url      = /^https?:\/\//i.test(article.url || '') ? String(article.url).slice(0, 500) : '';
+      const domain   = sanitizeExternal(article.domain || '', 80);
 
       if (!headline) continue;
 
@@ -82,8 +87,8 @@ async function ingestGDELT() {
            RETURNING id`,
           [
             'gdelt_event', `GDELT/${domain}`,
-            JSON.stringify(article),
-            headline.slice(0, 500),
+            JSON.stringify({ url, domain, title: headline, seendate: article.seendate || null }),
+            headline,
             article.seendate ? new Date(article.seendate.replace(
               /(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z/,
               '$1-$2-$3T$4:$5:$6Z'
@@ -93,7 +98,9 @@ async function ingestGDELT() {
         );
 
         if (result.rowCount > 0) ingested++;
-      } catch { /* skip individual failures */ }
+      } catch (err) {
+        console.warn(`[GDELT] item insert failed: ${err.message}`); // skip, keep going
+      }
     }
   } catch (err) {
     console.error('[GDELT] Fetch failed (non-critical):', err.message);

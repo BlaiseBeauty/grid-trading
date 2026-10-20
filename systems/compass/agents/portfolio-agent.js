@@ -2,8 +2,12 @@
 
 const CompassBaseAgent     = require('./base-agent');
 const { buildCompassContext } = require('./context-builder');
-const { query, queryOne }  = require('../../../db/connection');
+const { query }            = require('../../../db/connection');
 const bus                  = require('../../../shared/intelligence-bus');
+const portfolioRead        = require('../../../shared/portfolio-read');
+const { MODELS }           = require('../../../shared/models');
+const { trackedBaseAssets } = require('../../../config/symbols');
+const { validatePortfolio, COMPASS_LIMITS } = require('./validation');
 
 const PORTFOLIO_SYSTEM_PROMPT = `You are the COMPASS Portfolio Agent.
 You synthesise macro intelligence (from ORACLE) and trading performance (from GRID)
@@ -15,7 +19,7 @@ Your output must answer:
 2. What is the recommended allocation across tracked symbols?
 3. What cash/defensive weight is appropriate right now?
 
-TRACKED SYMBOLS: BTC, ETH, SOL (GRID's current universe)
+TRACKED SYMBOLS: ${trackedBaseAssets().join(', ')} (GRID's current universe, from config/symbols.js)
 RISK POSTURE DEFINITIONS:
 - aggressive: high-conviction thesis alignment, strong performance, max 20% cash
 - neutral:    mixed signals, normal GRID operation, 20-30% cash buffer
@@ -50,21 +54,22 @@ OUTPUT: Return ONLY valid JSON matching this schema exactly:
 
 RULES:
 - recommended_weights must sum to approximately (1.0 - cash_weight)
-- max_position_usd cannot exceed 10000 (hard cap from risk-limits.js)
+- max_position_usd cannot exceed ${COMPASS_LIMITS.MAX_POSITION_USD} (hard cap from risk-limits.js)
 - If ORACLE has no active theses, default to neutral posture
 - If GRID win_rate < 40% in last period, force defensive posture
 - If GRID max_drawdown > 8% and regime is NOT trending_up, force cash posture
 - If GRID max_drawdown > 8% and regime IS trending_up (bullish), force defensive posture — participate at reduced size to recover losses
 - Never recommend a direction that conflicts with a structural ORACLE thesis > 8.5/10`;
 
-async function runPortfolioAgent() {
-  console.log('[COMPASS-PORTFOLIO] Running portfolio agent...');
+async function runPortfolioAgent({ cycleId = null } = {}) {
+  console.log(`[COMPASS-PORTFOLIO${cycleId != null ? ` c${cycleId}` : ''}] Running portfolio agent...`);
 
   const context = await buildCompassContext();
   const agent   = new CompassBaseAgent({
     name:     'compass-portfolio',
-    model:    'claude-opus-4-5',
+    model:    MODELS.compass_portfolio, // default Sonnet (cost); override with MODEL_COMPASS[_PORTFOLIO]
     costTier: 'compass_portfolio',
+    cycleId,
   });
 
   // Performance-based posture guardrails
@@ -87,11 +92,11 @@ async function runPortfolioAgent() {
         // so the system can participate in the recovery rather than sitting it out
         let currentRegime = null;
         try {
-          const regimeRow = await queryOne(
-            `SELECT regime FROM market_regime ORDER BY created_at DESC LIMIT 1`
-          );
+          const regimeRow = await portfolioRead.getLatestRegime();
           currentRegime = regimeRow?.regime || null;
-        } catch { /* non-critical — default to cash */ }
+        } catch (err) {
+          console.warn('[COMPASS-PORTFOLIO] Regime lookup failed (defaulting to cash):', err.message);
+        }
 
         if (currentRegime === 'trending_up') {
           postureOverride = 'defensive';
@@ -133,23 +138,16 @@ Return ONLY valid JSON.`;
 
   try {
     const raw    = await agent.callClaude(effectiveSystemPrompt, userPrompt);
-    const result = agent.parseJSON(raw);
+    const parsed = agent.parseJSON(raw);
 
-    if (!result) throw new Error('Portfolio agent produced invalid JSON');
+    if (!parsed) throw new Error('Portfolio agent produced invalid JSON');
 
-    // Validate and clamp values
-    result.cash_weight = Math.max(0, Math.min(1, parseFloat(result.cash_weight) || 0.25));
-
-    for (const [symbol, alloc] of Object.entries(result.recommended_weights || {})) {
-      alloc.max_position_usd = Math.min(
-        parseFloat(alloc.max_position_usd) || 3000,
-        10000 // hard cap — never exceed risk-limits.js HARD_CAP
-      );
-      alloc.recommended_usd = Math.min(
-        parseFloat(alloc.recommended_usd) || alloc.max_position_usd * 0.7,
-        alloc.max_position_usd
-      );
-    }
+    // Schema-validate: posture enum, finite cash/weights, sum(weights)+cash = 1 +/- 0.01
+    // (renormalised or rejected), position caps. Guardrail posture is enforced in code.
+    const checked = validatePortfolio(parsed, { trackedBases: trackedBaseAssets(), postureOverride });
+    if (!checked.ok) throw new Error(`Portfolio output rejected: ${checked.error}`);
+    for (const w of checked.warnings) console.warn(`[COMPASS-PORTFOLIO] validation: ${w}`);
+    const result = checked.result;
 
     // Persist to DB
     const portfolioResult = await query(
@@ -191,7 +189,7 @@ Return ONLY valid JSON.`;
           portfolioId, symbol,
           alloc.max_position_usd, alloc.recommended_usd,
           alloc.direction || 'neutral',
-          alloc.bias_conviction || null,
+          alloc.bias_conviction ?? null, // 0 is a legitimate conviction
           alignedThesis?.payload?.thesis_id || null,
           validUntil,
         ]
@@ -221,6 +219,7 @@ Return ONLY valid JSON.`;
         key_risks:           result.key_risks || [],
       },
       expires_at: validUntil.toISOString(),
+      dedupe_key: cycleId != null ? `compass:allocation_guidance:${cycleId}` : undefined,
     }))?.id;
 
     // Update portfolio record with bus ID

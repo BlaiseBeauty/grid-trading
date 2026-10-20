@@ -111,7 +111,7 @@ export default function AgentFeed() {
         </div>
       )}
 
-      <div className="v2-feed-list">
+      <div className="v2-feed-list" role="log" aria-live="polite" aria-label="Agent activity feed">
         {items.length === 0 && !cycleStatus?.running && (
           <div className="v2-feed-empty">No activity yet. Trigger a cycle to start.</div>
         )}
@@ -185,10 +185,10 @@ export default function AgentFeed() {
           display: flex; justify-content: space-between; align-items: center;
           padding: var(--v2-space-sm) var(--v2-space-md);
           border-left: 2px solid var(--v2-accent-magenta);
-          background: rgba(179,157,219,0.03);
+          background: var(--v2-tint-magenta);
           transition: background var(--v2-duration-fast);
         }
-        .v2-feed-item:hover { background: rgba(179,157,219,0.06); }
+        .v2-feed-item:hover { background: var(--v2-tint-magenta-strong); }
         .v2-feed-left { display: flex; align-items: center; gap: var(--v2-space-md); }
         .v2-feed-right { display: flex; align-items: center; gap: var(--v2-space-sm); }
         .v2-feed-agent {
@@ -243,16 +243,16 @@ export default function AgentFeed() {
         }
         .v2-chip--done {
           border-color: var(--v2-accent-cyan); color: var(--v2-accent-cyan);
-          background: rgba(79,195,247,0.05);
+          background: var(--v2-tint-cyan);
         }
         .v2-chip--error {
           border-color: var(--v2-accent-red); color: var(--v2-accent-red);
-          background: rgba(239,83,80,0.05);
+          background: var(--v2-tint-red);
         }
         .v2-chip--strategy { border-style: dashed; }
         .v2-chip--strategy.v2-chip--done {
           border-style: solid; border-color: var(--v2-accent-magenta);
-          color: var(--v2-accent-magenta); background: rgba(179,157,219,0.05);
+          color: var(--v2-accent-magenta); background: var(--v2-tint-magenta);
         }
         .v2-chip-name { text-transform: uppercase; }
         .v2-chip-count { font-weight: 700; }

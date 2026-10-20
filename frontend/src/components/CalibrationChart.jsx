@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { useDataStore } from '../stores/data';
 
 const BAR_HEIGHT = 140;
 
@@ -20,25 +21,24 @@ export default function CalibrationChart() {
 
   useEffect(() => { fetchCalibration(); }, []);
 
-  // Listen for WebSocket calibration updates
+  // The single WebSocket lives in hooks/useWebSocket.js, which stores each
+  // 'calibration_update' message in the data store; refetch whenever it changes.
+  const calibrationUpdate = useDataStore(s => s.calibrationUpdate);
   useEffect(() => {
-    function handleMessage(e) {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'calibration_update') fetchCalibration();
-      } catch {}
-    }
-    // Find existing WebSocket connections on the page
-    const ws = window.__gridWs;
-    if (ws) ws.addEventListener('message', handleMessage);
-    return () => { if (ws) ws.removeEventListener('message', handleMessage); };
-  }, []);
+    if (calibrationUpdate) fetchCalibration();
+  }, [calibrationUpdate]);
 
-  if (error) return <div className="v2-cal-empty">{error}</div>;
+  if (error) {
+    return (
+      <div className="v2-cal-empty" role="alert">
+        {error}{' '}
+        <button type="button" className="state-block__btn" onClick={fetchCalibration}>Retry</button>
+      </div>
+    );
+  }
   if (!data) return <div className="v2-cal-empty">Loading calibration...</div>;
 
   const { buckets, calibration_score, total_trades, qualified_buckets } = data;
-  const hasBuckets = buckets && buckets.length > 0;
   const hasData = total_trades > 0;
 
   // Find max value for scaling bars

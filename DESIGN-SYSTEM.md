@@ -4,7 +4,72 @@
 
 ---
 
-## Colour Palette
+## Themes: LIGHT is the default, DARK is opt-in
+
+Thomas prefers light mode, so the app opens in **light**. Dark is kept and is switched from
+Settings > Appearance (stored in `localStorage` key `grid-theme`; a UI preference only).
+
+- Source of truth: the `--v2-*` tokens in `frontend/src/styles/design-system.css`.
+  - Light values live under `:root` (the default, no attribute needed).
+  - Dark values live under `:root[data-theme="dark"]`.
+- The short tokens used below (`--void`, `--surface`, `--t1`, `--border-1`, `--cyan` ...) are
+  **aliases** of the `--v2-*` tokens, defined once in `frontend/src/index.css`. Never define a
+  second palette; add new colours to design-system.css for BOTH themes.
+- Charts (lightweight-charts) cannot read CSS variables: build options from
+  `frontend/src/lib/chartConfig.js` (`getChartOptions()` etc.) and call `useChartTheme()` so they
+  re-apply on theme change.
+- No hardcoded hex or `rgba()` in components: use the tint/fill tokens
+  (`--v2-tint-*`, `--v2-tint-*-strong`, `--v2-fill-1/2/3`, `--v2-glow-*`, `--v2-overlay`,
+  `--v2-on-accent`).
+- `theme-color` meta and `manifest.json` use the light background (`#f4f5f8`); `src/lib/theme.js`
+  swaps the meta tag to `#1b1d23` in dark.
+
+### Light palette (default)
+
+```css
+/* Backgrounds */
+--v2-bg-primary:   #f4f5f8;   /* app background   (--void)    */
+--v2-bg-abyss:     #eceef2;   /* page background  (--abyss)   */
+--v2-bg-secondary: #ffffff;   /* cards / panels   (--surface) */
+--v2-bg-tertiary:  #eef0f4;   /* inputs, table heads (--elevated) */
+--v2-bg-elevated:  #ffffff;
+--v2-bg-raised:    #e6e9ef;   /* (--raised) */
+--v2-bg-shelf:     #dde1e9;   /* (--shelf)  */
+
+/* Semantic (darkened for AA contrast on white) */
+--v2-accent-cyan:    #0277bd;  /* UI only                */
+--v2-accent-green:   #2e7d32;  /* profit ONLY            */
+--v2-accent-red:     #c62828;  /* loss ONLY              */
+--v2-accent-amber:   #a85a00;  /* warnings               */
+--v2-accent-magenta: #6a4fb3;  /* AI                     */
+
+/* Text */
+--v2-text-primary:   #1b1f29;  /* --t1 */
+--v2-text-secondary: #4a5063;  /* --t2 */
+--v2-text-muted:     #667085;  /* --t3 */
+--v2-text-disabled:  #8a90a0;  /* --t4 */
+--v2-text-ghost:     #c2c7d2;  /* --t5 */
+
+/* Borders */
+--v2-border:        rgba(15, 20, 35, 0.10);
+--v2-border-hover:  rgba(15, 20, 35, 0.18);
+--v2-border-active: rgba(15, 20, 35, 0.28);
+--v2-border-faint:  rgba(15, 20, 35, 0.05);
+
+/* Neutral fills and overlay */
+--v2-fill-1: rgba(15, 20, 35, 0.03);  --v2-fill-2: rgba(15, 20, 35, 0.05);  --v2-fill-3: rgba(15, 20, 35, 0.09);
+--v2-overlay: rgba(20, 24, 36, 0.45);
+
+/* System accents */
+--gc: #0277bd;  --cc: #a85a00;  --oc: #5b4bd6;
+```
+
+Status of the light theme: **implemented but not reviewed by a person**. Contrast ratios were
+chosen to be AA for text on `#ffffff` / `#f4f5f8`, not measured on screen.
+
+## Colour Palette (DARK values)
+
+> These are the dark theme values (`[data-theme="dark"]`). The short names are aliases, see above.
 
 ```css
 /* Backgrounds — darkest to lightest */
@@ -247,6 +312,10 @@ function formatMoney(value) {
 ---
 
 ## Chart Integration (TradingView Lightweight Charts)
+
+> The literal hex values below are the DARK theme. In code, never paste them: use
+> `getChartOptions()`, `getCandlestickOptions()`, `getEquityAreaOptions()` ... from
+> `frontend/src/lib/chartConfig.js` (they read the active theme) and `useChartTheme()` to re-apply on switch.
 
 ```javascript
 const chartOptions = {

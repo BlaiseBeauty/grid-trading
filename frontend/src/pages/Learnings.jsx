@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { GlowCard, StatusPulse } from '../components/ui';
 import { api } from '../lib/api';
 import { timeAgo } from '../lib/format';
+import { ErrorState, LoadingState } from '../components/StateBlock';
 
 // ════════════════════════════════════════════════════════════════
 // LEARNINGS — Knowledge Intelligence Page
@@ -36,8 +37,13 @@ export default function Learnings() {
   const [selectedId, setSelectedId] = useState(null);
   const [influence, setInfluence] = useState(null);
   const [loadingInfluence, setLoadingInfluence] = useState(false);
+  const [influenceError, setInfluenceError] = useState(null);
   const [fadingConflicts, setFadingConflicts] = useState(new Set());
+  const [loadError, setLoadError] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [actionError, setActionError] = useState(null);
   const intervalRef = useRef(null);
+  const fadeTimers = useRef(new Set());
 
   const fetchAll = useCallback(async () => {
     try {
@@ -49,8 +55,11 @@ export default function Learnings() {
       setStats(s);
       setLearnings(l);
       setConflicts(c);
+      setLoadError(null);
+      setLoaded(true);
     } catch (err) {
       console.error('[Learnings] fetch failed:', err.message);
+      setLoadError(err.message || 'Failed to load learnings');
     }
   }, []);
 
@@ -60,18 +69,35 @@ export default function Learnings() {
     return () => clearInterval(intervalRef.current);
   }, [fetchAll]);
 
+  // Cancel pending fade-out timers when leaving the page
+  useEffect(() => {
+    const timers = fadeTimers.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
+
   // Fetch influence detail when a learning is selected in audit tab
   useEffect(() => {
-    if (selectedId == null) { setInfluence(null); return; }
+    if (selectedId == null) { setInfluence(null); setInfluenceError(null); return undefined; }
     let cancelled = false;
     setLoadingInfluence(true);
+    setInfluenceError(null);
     api(`/learnings/${selectedId}/influence`).then(data => {
       if (!cancelled) { setInfluence(data); setLoadingInfluence(false); }
-    }).catch(() => { if (!cancelled) setLoadingInfluence(false); });
+    }).catch((err) => {
+      console.error('[Learnings] influence failed:', err.message);
+      if (!cancelled) {
+        setInfluenceError(err.message || 'Failed to load influence timeline');
+        setLoadingInfluence(false);
+      }
+    });
     return () => { cancelled = true; };
   }, [selectedId]);
 
   async function handleInvalidate(id) {
+    setActionError(null);
     try {
       await api(`/learnings/${id}`, {
         method: 'PATCH',
@@ -80,23 +106,28 @@ export default function Learnings() {
       fetchAll();
     } catch (err) {
       console.error('[Learnings] invalidate failed:', err.message);
+      setActionError(`Could not invalidate learning #${id}: ${err.message}`);
     }
   }
 
   async function handleResolve(conflictId, resolution) {
+    setActionError(null);
     try {
       setFadingConflicts(prev => new Set(prev).add(conflictId));
       await api(`/learnings/conflicts/${conflictId}/resolve`, {
         method: 'POST',
         body: JSON.stringify({ resolution }),
       });
-      setTimeout(() => {
+      const t = setTimeout(() => {
+        fadeTimers.current.delete(t);
         setConflicts(prev => prev.filter(c => c.id !== conflictId));
         setFadingConflicts(prev => { const n = new Set(prev); n.delete(conflictId); return n; });
         fetchAll();
       }, 400);
+      fadeTimers.current.add(t);
     } catch (err) {
       console.error('[Learnings] resolve failed:', err.message);
+      setActionError(`Could not resolve conflict #${conflictId}: ${err.message}`);
       setFadingConflicts(prev => { const n = new Set(prev); n.delete(conflictId); return n; });
     }
   }
@@ -160,6 +191,16 @@ export default function Learnings() {
         <span className="ln-subtitle">Knowledge Intelligence</span>
       </div>
 
+      {loadError && (
+        <ErrorState
+          error={loadError}
+          onRetry={fetchAll}
+          title={loaded ? 'Refresh failed — showing the last loaded data' : 'Could not load learnings'}
+        />
+      )}
+      {actionError && <ErrorState error={actionError} title="Action failed" />}
+      {!loaded && !loadError && <LoadingState />}
+
       {/* ── KPI Strip ── */}
       <div className="ln-kpi-strip">
         <KpiTile label="TOTAL LEARNINGS" value={stats?.total} stagger={1} />
@@ -180,9 +221,9 @@ export default function Learnings() {
         <KpiTile label="AVG CONFIDENCE" value={stats?.avg_decayed_confidence != null ? `${Math.round(stats.avg_decayed_confidence * 100)}%` : '\u2014'} color="var(--v2-accent-cyan)" stagger={6} />
         <KpiTile
           label="CONFLICTS"
-          value={stats?.conflicts_unresolved ?? 0}
-          color={stats?.conflicts_unresolved > 0 ? 'var(--v2-accent-red)' : 'var(--v2-text-muted)'}
-          pulse={stats?.conflicts_unresolved > 0}
+          value={stats ? (stats.conflicts_unresolved ?? 0) : undefined}
+          color={parseInt(stats?.conflicts_unresolved, 10) > 0 ? 'var(--v2-accent-red)' : 'var(--v2-text-muted)'}
+          pulse={parseInt(stats?.conflicts_unresolved, 10) > 0}
           stagger={7}
         />
       </div>
@@ -195,9 +236,9 @@ export default function Learnings() {
       </div>
 
       {/* ── Tab Content ── */}
-      {tab === 'PIPELINE' && <PipelineView learnings={learnings} byStage={byStage} onInvalidate={handleInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} bootstrapMode={stats?.bootstrap_mode ?? true} />}
-      {tab === 'CONFLICTS' && <ConflictsView conflicts={conflicts} fading={fadingConflicts} onResolve={handleResolve} />}
-      {tab === 'AUDIT' && <AuditView learnings={learnings} selectedId={selectedId} setSelectedId={setSelectedId} influence={influence} loading={loadingInfluence} winRate={winRate} confPct={confPct} />}
+      {loaded && tab === 'PIPELINE' && <PipelineView byStage={byStage} onInvalidate={handleInvalidate} winRate={winRate} confPct={confPct} isHighPerf={isHighPerf} stageProgress={stageProgress} bootstrapMode={stats?.bootstrap_mode ?? true} />}
+      {loaded && tab === 'CONFLICTS' && <ConflictsView conflicts={conflicts} fading={fadingConflicts} onResolve={handleResolve} />}
+      {loaded && tab === 'AUDIT' && <AuditView learnings={learnings} selectedId={selectedId} setSelectedId={setSelectedId} influence={influence} loading={loadingInfluence} error={influenceError} winRate={winRate} confPct={confPct} />}
 
       <style>{STYLES}</style>
     </div>
@@ -224,7 +265,7 @@ function KpiTile({ label, value, color, pulse, stagger }) {
 // TAB 1: PIPELINE (Kanban)
 // ════════════════════════════════════════════════════════════════
 
-function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHighPerf, stageProgress, bootstrapMode }) {
+function PipelineView({ byStage, onInvalidate, winRate, confPct, isHighPerf, stageProgress, bootstrapMode }) {
   return (
     <div className="ln-pipeline v2-animate-in">
       {STAGES.map(stage => {
@@ -233,7 +274,7 @@ function PipelineView({ learnings, byStage, onInvalidate, winRate, confPct, isHi
           <div className="ln-column" key={stage}>
             <div className="ln-column-header">
               <span className="ln-column-title">{stage.toUpperCase()}</span>
-              <span className="ln-column-count" style={{ background: `${STAGE_COLORS[stage]}22`, color: STAGE_COLORS[stage], borderColor: `${STAGE_COLORS[stage]}44` }}>{items.length}</span>
+              <span className="ln-column-count" style={{ background: `color-mix(in srgb, ${STAGE_COLORS[stage]} 13%, transparent)`, color: STAGE_COLORS[stage], borderColor: `color-mix(in srgb, ${STAGE_COLORS[stage]} 27%, transparent)` }}>{items.length}</span>
             </div>
             <div className="ln-column-cards">
               {items.map(l => (
@@ -257,7 +298,7 @@ function LearningCard({ learning: l, onInvalidate, winRate, confPct, isHighPerf,
 
   return (
     <div className={`ln-card ${hp ? 'ln-card--glow' : ''}`}>
-      {hasConflict && <span className="ln-card-conflict-icon" title="Unresolved conflict">\u26a0</span>}
+      {hasConflict && <span className="ln-card-conflict-icon" title="Unresolved conflict" role="img" aria-label="Unresolved conflict">{'\u26a0'}</span>}
       <div className="ln-card-badges">
         {l.learning_type && <span className="ln-badge ln-badge--type">{l.learning_type.toUpperCase()}</span>}
         {l.scope_level && <span className="ln-badge ln-badge--scope">{l.scope_level.toUpperCase()}</span>}
@@ -303,8 +344,8 @@ function ConflictsView({ conflicts, fading, onResolve }) {
   if (conflicts.length === 0) {
     return (
       <div className="ln-empty-state v2-animate-in">
-        <span className="ln-empty-check">\u2713</span>
-        <p>No conflicts detected \u2014 knowledge base is consistent</p>
+        <span className="ln-empty-check">{'\u2713'}</span>
+        <p>No conflicts detected {'\u2014'} knowledge base is consistent</p>
       </div>
     );
   }
@@ -314,7 +355,7 @@ function ConflictsView({ conflicts, fading, onResolve }) {
       {conflicts.map(c => (
         <div key={c.id} className={`ln-conflict-card ${fading.has(c.id) ? 'ln-fade-out' : ''}`}>
           <div className="ln-conflict-header">
-            <span className="ln-conflict-type">\u26a1 {(c.conflict_type || 'DIRECTIONAL').toUpperCase()} CONFLICT</span>
+            <span className="ln-conflict-type">{'\u26a1'} {(c.conflict_type || 'DIRECTIONAL').toUpperCase()} CONFLICT</span>
             <span className="ln-conflict-time">{timeAgo(c.detected_at)}</span>
           </div>
           <div className="ln-conflict-sides">
@@ -354,7 +395,7 @@ function ConflictSide({ label, text, conf, type }) {
 // TAB 3: AUDIT
 // ════════════════════════════════════════════════════════════════
 
-function AuditView({ learnings, selectedId, setSelectedId, influence, loading, winRate, confPct }) {
+function AuditView({ learnings, selectedId, setSelectedId, influence, loading, error, winRate, confPct }) {
   return (
     <div className="ln-audit v2-animate-in">
       {/* Left: learning list */}
@@ -362,7 +403,20 @@ function AuditView({ learnings, selectedId, setSelectedId, influence, loading, w
         {learnings.map(l => {
           const wr = winRate(l);
           return (
-            <div key={l.id} className={`ln-audit-row ${selectedId === l.id ? 'active' : ''}`} onClick={() => setSelectedId(l.id)}>
+            <div
+              key={l.id}
+              className={`ln-audit-row ${selectedId === l.id ? 'active' : ''}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={selectedId === l.id}
+              onClick={() => setSelectedId(l.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setSelectedId(l.id);
+                }
+              }}
+            >
               <span className="ln-badge ln-badge--type ln-badge--sm">{(l.learning_type || '?').toUpperCase()}</span>
               <span className="ln-audit-text">{l.insight_text?.slice(0, 60)}{l.insight_text?.length > 60 ? '\u2026' : ''}</span>
               <span className="ln-audit-wr num">{wr != null ? `${wr}%` : '\u2014'}</span>
@@ -381,7 +435,10 @@ function AuditView({ learnings, selectedId, setSelectedId, influence, loading, w
         {selectedId != null && loading && (
           <div className="ln-audit-placeholder">Loading...</div>
         )}
-        {selectedId != null && !loading && influence && (
+        {selectedId != null && !loading && error && (
+          <ErrorState error={error} onRetry={() => setSelectedId(null)} title="Could not load influence timeline" />
+        )}
+        {selectedId != null && !loading && !error && influence && (
           <AuditDetail influence={influence} winRate={winRate} confPct={confPct} />
         )}
       </div>
@@ -456,7 +513,7 @@ function AuditDetail({ influence, winRate, confPct }) {
               </span>
               <span className="ln-event-cycle num">C{ev.cycle_number}</span>
               {ev.regime && <span className="ln-event-regime">{ev.regime}</span>}
-              {ev.trade_id && <span className="ln-event-trade num">T#{ev.trade_id}</span>}
+              {ev.trade_id != null && <span className="ln-event-trade num">T#{ev.trade_id}</span>}
               <span className="ln-event-time">{timeAgo(ev.created_at)}</span>
             </div>
           ))}
@@ -674,8 +731,8 @@ const STYLES = `
     border-color: var(--v2-border-hover);
   }
   .ln-card--glow {
-    border-color: rgba(179,157,219,0.4);
-    box-shadow: 0 0 0 1px rgba(179,157,219,0.4), 0 0 12px rgba(179,157,219,0.15);
+    border-color: var(--v2-accent-magenta);
+    box-shadow: 0 0 0 1px var(--v2-accent-magenta), var(--v2-glow-magenta);
   }
   .ln-card-conflict-icon {
     position: absolute;
@@ -704,13 +761,13 @@ const STYLES = `
   }
   .ln-badge--type {
     color: var(--v2-accent-magenta);
-    border-color: rgba(179,157,219,0.3);
-    background: rgba(179,157,219,0.08);
+    border-color: var(--v2-tint-magenta-strong);
+    background: var(--v2-tint-magenta);
   }
   .ln-badge--scope {
     color: var(--v2-accent-cyan);
-    border-color: rgba(79,195,247,0.3);
-    background: rgba(79,195,247,0.08);
+    border-color: var(--v2-tint-cyan-strong);
+    background: var(--v2-tint-cyan);
   }
   .ln-badge--sm {
     font-size: 7px;
@@ -767,7 +824,7 @@ const STYLES = `
   .ln-progress-bar {
     flex: 1;
     height: 4px;
-    background: rgba(255,255,255,0.06);
+    background: var(--v2-fill-2);
     border-radius: var(--v2-radius-sm);
     overflow: hidden;
   }
@@ -808,16 +865,16 @@ const STYLES = `
     font-weight: 600;
     letter-spacing: 0.5px;
     color: var(--v2-accent-red);
-    background: rgba(239,83,80,0.08);
-    border: 1px solid rgba(239,83,80,0.2);
+    background: var(--v2-tint-red);
+    border: 1px solid var(--v2-tint-red-strong);
     border-radius: var(--v2-radius-sm);
     padding: 3px 8px;
     cursor: pointer;
     transition: all var(--v2-duration-fast);
   }
   .ln-btn-invalidate:hover {
-    background: rgba(239,83,80,0.15);
-    border-color: rgba(239,83,80,0.4);
+    background: var(--v2-tint-red-strong);
+    border-color: var(--v2-accent-red);
   }
 
   /* ── Conflicts View ── */
@@ -917,8 +974,8 @@ const STYLES = `
   }
   .ln-resolve-btn:hover {
     color: var(--v2-accent-magenta);
-    border-color: rgba(179,157,219,0.4);
-    background: rgba(179,157,219,0.08);
+    border-color: var(--v2-accent-magenta);
+    background: var(--v2-tint-magenta);
   }
   .ln-resolve-btn--wide {
     flex-basis: 100%;
@@ -1068,7 +1125,7 @@ const STYLES = `
   .ln-regime-bar-track {
     flex: 1;
     height: 6px;
-    background: rgba(255,255,255,0.06);
+    background: var(--v2-fill-2);
     border-radius: var(--v2-radius-sm);
     overflow: hidden;
   }
@@ -1110,7 +1167,7 @@ const STYLES = `
   .ln-decay-track {
     position: relative;
     height: 8px;
-    background: rgba(255,255,255,0.04);
+    background: var(--v2-fill-1);
     border-radius: 4px;
     overflow: hidden;
   }
@@ -1119,7 +1176,7 @@ const STYLES = `
     top: 0;
     left: 0;
     height: 100%;
-    background: rgba(179,157,219,0.15);
+    background: var(--v2-tint-magenta-strong);
     border-radius: 4px;
   }
   .ln-decay-current {

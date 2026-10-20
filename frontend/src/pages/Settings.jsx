@@ -1,6 +1,50 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { GlowCard, StatusPulse } from '../components/ui';
+import { ErrorState } from '../components/StateBlock';
+import { fmtMoney, fmtSignedMoney } from '../lib/format';
+import { setTheme, useTheme } from '../lib/theme';
+
+// Appearance: light (default) / dark. Stored in localStorage (UI preference only, see lib/theme.js).
+function AppearanceCard() {
+  const theme = useTheme();
+  return (
+    <GlowCard>
+      <div className="v2-theme-title">Appearance</div>
+      <div className="v2-theme-toggle" role="radiogroup" aria-label="Colour theme">
+        {['light', 'dark'].map(t => (
+          <button
+            key={t}
+            type="button"
+            role="radio"
+            aria-checked={theme === t}
+            className={`v2-theme-btn ${theme === t ? 'active' : ''}`}
+            onClick={() => setTheme(t)}
+          >
+            {t === 'light' ? 'Light' : 'Dark'}
+          </button>
+        ))}
+      </div>
+      <div className="v2-theme-note">Saved in this browser only.</div>
+      <style>{`
+        .v2-theme-title {
+          font-family: var(--v2-font-data); font-size: 11px; font-weight: 600;
+          text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted);
+          margin-bottom: var(--v2-space-md);
+        }
+        .v2-theme-toggle { display: inline-flex; border: 1px solid var(--v2-border-hover); border-radius: var(--v2-radius-sm); overflow: hidden; }
+        .v2-theme-btn {
+          padding: 8px 20px; font-family: var(--v2-font-data); font-size: 11px; font-weight: 600;
+          text-transform: uppercase; letter-spacing: 1px; color: var(--v2-text-secondary);
+          background: transparent; min-height: 36px;
+        }
+        .v2-theme-btn + .v2-theme-btn { border-left: 1px solid var(--v2-border-hover); }
+        .v2-theme-btn.active { background: var(--v2-accent-cyan); color: var(--v2-on-accent); }
+        .v2-theme-note { margin-top: var(--v2-space-sm); font-size: 11px; color: var(--v2-text-muted); }
+      `}</style>
+    </GlowCard>
+  );
+}
 
 export default function Settings() {
   const [riskLimits, setRiskLimits] = useState(null);
@@ -10,42 +54,82 @@ export default function Settings() {
   const [bootstrapHistory, setBootstrapHistory] = useState([]);
   const [correlations, setCorrelations] = useState(null);
   const [readiness, setReadiness] = useState(null);
+  // Errors: `loadError` = a core request failed; the optional ones carry their own message
+  const [loadError, setLoadError] = useState(null);
+  const [corrError, setCorrError] = useState(null);
+  const [readinessError, setReadinessError] = useState(null);
+  const [actionError, setActionError] = useState(null);
+  const [loaded, setLoaded] = useState(false);
 
-  const fetchAll = () => {
-    Promise.all([
+  const fetchAll = useCallback(async () => {
+    setLoadError(null);
+    const [rl, cfg, h, sh, bh, corr, rd] = await Promise.allSettled([
       api('/system/risk-limits'),
       api('/system/config'),
       api('/system/health-detail'),
       api('/system/scram/history'),
       api('/system/bootstrap/history'),
-      api('/correlations').catch(() => null),
-      api('/system/readiness').catch(() => null),
-    ]).then(([rl, cfg, h, sh, bh, corr, rd]) => {
-      setRiskLimits(rl);
-      setConfig(cfg);
-      setHealth(h);
-      setScramHistory(sh || []);
-      setBootstrapHistory(bh || []);
-      setCorrelations(corr);
-      setReadiness(rd);
-    }).catch(console.error);
-  };
+      api('/correlations'),
+      api('/system/readiness'),
+    ]);
 
-  useEffect(() => { fetchAll(); }, []);
+    // Core: risk limits + config. Without them the page cannot render.
+    const core = [rl, cfg].find(r => r.status === 'rejected');
+    if (core) {
+      console.error('[Settings] core load failed:', core.reason);
+      setLoadError(core.reason?.message || 'Failed to load settings');
+    } else {
+      setRiskLimits(rl.value);
+      setConfig(cfg.value);
+      setLoaded(true);
+    }
+    if (h.status === 'fulfilled') setHealth(h.value);
+    else console.error('[Settings] health failed:', h.reason);
+    if (sh.status === 'fulfilled') setScramHistory(sh.value || []);
+    else console.error('[Settings] scram history failed:', sh.reason);
+    if (bh.status === 'fulfilled') setBootstrapHistory(bh.value || []);
+    else console.error('[Settings] bootstrap history failed:', bh.reason);
+
+    if (corr.status === 'fulfilled') { setCorrelations(corr.value); setCorrError(null); }
+    else { console.error('[Settings] correlations failed:', corr.reason); setCorrError(corr.reason?.message || 'Failed to load'); }
+    if (rd.status === 'fulfilled') { setReadiness(rd.value); setReadinessError(null); }
+    else { console.error('[Settings] readiness failed:', rd.reason); setReadinessError(rd.reason?.message || 'Failed to load'); }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
 
   async function activateScram(level) {
     if (!confirm(`Activate SCRAM ${level.toUpperCase()}? This will restrict or halt trading.`)) return;
-    await api('/system/scram/activate', { method: 'POST', body: JSON.stringify({ level }), headers: { 'Content-Type': 'application/json' } });
+    setActionError(null);
+    try {
+      await api('/system/scram/activate', { method: 'POST', body: JSON.stringify({ level }), headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      console.error('[Settings] activate SCRAM failed:', err);
+      setActionError(`SCRAM ${level.toUpperCase()} was NOT activated: ${err?.message || 'unknown error'}`);
+    }
     fetchAll();
   }
 
   async function clearScram() {
-    await api('/system/scram/clear', { method: 'POST' });
+    setActionError(null);
+    try {
+      await api('/system/scram/clear', { method: 'POST' });
+    } catch (err) {
+      console.error('[Settings] clear SCRAM failed:', err);
+      setActionError(`SCRAM was NOT cleared: ${err?.message || 'unknown error'}`);
+    }
     fetchAll();
   }
 
-  if (!riskLimits || !config) {
-    return <div className="v2-settings"><div className="v2-empty">Loading...</div></div>;
+  if (!loaded) {
+    return (
+      <div className="v2-settings">
+        {loadError
+          ? <ErrorState error={loadError} onRetry={fetchAll} title="Could not load settings" />
+          : <div role="status" style={{ color: 'var(--v2-text-muted)', fontSize: 13, padding: 24, textAlign: 'center' }}>Loading...</div>}
+        <div style={{ maxWidth: 380 }}><AppearanceCard /></div>
+      </div>
+    );
   }
 
   const limits = riskLimits.limits;
@@ -64,6 +148,9 @@ export default function Settings() {
   return (
     <div className="v2-settings">
       <h1 className="v2-page-title v2-animate-in">SETTINGS</h1>
+
+      {loadError && <ErrorState error={loadError} onRetry={fetchAll} title="Refresh failed — showing the last loaded data" />}
+      {actionError && <ErrorState error={actionError} title="Action failed" />}
 
       {/* Service Status Bar */}
       <div className="v2-services-bar v2-animate-in v2-stagger-1">
@@ -115,6 +202,8 @@ export default function Settings() {
                   </span>
                 </div>
               </div>
+            ) : readinessError ? (
+              <ErrorState error={readinessError} onRetry={fetchAll} title="Could not load readiness" />
             ) : (
               <div className="v2-empty" style={{ padding: 'var(--v2-space-md) 0' }}>Loading readiness data...</div>
             )}
@@ -237,6 +326,8 @@ export default function Settings() {
             <div className="v2-section-title">Correlation Matrix (30d)</div>
             {correlations ? (
               <CorrelationMatrix correlations={correlations} />
+            ) : corrError ? (
+              <ErrorState error={corrError} onRetry={fetchAll} title="Could not load correlations" />
             ) : (
               <div className="v2-empty" style={{ padding: 'var(--v2-space-md) 0' }}>No correlation data yet</div>
             )}
@@ -248,7 +339,7 @@ export default function Settings() {
           <GlowCard>
             <div className="v2-section-title">System Configuration</div>
             <div className="v2-limits-table">
-              <ConfigRow label="Starting Capital" value={`$${config.starting_capital.toLocaleString()}`} />
+              <ConfigRow label="Starting Capital" value={fmtMoney(config.starting_capital, 2)} />
               <ConfigRow label="Python Engine" value={config.python_engine_url} />
               <ConfigRow label="Cycle Interval" value={config.cycle_interval} />
               <ConfigRow label="Monitor Interval" value={config.monitor_interval} />
@@ -269,11 +360,16 @@ export default function Settings() {
                 <ConfigRow label="SCRAM Active" value={health.scram_active ? `Yes (${health.scram_level})` : 'No'} highlight={health.scram_active} />
                 <ConfigRow label="Open Trades" value={health.trade_stats?.open_trades} />
                 <ConfigRow label="Closed Trades" value={health.trade_stats?.total_closed} />
-                <ConfigRow label="Total P&L" value={`$${parseFloat(health.total_pnl || 0).toFixed(2)}`} />
-                <ConfigRow label="AI Cost" value={`$${parseFloat(health.total_ai_cost || 0).toFixed(2)}`} />
+                <ConfigRow label="Total P&L" value={fmtSignedMoney(health.total_pnl || 0)} />
+                <ConfigRow label="AI Cost" value={fmtMoney(health.total_ai_cost || 0)} />
               </div>
             )}
           </GlowCard>
+        </div>
+
+        {/* Appearance (light / dark) */}
+        <div className="v2-animate-in v2-stagger-8">
+          <AppearanceCard />
         </div>
 
         {/* Agent Models */}
@@ -309,7 +405,7 @@ export default function Settings() {
         }
         .v2-section-header .v2-section-title { margin-bottom: 0; }
         .v2-settings-grid {
-          display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+          display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
           gap: var(--v2-space-lg);
         }
         .v2-empty { color: var(--v2-text-muted); font-size: 13px; padding: var(--v2-space-xl); text-align: center; }
@@ -359,19 +455,19 @@ export default function Settings() {
           text-align: right; max-width: 220px;
           overflow: hidden; text-overflow: ellipsis;
         }
-        .v2-config-value.highlight { color: var(--v2-accent-green); }
+        .v2-config-value.highlight { color: var(--v2-accent-amber); }
 
         /* SCRAM */
         .v2-scram-controls { display: flex; flex-direction: column; gap: var(--v2-space-md); }
         .v2-scram-active-banner {
           display: flex; justify-content: space-between; align-items: center;
-          padding: var(--v2-space-md); background: rgba(239,83,80,0.08);
-          border: 1px solid rgba(239,83,80,0.25); border-radius: var(--v2-radius-sm);
+          padding: var(--v2-space-md); background: var(--v2-tint-red);
+          border: 1px solid var(--v2-tint-red-strong); border-radius: var(--v2-radius-sm);
           animation: v2-scram-glow 2s ease-in-out infinite;
         }
         @keyframes v2-scram-glow {
-          0%, 100% { box-shadow: 0 0 15px rgba(239,83,80,0.15); }
-          50% { box-shadow: 0 0 30px rgba(239,83,80,0.3); }
+          0%, 100% { box-shadow: var(--v2-glow-red); }
+          50% { box-shadow: var(--v2-glow-red-strong); }
         }
         .v2-scram-active-left { display: flex; align-items: center; gap: var(--v2-space-sm); }
         .v2-scram-level-text {
@@ -396,12 +492,12 @@ export default function Settings() {
           transition: all var(--v2-duration-fast); cursor: pointer; background: transparent;
         }
         .v2-scram-desc { font-size: 9px; font-weight: 400; color: var(--v2-text-muted); }
-        .v2-scram-elevated { color: var(--v2-accent-amber); border-color: rgba(255,171,0,0.3); }
-        .v2-scram-elevated:hover { background: rgba(255,171,0,0.06); box-shadow: 0 0 20px rgba(255,171,0,0.15); }
-        .v2-scram-crisis { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.3); }
-        .v2-scram-crisis:hover { background: rgba(239,83,80,0.06); box-shadow: 0 0 20px rgba(239,83,80,0.15); }
-        .v2-scram-emergency { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.4); }
-        .v2-scram-emergency:hover { background: rgba(239,83,80,0.08); box-shadow: 0 0 20px rgba(239,83,80,0.2); }
+        .v2-scram-elevated { color: var(--v2-accent-amber); border-color: var(--v2-tint-amber-strong); }
+        .v2-scram-elevated:hover { background: var(--v2-tint-amber); box-shadow: var(--v2-glow-amber); }
+        .v2-scram-crisis { color: var(--v2-accent-red); border-color: var(--v2-tint-red-strong); }
+        .v2-scram-crisis:hover { background: var(--v2-tint-red); box-shadow: var(--v2-glow-red); }
+        .v2-scram-emergency { color: var(--v2-accent-red); border-color: var(--v2-tint-red-strong); }
+        .v2-scram-emergency:hover { background: var(--v2-tint-red-strong); box-shadow: var(--v2-glow-red-strong); }
         .v2-scram-history { margin-top: var(--v2-space-sm); }
         .v2-scram-history-title {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 600;
@@ -442,7 +538,7 @@ export default function Settings() {
         }
         .v2-bootstrap-step.active .v2-bootstrap-dot {
           background: var(--v2-accent-cyan); border-color: var(--v2-accent-cyan);
-          box-shadow: 0 0 12px rgba(79,195,247,0.5);
+          box-shadow: var(--v2-glow-cyan-strong);
         }
         .v2-bootstrap-pulse {
           position: absolute; inset: -4px; border-radius: 50%;
@@ -464,7 +560,7 @@ export default function Settings() {
         .v2-bootstrap-progress-fill {
           height: 100%; background: var(--v2-accent-cyan);
           border-radius: 2px; transition: width 0.5s ease;
-          box-shadow: 0 0 8px rgba(79,195,247,0.4);
+          box-shadow: var(--v2-glow-cyan);
         }
 
         /* Readiness Gate */
@@ -473,21 +569,21 @@ export default function Settings() {
           display: flex; align-items: center; gap: var(--v2-space-sm);
           padding: var(--v2-space-md); border-radius: var(--v2-radius-sm);
         }
+        /* Readiness is a gate state, not profit/loss: cyan = passing, amber = blocked */
         .v2-readiness--pass {
-          background: rgba(102, 187, 106, 0.08);
-          border: 1px solid rgba(102, 187, 106, 0.25);
-          box-shadow: 0 0 20px rgba(102, 187, 106, 0.1);
+          background: var(--v2-tint-cyan);
+          border: 1px solid var(--v2-tint-cyan-strong);
         }
         .v2-readiness--fail {
-          background: rgba(239, 83, 80, 0.06);
-          border: 1px solid rgba(239, 83, 80, 0.2);
+          background: var(--v2-tint-amber);
+          border: 1px solid var(--v2-tint-amber-strong);
         }
         .v2-readiness-status {
           font-family: var(--v2-font-data); font-size: 12px;
           font-weight: 700; letter-spacing: 1.5px;
         }
-        .v2-readiness--pass .v2-readiness-status { color: var(--v2-accent-green); }
-        .v2-readiness--fail .v2-readiness-status { color: var(--v2-accent-red); }
+        .v2-readiness--pass .v2-readiness-status { color: var(--v2-accent-cyan); }
+        .v2-readiness--fail .v2-readiness-status { color: var(--v2-accent-amber); }
         .v2-readiness-checks { display: flex; flex-direction: column; gap: 2px; }
         .v2-readiness-row {
           display: flex; align-items: center; gap: var(--v2-space-sm);
@@ -495,12 +591,12 @@ export default function Settings() {
           border-radius: var(--v2-radius-sm);
         }
         .v2-readiness-row--pass { }
-        .v2-readiness-row--fail { background: rgba(239, 83, 80, 0.04); }
+        .v2-readiness-row--fail { background: var(--v2-tint-amber); }
         .v2-readiness-icon {
           font-size: 12px; width: 18px; text-align: center; flex-shrink: 0;
         }
-        .v2-readiness-row--pass .v2-readiness-icon { color: var(--v2-accent-green); }
-        .v2-readiness-row--fail .v2-readiness-icon { color: var(--v2-accent-red); }
+        .v2-readiness-row--pass .v2-readiness-icon { color: var(--v2-accent-cyan); }
+        .v2-readiness-row--fail .v2-readiness-icon { color: var(--v2-accent-amber); }
         .v2-readiness-label {
           font-size: 12px; color: var(--v2-text-secondary); flex: 1;
         }
@@ -509,8 +605,8 @@ export default function Settings() {
           font-family: var(--v2-font-data); font-size: 12px;
           font-variant-numeric: tabular-nums;
         }
-        .v2-readiness-row--pass .v2-readiness-current { color: var(--v2-accent-green); font-weight: 600; }
-        .v2-readiness-row--fail .v2-readiness-current { color: var(--v2-accent-red); font-weight: 600; }
+        .v2-readiness-row--pass .v2-readiness-current { color: var(--v2-accent-cyan); font-weight: 600; }
+        .v2-readiness-row--fail .v2-readiness-current { color: var(--v2-accent-amber); font-weight: 600; }
         .v2-readiness-sep { color: var(--v2-text-muted); }
         .v2-readiness-required { color: var(--v2-text-muted); font-size: 11px; }
         .v2-live-toggle {
@@ -531,7 +627,7 @@ export default function Settings() {
           font-weight: 700; letter-spacing: 1px;
           color: var(--v2-text-muted);
         }
-        .v2-live-toggle--on { color: var(--v2-accent-green); }
+        .v2-live-toggle--on { color: var(--v2-accent-amber); }
       `}</style>
     </div>
   );
@@ -572,15 +668,15 @@ function CorrelationMatrix({ correlations }) {
 
   function corrColor(val) {
     if (val === null) return 'var(--v2-text-muted)';
-    if (val >= 0.9) return 'var(--v2-accent-red)';
+    // Concentration risk, not profit/loss: amber (stronger when >= 0.9), neutral below 0.8
     if (val >= 0.8) return 'var(--v2-accent-amber)';
-    return 'var(--v2-accent-green)';
+    return 'var(--v2-text-secondary)';
   }
 
   function corrBg(val) {
     if (val === null) return 'transparent';
-    if (val >= 0.9) return 'rgba(239,83,80,0.08)';
-    if (val >= 0.8) return 'rgba(255,167,38,0.06)';
+    if (val >= 0.9) return 'var(--v2-tint-amber-strong)';
+    if (val >= 0.8) return 'var(--v2-tint-amber)';
     return 'transparent';
   }
 
@@ -623,9 +719,9 @@ function CorrelationMatrix({ correlations }) {
       <div className="v2-corr-meta">
         Updated: {computedAt}
         <span className="v2-corr-legend">
-          <span style={{ color: 'var(--v2-accent-green)' }}>&lt;0.8</span>
-          <span style={{ color: 'var(--v2-accent-amber)' }}>0.8-0.9</span>
-          <span style={{ color: 'var(--v2-accent-red)' }}>&gt;0.9</span>
+          <span style={{ color: 'var(--v2-text-secondary)' }}>&lt;0.8</span>
+          <span style={{ color: 'var(--v2-accent-amber)' }}>0.8{'–'}0.9</span>
+          <span style={{ color: 'var(--v2-accent-amber)', fontWeight: 700 }}>&gt;0.9</span>
         </span>
       </div>
       <style>{`

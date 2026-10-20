@@ -1,29 +1,31 @@
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@800&family=Instrument+Sans:wght@400;500;600&family=Outfit:wght@300;400;500&family=IBM+Plex+Mono:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500;600&display=swap');
 
 :root {
-  --void: #1b1d23;
-  --abyss: #1f2128;
-  --surface: #25272e;
-  --elevated: #2c2e36;
-  --raised: #33353e;
-  --shelf: #3a3d47;
+  /* Short tokens are ALIASES of the --v2-* theme tokens (styles/design-system.css),
+     so light/dark switch from a single palette. */
+  --void: var(--v2-bg-primary);
+  --abyss: var(--v2-bg-abyss);
+  --surface: var(--v2-bg-secondary);
+  --elevated: var(--v2-bg-tertiary);
+  --raised: var(--v2-bg-raised);
+  --shelf: var(--v2-bg-shelf);
 
-  --cyan: #4fc3f7;
-  --profit: #66bb6a;
-  --loss: #ef5350;
-  --warn: #ffa726;
-  --ai: #b39ddb;
+  --cyan: var(--v2-accent-cyan);
+  --profit: var(--v2-accent-green);
+  --loss: var(--v2-accent-red);
+  --warn: var(--v2-accent-amber);
+  --ai: var(--v2-accent-magenta);
 
-  --t1: #e8eaed;
-  --t2: #b0b3bc;
-  --t3: #7d8190;
-  --t4: #555868;
-  --t5: #3a3d4a;
+  --t1: var(--v2-text-primary);
+  --t2: var(--v2-text-secondary);
+  --t3: var(--v2-text-muted);
+  --t4: var(--v2-text-disabled);
+  --t5: var(--v2-text-ghost);
 
-  --border-0: rgba(255,255,255,0.04);
-  --border-1: rgba(255,255,255,0.07);
-  --border-2: rgba(255,255,255,0.10);
-  --border-3: rgba(255,255,255,0.15);
+  --border-0: var(--v2-border-faint);
+  --border-1: var(--v2-border);
+  --border-2: var(--v2-border-hover);
+  --border-3: var(--v2-border-active);
 
   --space-xs: 4px;
   --space-sm: 8px;
@@ -46,26 +48,12 @@
 
   --sidebar-width: 220px;
 
-  /* ── System accent colours ──────────────────────────────────────────────── */
-  --gc: #00e5ff;    /* GRID — execution layer (same as --cyan)                */
-  --cc: #f59e0b;    /* COMPASS — navigation layer                             */
-  --oc: #7c6af7;    /* ORACLE — intelligence layer                            */
-
-  /* System tinted backgrounds — for active system panels */
-  --gc-tint: rgba(0, 229, 255, 0.04);
-  --cc-tint: rgba(245, 158, 11, 0.04);
-  --oc-tint: rgba(124, 106, 247, 0.04);
-
-  /* System tinted borders — for active system switcher tabs */
-  --gc-border: rgba(0, 229, 255, 0.20);
-  --cc-border: rgba(245, 158, 11, 0.20);
-  --oc-border: rgba(124, 106, 247, 0.20);
+  /* System accents --gc/--cc/--oc (+ -tint/-border) are defined per theme in styles/design-system.css */
 
   /* ── Shell dimensions ───────────────────────────────────────────────────── */
   --shell-switcher-height: 48px;
   --shell-god-view-height: 72px;
   --shell-total-top: 120px;
-  --shell-drawer-width: 360px;
 
   /* ── Risk score colours ─────────────────────────────────────────────────── */
   --risk-low:  var(--profit);
@@ -111,10 +99,12 @@ input:focus, select:focus { border-color: var(--cyan); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 3px; }
 
-.num { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+.num, [data-number] { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+/* Numeric table cells and common data-class names always align digits */
+table, td, th, .bt-mono, .v2-mono, .v2-tbl-col, .bt-col, .v2-dt-col { font-variant-numeric: tabular-nums; }
 .cents { font-size: 80%; color: var(--t2); }
-.profit { color: var(--profit); }
-.loss { color: var(--loss); }
+.profit, .v2-profit { color: var(--profit); }
+.loss, .v2-loss { color: var(--loss); }
 
 .panel {
   background: var(--surface);
@@ -143,20 +133,20 @@ input:focus, select:focus { border-color: var(--cyan); }
   border-radius: var(--radius-sm);
   display: inline-block;
 }
-.badge-profit { color: var(--profit); background: rgba(102,187,106,0.10); }
-.badge-loss { color: var(--loss); background: rgba(239,83,80,0.10); }
-.badge-warn { color: var(--warn); background: rgba(255,167,38,0.10); }
-.badge-ai { color: var(--ai); background: rgba(179,157,219,0.10); }
-.badge-neutral { color: var(--t3); background: rgba(255,255,255,0.05); }
-.badge-cyan { color: var(--cyan); background: rgba(79,195,247,0.10); }
-.badge-draft { color: var(--t3); background: rgba(255,255,255,0.05); }
-.badge-testing { color: var(--ai); background: rgba(179,157,219,0.10); }
-.badge-active { color: var(--profit); background: rgba(102,187,106,0.10); }
-.badge-paused { color: var(--warn); background: rgba(255,167,38,0.10); }
-.badge-retired { color: var(--t4); background: rgba(255,255,255,0.03); }
-.badge-infant, .badge-learning { color: var(--warn); background: rgba(255,167,38,0.10); }
-.badge-maturing { color: var(--cyan); background: rgba(79,195,247,0.10); }
-.badge-graduated { color: var(--profit); background: rgba(102,187,106,0.10); }
+.badge-profit { color: var(--profit); background: var(--v2-tint-green); }
+.badge-loss { color: var(--loss); background: var(--v2-tint-red); }
+.badge-warn { color: var(--warn); background: var(--v2-tint-amber); }
+.badge-ai { color: var(--ai); background: var(--v2-tint-magenta); }
+.badge-neutral { color: var(--t3); background: var(--v2-fill-2); }
+.badge-cyan { color: var(--cyan); background: var(--v2-tint-cyan); }
+.badge-draft { color: var(--t3); background: var(--v2-fill-2); }
+.badge-testing { color: var(--ai); background: var(--v2-tint-magenta); }
+.badge-active { color: var(--profit); background: var(--v2-tint-green); }
+.badge-paused { color: var(--warn); background: var(--v2-tint-amber); }
+.badge-retired { color: var(--t4); background: var(--v2-fill-1); }
+.badge-infant, .badge-learning { color: var(--warn); background: var(--v2-tint-amber); }
+.badge-maturing { color: var(--cyan); background: var(--v2-tint-cyan); }
+.badge-graduated { color: var(--profit); background: var(--v2-tint-green); }
 
 .skeleton {
   background: linear-gradient(90deg, var(--surface) 25%, var(--elevated) 50%, var(--surface) 75%);
@@ -167,13 +157,18 @@ input:focus, select:focus { border-color: var(--cyan); }
 @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
 
-/* ── Responsive ── */
-@media (max-width: 768px) {
-  :root { --sidebar-width: 0px; --panel-padding: 12px; --panel-gap: 8px; }
-  .sidebar { transform: translateX(-100%); transition: transform var(--transition-normal); width: 220px; }
-  .sidebar.open { transform: translateX(0); }
+/* ── Responsive ──
+   JS (hooks/useIsMobile.js) swaps to the phone tree at <= 767px.
+   Between 768px and 1023px the desktop tree is used but the sidebar becomes an
+   off-canvas drawer opened from .mobile-header (the hamburger). >= 1024px: fixed sidebar. */
+@media (max-width: 767px) {
+  :root { --panel-padding: 12px; --panel-gap: 8px; }
+}
+@media (max-width: 1023px) {
+  :root { --sidebar-width: 0px; }
+  /* The off-canvas transform for .v2-sidebar lives in components/Sidebar.jsx next to its base rules */
   .sidebar-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    position: fixed; inset: 0; background: var(--v2-overlay);
     z-index: 9; display: none;
   }
   .sidebar-overlay.open { display: block; }
@@ -181,18 +176,21 @@ input:focus, select:focus { border-color: var(--cyan); }
     display: flex; align-items: center; gap: var(--space-md);
     padding: var(--space-md) var(--space-lg);
     background: var(--abyss); border-bottom: 1px solid var(--border-1);
-    position: sticky; top: 0; z-index: 8;
+    position: fixed; top: var(--shell-total-top); left: 0; right: 0; z-index: 8;
   }
+  /* Make room for the fixed compact header above the page content */
+  .app-main--grid { padding-top: calc(var(--v2-space-xl) + 56px) !important; }
   .hamburger {
-    font-size: 20px; color: var(--t2); padding: 4px;
+    font-size: 20px; color: var(--t2); padding: 4px 8px;
     cursor: pointer; background: none; border: none;
+    min-width: 44px; min-height: 44px;
   }
   .mobile-brand {
     font-family: 'Syne', sans-serif; font-weight: 800;
     font-size: 16px; letter-spacing: 6px; color: var(--cyan);
   }
 }
-@media (min-width: 769px) {
+@media (min-width: 1024px) {
   .mobile-header { display: none; }
   .sidebar-overlay { display: none !important; }
 }
@@ -201,4 +199,51 @@ input:focus, select:focus { border-color: var(--cyan); }
 @media (display-mode: standalone) {
   body { padding-top: env(safe-area-inset-top, 0px); }
   .mobile-header { padding-top: env(safe-area-inset-top, 0px); }
+}
+
+/* ── Accessibility baseline ── */
+:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline-offset: 0;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Shared state blocks (error / empty / splash) ── */
+.state-block {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-sm); padding: var(--space-xl); text-align: center;
+  color: var(--t3); font-size: 13px;
+}
+.state-block--error { color: var(--t2); }
+.state-block__title { color: var(--t1); font-weight: 500; }
+.state-block__detail { font-family: 'IBM Plex Mono', monospace; font-size: 12px; color: var(--t3); word-break: break-word; }
+.state-block__btn {
+  margin-top: var(--space-xs); padding: 6px 14px; border-radius: var(--radius-sm);
+  border: 1px solid var(--cyan); color: var(--cyan); font-size: 12px; font-weight: 500;
+}
+.state-block__btn:hover { background: var(--v2-tint-cyan); }
+.app-splash {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  background: var(--v2-bg-primary);
+  font-family: 'Syne', sans-serif; font-weight: 800; letter-spacing: 10px;
+  color: var(--cyan); font-size: 28px;
+}
+.stale-chip {
+  display: inline-block; font-family: 'IBM Plex Mono', monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 1px; padding: 1px 6px;
+  border-radius: var(--radius-sm); color: var(--warn); background: var(--v2-tint-amber);
 }

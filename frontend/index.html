@@ -3,24 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0a0b0e" />
+    <!-- Light is the default theme; src/lib/theme.js updates this tag when the theme changes -->
+    <meta name="theme-color" content="#f4f5f8" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="GRID" />
     <link rel="icon" type="image/svg+xml" href="/icons/grid-192.svg" />
-    <link rel="apple-touch-icon" href="/icons/grid-192.svg" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>GRID</title>
+    <script>
+      // Apply the saved theme before first paint (avoids a light flash for dark users).
+      // localStorage is used for this UI preference only; it can throw in private windows.
+      (function () {
+        try {
+          if (window.localStorage.getItem('grid-theme') === 'dark') {
+            document.documentElement.setAttribute('data-theme', 'dark');
+            var m = document.querySelector('meta[name="theme-color"]');
+            if (m) m.setAttribute('content', '#1b1d23');
+          }
+        } catch (err) {
+          console.warn('[theme] could not read saved theme', err);
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-    <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js');
-        });
-      }
-    </script>
   </body>
 </html>

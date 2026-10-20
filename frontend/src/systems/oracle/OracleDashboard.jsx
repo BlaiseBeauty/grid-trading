@@ -1,5 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../lib/api';
+import DetailPanel from '../../components/DetailPanel';
+import { ErrorState } from '../../components/StateBlock';
 
 export default function OracleDashboard() {
   const [theses,      setTheses]      = useState([]);
@@ -8,47 +10,78 @@ export default function OracleDashboard() {
   const [graveyard,   setGraveyard]   = useState([]);
   const [selected,    setSelected]    = useState(null);
   const [loading,     setLoading]     = useState(true);
+  const [error,       setError]       = useState(null);
+  const [actionError, setActionError] = useState(null);
   const [activeTab,   setActiveTab]   = useState('theses');
   const [calibration, setCalibration] = useState(null);
+  const [calError,    setCalError]    = useState(null);
   const [lastCycleAt, setLastCycleAt] = useState(null);
 
-  useEffect(() => { fetchAll(); }, []);
-
-  async function fetchAll() {
+  const fetchAll = useCallback(async () => {
     setLoading(true);
+    setError(null);
     try {
+      // Calibration is optional (the endpoint may not exist yet); its failure is shown on the
+      // calibration tab instead of failing the whole page.
       const [t, o, e, g, cal] = await Promise.all([
         api('/oracle/theses'),
         api('/oracle/opportunity-map'),
         api('/oracle/evidence?limit=30'),
         api('/oracle/graveyard'),
-        api('/oracle/calibration').catch(() => null),
+        api('/oracle/calibration').then(v => ({ ok: true, v }), err => ({ ok: false, err })),
       ]);
       setTheses(t?.theses || []);
       setOppMap(o?.map || null);
       setEvidence(e?.evidence || []);
       setGraveyard(g?.graveyard || []);
-      setCalibration(cal);
+      if (cal.ok) {
+        setCalibration(cal.v);
+        setCalError(null);
+      } else {
+        console.error('[ORACLE] calibration failed:', cal.err);
+        setCalError(cal.err?.message || 'Failed to load calibration');
+      }
       setLastCycleAt(t?.last_cycle_at || null);
+    } catch (err) {
+      console.error('[ORACLE] load failed:', err);
+      setError(err?.message || 'Failed to load ORACLE data');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  function runCycle() {
+    setActionError(null);
+    api('/oracle/cycle/run', { method: 'POST', body: JSON.stringify({}) })
+      .then(fetchAll)
+      .catch((err) => {
+        console.error('[ORACLE] run cycle failed:', err);
+        setActionError(`Could not start ORACLE cycle: ${err?.message || 'unknown error'}`);
+      });
   }
 
-  if (loading) return (
-    <div style={{ padding: 24, fontFamily: 'IBM Plex Mono', fontSize: 11, color: 'var(--t4)' }}>
+  const firstLoad = loading && theses.length === 0 && !error;
+  if (firstLoad) return (
+    <div role="status" style={{ padding: 24, fontFamily: 'IBM Plex Mono', fontSize: 11, color: 'var(--t3)' }}>
       Loading ORACLE data...
     </div>
   );
+  if (error && theses.length === 0 && !oppMap && evidence.length === 0) {
+    return <ErrorState error={error} onRetry={fetchAll} title="Could not load ORACLE data" />;
+  }
 
   return (
     <div style={{ padding: '24px', maxWidth: 1400, margin: '0 auto' }}>
+      {error && <ErrorState error={error} onRetry={fetchAll} title="Refresh failed — showing the last loaded data" />}
+      {actionError && <ErrorState error={actionError} title="Action failed" />}
 
       {/* Tab bar */}
       <div style={{ display: 'flex', gap: 0, marginBottom: 16,
         borderBottom: '1px solid var(--border-1)' }}>
         {['theses', 'calibration'].map(tab => (
-          <button key={tab} onClick={() => setActiveTab(tab)} style={{
+          <button type="button" key={tab} aria-pressed={activeTab === tab} onClick={() => setActiveTab(tab)} style={{
             padding: '8px 16px', background: 'transparent', border: 'none',
             borderBottom: activeTab === tab ? '2px solid var(--oc)' : '2px solid transparent',
             color: activeTab === tab ? 'var(--oc)' : 'var(--t3)',
@@ -62,12 +95,12 @@ export default function OracleDashboard() {
       </div>
 
       {activeTab === 'calibration' ? (
-        <CalibrationPanel calibration={calibration} />
+        <CalibrationPanel calibration={calibration} error={calError} onRetry={fetchAll} />
       ) : (
       <>
 
       {/* Top row: Thesis list + Opportunity Map */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(360px, 100%), 1fr))', gap: 12, marginBottom: 12 }}>
 
         {/* Active Theses */}
         <div style={panelStyle}>
@@ -76,7 +109,8 @@ export default function OracleDashboard() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {lastCycleAt && <LastRunBadge ts={lastCycleAt} />}
               <button
-                onClick={() => api('/oracle/cycle/run', { method: 'POST', body: JSON.stringify({}) }).then(fetchAll)}
+                type="button"
+                onClick={runCycle}
                 style={runButtonStyle}
               >
                 RUN CYCLE
@@ -107,7 +141,7 @@ export default function OracleDashboard() {
       </div>
 
       {/* Bottom row: Evidence + Graveyard */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(320px, 100%), 1fr))', gap: 12 }}>
 
         {/* Evidence Feed */}
         <div style={panelStyle}>
@@ -138,7 +172,7 @@ export default function OracleDashboard() {
 
       {/* Thesis detail side panel */}
       {selected && (
-        <ThesisDetailPanel thesis={selected} onClose={() => setSelected(null)} />
+        <ThesisDetailPanel thesis={selected} onClose={() => setSelected(null)} onRetired={fetchAll} />
       )}
       </>
       )}
@@ -155,7 +189,16 @@ function ThesisCard({ thesis, onClick }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open thesis ${thesis.name}`}
       onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick();
+        }
+      }}
       style={{
         padding: '10px 12px',
         background: 'var(--elevated)',
@@ -173,7 +216,7 @@ function ThesisCard({ thesis, onClick }) {
           {thesis.name}
         </span>
         <span style={{ fontFamily: 'IBM Plex Mono', fontWeight: 600, fontSize: 11, color: conviction >= 8 ? 'var(--profit)' : conviction >= 6 ? 'var(--warn)' : 'var(--t3)' }}>
-          {conviction.toFixed(1)}
+          {Number.isFinite(conviction) ? conviction.toFixed(1) : '—'}
         </span>
       </div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -197,7 +240,12 @@ function OppMapPanel({ map }) {
   let opps = map?.opportunities;
   if (!opps) return <EmptyState message="No opportunities ranked" />;
   if (typeof opps === 'string') {
-    try { opps = JSON.parse(opps); } catch { return <EmptyState message="No opportunities ranked" />; }
+    try {
+      opps = JSON.parse(opps);
+    } catch (err) {
+      console.warn('[ORACLE] opportunity map is not valid JSON:', err?.message || err);
+      return <ErrorState error="The opportunity map could not be parsed" title="Opportunity map unreadable" />;
+    }
   }
   if (!Array.isArray(opps) || opps.length === 0) return <EmptyState message="No opportunities ranked" />;
 
@@ -264,7 +312,7 @@ function EvidenceItem({ item }) {
           <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 8, color: 'var(--t4)' }}>
             {item.source_name}
           </span>
-          {item.relevance_score && (
+          {parseFloat(item.relevance_score) > 0 && (
             <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 8, color: 'var(--t4)' }}>
               rel {parseFloat(item.relevance_score).toFixed(1)}
             </span>
@@ -304,40 +352,49 @@ function GraveyardItem({ item }) {
 }
 
 // ── Thesis Detail Side Panel ──────────────────────────────────────────────────
-function ThesisDetailPanel({ thesis, onClose }) {
+// Opened thesis: shared DetailPanel (>= 680px on desktop, resizable, expandable, 100vw on phones)
+function ThesisDetailPanel({ thesis, onClose, onRetired }) {
   const [detail, setDetail] = useState(null);
+  const [detailError, setDetailError] = useState(null);
+  const [retiring, setRetiring] = useState(false);
+  const [retireError, setRetireError] = useState(null);
 
-  useEffect(() => {
+  const loadDetail = useCallback(() => {
+    setDetailError(null);
     api(`/oracle/theses/${thesis.thesis_id}`)
       .then(r => setDetail(r))
-      .catch(() => {});
+      .catch((err) => {
+        console.error('[ORACLE] thesis detail failed:', err);
+        setDetailError(err?.message || 'Failed to load thesis history');
+      });
   }, [thesis.thesis_id]);
+
+  useEffect(() => { loadDetail(); }, [loadDetail]);
+
+  async function retire() {
+    setRetiring(true);
+    setRetireError(null);
+    try {
+      await api(`/oracle/theses/${thesis.thesis_id}/retire`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: 'Manual retirement' }),
+      });
+      onRetired();
+      onClose();
+    } catch (err) {
+      console.error('[ORACLE] retire failed:', err);
+      setRetireError(err?.message || 'Could not retire thesis');
+    }
+    setRetiring(false);
+  }
 
   const dirColour = thesis.direction === 'bull' ? 'var(--profit)'
                   : thesis.direction === 'bear' ? 'var(--loss)'
                   : 'var(--t3)';
 
   return (
-    <>
-      <div onClick={onClose} style={{
-        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 900,
-      }} />
-      <div style={{
-        position: 'fixed', top: 'var(--shell-total-top)', right: 0, bottom: 0,
-        width: 400, background: 'var(--surface)',
-        borderLeft: '1px solid var(--border-2)',
-        zIndex: 901, overflowY: 'auto', padding: 20,
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-          <span style={{ fontFamily: 'IBM Plex Mono', fontSize: 9, color: 'var(--oc)', letterSpacing: '1px' }}>
-            ORACLE THESIS
-          </span>
-          <button onClick={onClose} style={{
-            background: 'transparent', border: 'none',
-            color: 'var(--t3)', cursor: 'pointer', fontSize: 14,
-          }}>✕</button>
-        </div>
-
+    <DetailPanel open onClose={onClose} title="ORACLE Thesis" ariaLabel={`Thesis: ${thesis.name}`} zIndex={1002}>
+      <div>
         <h2 style={{
           fontFamily: 'Instrument Sans', fontWeight: 600, fontSize: 16,
           color: 'var(--t1)', marginBottom: 8, lineHeight: 1.3,
@@ -349,8 +406,8 @@ function ThesisDetailPanel({ thesis, onClose }) {
           <Badge color={dirColour}>{thesis.direction?.toUpperCase()}</Badge>
           <Badge color="var(--ai)">{thesis.domain}</Badge>
           <Badge color="var(--t3)">{thesis.time_horizon}</Badge>
-          <Badge color={parseFloat(thesis.conviction) >= 8 ? 'var(--profit)' : 'var(--warn)'}>
-            {parseFloat(thesis.conviction).toFixed(1)}/10
+          <Badge color={parseFloat(thesis.conviction) >= 8 ? 'var(--cyan)' : 'var(--warn)'}>
+            {Number.isFinite(parseFloat(thesis.conviction)) ? `${parseFloat(thesis.conviction).toFixed(1)}/10` : '—'}
           </Badge>
         </div>
 
@@ -370,6 +427,7 @@ function ThesisDetailPanel({ thesis, onClose }) {
           </DetailSection>
         )}
 
+        {detailError && <ErrorState error={detailError} onRetry={loadDetail} title="Could not load conviction history" />}
         {detail?.conviction_history?.length > 0 && (
           <div style={{ marginTop: 16 }}>
             <div style={{ fontFamily: 'Instrument Sans', fontWeight: 600, fontSize: 11, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 8 }}>
@@ -388,31 +446,30 @@ function ThesisDetailPanel({ thesis, onClose }) {
           </div>
         )}
 
+        {retireError && <ErrorState error={retireError} title="Could not retire thesis" />}
         <button
-          onClick={() => {
-            api(`/oracle/theses/${thesis.thesis_id}/retire`, {
-              method: 'POST',
-              body: JSON.stringify({ reason: 'Manual retirement' }),
-            });
-            onClose();
-          }}
+          type="button"
+          onClick={retire}
+          disabled={retiring}
           style={{
             marginTop: 24, width: '100%',
             background: 'transparent', border: '1px solid var(--border-2)',
             color: 'var(--t3)', cursor: 'pointer', padding: '8px 16px',
             borderRadius: 4, fontFamily: 'IBM Plex Mono', fontSize: 9,
             letterSpacing: '1px', textTransform: 'uppercase',
+            opacity: retiring ? 0.5 : 1,
           }}
         >
-          RETIRE THESIS
+          {retiring ? 'RETIRING…' : 'RETIRE THESIS'}
         </button>
       </div>
-    </>
+    </DetailPanel>
   );
 }
 
 // ── Calibration Panel ────────────────────────────────────────────────────────
-function CalibrationPanel({ calibration }) {
+function CalibrationPanel({ calibration, error, onRetry }) {
+  if (error && !calibration) return <ErrorState error={error} onRetry={onRetry} title="Could not load calibration" />;
   if (!calibration) return <EmptyState message="No calibration data yet. Run Graveyard Auditor to generate." />;
 
   const { multipliers, stats, learnings } = calibration;
@@ -431,7 +488,8 @@ function CalibrationPanel({ calibration }) {
         }}>
           {domains.map(domain => {
             const stat = stats?.find(s => s.domain === domain);
-            const mult = multipliers?.[domain] || 1.0;
+            const parsedMult = parseFloat(multipliers?.[domain]);
+            const mult = Number.isFinite(parsedMult) ? parsedMult : 1.0;
             const acc  = stat ? parseFloat(stat.directional_accuracy || 0) : null;
 
             const multColour = mult > 1.0 ? 'var(--profit)'
@@ -466,7 +524,7 @@ function CalibrationPanel({ calibration }) {
                   fontFamily: 'IBM Plex Mono', fontSize: 10,
                   color: multColour,
                 }}>
-                  \u00d7{mult.toFixed(2)} conviction mult.
+                  {'\u00d7'}{mult.toFixed(2)} conviction mult.
                 </div>
                 {stat && (
                   <div style={{
@@ -542,8 +600,8 @@ function AccuracyBadge({ trades, wins }) {
         fontFamily: 'IBM Plex Mono', fontSize: 8,
         color: colour, letterSpacing: '0.5px',
         padding: '2px 5px', borderRadius: 3,
-        border: `1px solid ${colour}33`,
-        background: `${colour}11`,
+        border: `1px solid color-mix(in srgb, ${colour} 20%, transparent)`,
+        background: `color-mix(in srgb, ${colour} 7%, transparent)`,
       }}>
         {label}
       </span>
@@ -585,7 +643,7 @@ const panelStyle = {
 
 const runButtonStyle = {
   background: 'transparent',
-  border: '1px solid var(--oc-border, rgba(124,106,247,0.2))',
+  border: '1px solid var(--oc-border)',
   color: 'var(--oc)', cursor: 'pointer',
   padding: '4px 10px', borderRadius: 4,
   fontFamily: 'IBM Plex Mono', fontSize: 9,
@@ -611,8 +669,8 @@ function Badge({ color, children }) {
       fontSize: 9, letterSpacing: '1px',
       color, textTransform: 'uppercase',
       padding: '2px 6px', borderRadius: 3,
-      border: `1px solid ${color}33`,
-      background: `${color}11`,
+      border: `1px solid color-mix(in srgb, ${color} 20%, transparent)`,
+      background: `color-mix(in srgb, ${color} 7%, transparent)`,
     }}>
       {children}
     </span>

@@ -4,12 +4,13 @@
  */
 
 const BaseAgent = require('../base-agent');
+const { MODELS } = require('../../../../shared/models');
 const { queryAll, queryOne } = require('../../../../db/connection');
 const learningsDb = require('../../../../db/queries/learnings');
 
 class PerformanceAnalystAgent extends BaseAgent {
   constructor() {
-    super({ name: 'performance_analyst', layer: 'analysis', model: 'claude-sonnet-4-6', costTier: 'grid_performance' });
+    super({ name: 'performance_analyst', layer: 'analysis', model: MODELS.grid_analysis, costTier: 'grid_performance' });
   }
 
   /**
@@ -382,7 +383,7 @@ class PerformanceAnalystAgent extends BaseAgent {
     console.warn('[PERFORMANCE_ANALYST] parseOutput fell back to empty — raw output length:', text?.length);
     console.warn('[PERFORMANCE_ANALYST] raw output START:', text?.slice(0, 500));
     console.warn('[PERFORMANCE_ANALYST] raw output END:', text?.slice(-500));
-    return { learnings: [], invalidations: [], signals: [], overallConfidence: null };
+    return { learnings: [], invalidations: [], signals: [], overallConfidence: null, parse_error: 'no parseable JSON in output' };
   }
 }
 

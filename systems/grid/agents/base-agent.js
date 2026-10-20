@@ -1,28 +1,21 @@
 /**
  * Base Agent — shared logic for all agents.
- * Handles: context building, Claude API calls, signal storage, cost tracking.
+ * Handles: context building, Claude API calls (via shared/llm-client), signal storage.
+ * Cost recording happens exactly once, inside shared/llm-client -> aiCosts.recordUsage.
  *
  * Supports centralized prompts (config/agent-prompts.js) and context builders
  * (agents/context-builders.js) with fallback to subclass methods.
  */
 
-const Anthropic = require('@anthropic-ai/sdk');
 const decisionsDb = require('../../../db/queries/decisions');
 const signalsDb = require('../../../db/queries/signals');
-const costsDb = require('../../../db/queries/costs');
 const learningsDb = require('../../../db/queries/learnings');
 const AGENT_PROMPTS = require('../config/agent-prompts');
 const { CONTEXT_BUILDERS } = require('./context-builders');
 const logger = require('../../../services/logger');
 const aiCosts = require('../../../shared/ai-costs');
-
-const client = new Anthropic();
-
-// Model pricing (per 1M tokens) — used for local cost calculation
-const PRICING = {
-  'claude-sonnet-4-6': { input: 3.0, output: 15.0 },
-  'claude-opus-4-6': { input: 15.0, output: 75.0 },
-};
+const llm = require('../../../shared/llm-client');
+const { MODELS } = require('../../../shared/models');
 
 // Map agent names to prompt/context keys
 const AGENT_NAME_TO_PROMPT_KEY = {
@@ -43,7 +36,7 @@ const AGENT_NAME_TO_PROMPT_KEY = {
 };
 
 class BaseAgent {
-  constructor({ name, layer = 'knowledge', model = 'claude-sonnet-4-6', costTier = 'grid_knowledge' }) {
+  constructor({ name, layer = 'knowledge', model = MODELS.grid_knowledge, costTier = 'grid_knowledge' }) {
     this.name = name;
     this.layer = layer;
     this.model = model;
@@ -51,11 +44,17 @@ class BaseAgent {
     this.promptKey = AGENT_NAME_TO_PROMPT_KEY[name] || name;
   }
 
+  /** Log prefix carrying the cycle correlation id, e.g. "[TREND c142]". */
+  _tag(cycleNumber) {
+    return `[${this.name.toUpperCase()}${cycleNumber != null ? ` c${cycleNumber}` : ''}]`;
+  }
+
   /**
    * Run the agent: build context → call Claude → parse signals → store everything.
    */
   async run({ symbols, indicators, marketData, cycleNumber, ...extraContext }) {
     const start = Date.now();
+    const tag = this._tag(cycleNumber);
 
     // Resolve system prompt: centralized → subclass fallback
     const centralizedPrompt = AGENT_PROMPTS[this.promptKey];
@@ -84,7 +83,7 @@ class BaseAgent {
           ...extraContext,
         });
       } catch (ctxErr) {
-        console.warn(`[${this.name.toUpperCase()}] Context builder failed, falling back to subclass:`, ctxErr.message);
+        logger.warn(`${tag} Context builder failed, falling back to subclass`, { err: ctxErr, cycle_id: cycleNumber, agent_name: this.name, error_type: 'context_builder' });
         const userPrompt = this.buildUserPrompt({ symbols, indicators, marketData });
         const memories = await this.getMemoryInjection(symbols || []);
         fullUserPrompt = memories
@@ -103,7 +102,6 @@ class BaseAgent {
     let decision;
     let inputTokens = 0, outputTokens = 0, costUsd = 0;
     try {
-      // Call Claude with retry on rate limit (streaming for long requests)
       // Phase-aware token budgets — reduce output during INFANT/LEARNING to cut costs
       const bootstrapPhase = extraContext?.bootstrapPhase || 'infant';
       const isEarlyPhase = bootstrapPhase === 'infant' || bootstrapPhase === 'learning';
@@ -113,78 +111,56 @@ class BaseAgent {
       } else if (this.layer === 'knowledge') {
         rawMaxTokens = isEarlyPhase ? 1024 : 2048; // phase-gated for Layer 1 agents
       } else {
-        rawMaxTokens = 8192; // strategy/analysis agents — unchanged
+        rawMaxTokens = 8192; // strategy/analysis agents — clamped to tier max_output
       }
       const maxTokens = aiCosts.clampMaxTokens(this.costTier, rawMaxTokens);
-      let response;
-      let outputText = '';
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const stream = await client.messages.stream({
-            model: this.model,
-            max_tokens: maxTokens,
-            system: systemPrompt,
-            messages: [{ role: 'user', content: fullUserPrompt }],
-          });
-          const finalMessage = await stream.finalMessage();
-          response = finalMessage;
-          break;
-        } catch (apiErr) {
-          const isOverloaded = apiErr.status === 529 || apiErr.error?.type === 'overloaded_error';
-          const retryable = apiErr.status === 429 || isOverloaded || apiErr.status === 500 || apiErr.status === 502 || apiErr.status === 503;
-          if (retryable && attempt < 2) {
-            const wait = (apiErr.status === 429 || isOverloaded) ? (attempt + 1) * 15000 : (attempt + 1) * 5000;
-            if (isOverloaded) console.log(`[${this.name.toUpperCase()}] Anthropic overloaded, retrying in ${wait/1000}s...`);
-            else console.log(`[${this.name.toUpperCase()}] API error ${apiErr.status}, retrying in ${wait/1000}s...`);
-            await new Promise(r => setTimeout(r, wait));
-          } else {
-            throw apiErr;
-          }
-        }
-      }
+      const retryOnTruncate = this.promptKey === 'strategySynthesizer' || this.promptKey === 'riskManager';
 
-      outputText = response.content[0]?.text || '';
-      inputTokens = response.usage?.input_tokens || 0;
-      outputTokens = response.usage?.output_tokens || 0;
+      // Budget gate (daily $), input-token budget, retry w/ jitter, timeout and cost recording
+      // all happen inside llm.callClaude. Throws BudgetExceededError / API errors.
+      const result = await llm.callClaude({
+        source: 'grid',
+        agentName: this.name,
+        cycleId: Number.isInteger(cycleNumber) ? cycleNumber : null,
+        model: this.model,
+        costTier: this.costTier,
+        system: systemPrompt,
+        user: fullUserPrompt,
+        maxTokens,
+        retryOnTruncate,
+        compressOnTruncate: retryOnTruncate ? (p) => this._compressSignals(p, tag) : undefined,
+      });
 
-      // Retry once with higher max_tokens if truncated (synthesizer or risk manager)
-      if (response.stop_reason === 'max_tokens' && (this.promptKey === 'strategySynthesizer' || this.promptKey === 'riskManager')) {
-        console.warn(`[${this.name.toUpperCase()}] Response truncated at ${outputTokens} tokens — retrying with extended limit and compressed context`);
-        try {
-          // Compress context: reduce signals to top 5 by confidence
-          let retryPrompt = fullUserPrompt;
-          try {
-            const signalsMatch = fullUserPrompt.match(/"active_signals"\s*:\s*\[[\s\S]*?\]/);
-            if (signalsMatch) {
-              const signalsArr = JSON.parse(signalsMatch[0].replace('"active_signals":', '').trim());
-              const top5 = signalsArr
-                .sort((a, b) => (b.decayed_strength || b.strength || 0) - (a.decayed_strength || a.strength || 0))
-                .slice(0, 5);
-              retryPrompt = fullUserPrompt.replace(signalsMatch[0], `"active_signals":${JSON.stringify(top5)}`);
-              console.log(`[${this.name.toUpperCase()}] Compressed signals from ${signalsArr.length} to ${top5.length} for retry`);
-            }
-          } catch { /* use full prompt if compression fails */ }
-
-          const retryStream = await client.messages.stream({
-            model: this.model,
-            max_tokens: Math.min(64000, maxTokens * 2),
-            system: systemPrompt,
-            messages: [{ role: 'user', content: retryPrompt }],
-          });
-          const retryResponse = await retryStream.finalMessage();
-          outputText = retryResponse.content[0]?.text || outputText;
-          inputTokens += retryResponse.usage?.input_tokens || 0;
-          outputTokens += retryResponse.usage?.output_tokens || 0;
-        } catch (retryErr) {
-          console.warn(`[${this.name.toUpperCase()}] Truncation retry failed:`, retryErr.message);
-        }
-      }
-
-      costUsd = this.calculateCost(inputTokens, outputTokens);
+      const outputText = result.text;
+      inputTokens = result.inputTokens;
+      outputTokens = result.outputTokens;
+      costUsd = result.costUsd;
       const durationMs = Date.now() - start;
 
       // Parse signals from response
       const parsed = this.parseOutput(outputText, symbols);
+
+      // Total parse failure must look like a FAILED agent, not a quiet market with zero signals.
+      // Raw text is still stored (reasoning) for diagnosis.
+      if (parsed && parsed.parse_error) {
+        const errMsg = `parse_failed: ${parsed.parse_error}`;
+        logger.error(`${tag} Output could not be parsed — marking agent failed`, { cycle_id: cycleNumber, agent_name: this.name, error_type: 'parse_failed', output_chars: outputText.length });
+        decision = await decisionsDb.create({
+          agent_name: this.name,
+          agent_layer: this.layer,
+          cycle_number: cycleNumber,
+          model_used: this.model,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cost_usd: costUsd,
+          reasoning: outputText,
+          confidence_score: null,
+          output_json: parsed,
+          duration_ms: durationMs,
+          error: errMsg,
+        });
+        return decision;
+      }
 
       // Store decision
       decision = await decisionsDb.create({
@@ -209,7 +185,7 @@ class BaseAgent {
         // Require symbol — default to first symbol if only one tracked
         const sym = signal.symbol || (symbolNames.length === 1 ? symbolNames[0] : null);
         if (!sym || !signal.signal_type || !signal.direction) {
-          console.warn(`[${this.name.toUpperCase()}] Skipping signal missing required fields: symbol=${signal.symbol}, type=${signal.signal_type}`);
+          console.warn(`${tag} Skipping signal missing required fields: symbol=${signal.symbol}, type=${signal.signal_type}`);
           continue;
         }
         try {
@@ -238,34 +214,14 @@ class BaseAgent {
           });
           storedCount++;
         } catch (sigErr) {
-          console.warn(`[${this.name.toUpperCase()}] Failed to store signal ${signal.signal_type} for ${sym}:`, sigErr.message);
+          console.warn(`${tag} Failed to store signal ${signal.signal_type} for ${sym}:`, sigErr.message);
         }
       }
 
-      // Track cost (legacy table)
-      await costsDb.record({
-        service: 'anthropic',
-        agent_name: this.name,
-        model: this.model,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        cost_usd: costUsd,
-        cycle_number: cycleNumber,
-      });
-
-      // Record to platform_ai_costs (unified cross-system tracking)
-      aiCosts.recordUsage({
-        source_system: 'grid',
-        agent_name: this.name,
-        model: this.model,
-        cycle_id: cycleNumber || null,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-      }).catch(err => console.error('[AI-COSTS] recordUsage failed:', err.message));
-
-      console.log(`[${this.name.toUpperCase()}] Completed in ${durationMs}ms — ${storedCount}/${parsed.signals?.length || 0} signals stored, $${costUsd.toFixed(4)}`);
+      console.log(`${tag} Completed in ${durationMs}ms — ${storedCount}/${parsed.signals?.length || 0} signals stored, $${costUsd.toFixed(4)}`);
 
     } catch (err) {
+      const isBudget = err instanceof aiCosts.BudgetExceededError || err instanceof aiCosts.InputBudgetExceededError;
       try {
         decision = await decisionsDb.create({
           agent_name: this.name,
@@ -279,15 +235,36 @@ class BaseAgent {
           confidence_score: null,
           output_json: null,
           duration_ms: Date.now() - start,
-          error: err.message,
+          error: isBudget ? `${err.code}: ${err.message}` : err.message,
         });
       } catch (dbErr) {
-        console.error(`[${this.name.toUpperCase()}] Failed to store decision:`, dbErr.message, dbErr.stack);
+        console.error(`${tag} Failed to store decision:`, dbErr.message, dbErr.stack);
       }
-      console.error(`[${this.name.toUpperCase()}] Error:`, err.message);
+      if (isBudget) console.warn(`${tag} Skipped — ${err.message}`);
+      else console.error(`${tag} Error:`, err.message);
     }
 
     return decision;
+  }
+
+  /**
+   * Compress a synthesizer/risk prompt for the truncation retry: keep the top 5 active
+   * signals by strength. Returns the original prompt if the pattern is not found.
+   */
+  _compressSignals(prompt, tag = '') {
+    try {
+      const signalsMatch = prompt.match(/"active_signals"\s*:\s*\[[\s\S]*?\]/);
+      if (!signalsMatch) return prompt;
+      const signalsArr = JSON.parse(signalsMatch[0].replace('"active_signals":', '').trim());
+      const top5 = signalsArr
+        .sort((a, b) => (b.decayed_strength || b.strength || 0) - (a.decayed_strength || a.strength || 0))
+        .slice(0, 5);
+      console.log(`${tag} Compressed signals from ${signalsArr.length} to ${top5.length} for retry`);
+      return prompt.replace(signalsMatch[0], `"active_signals":${JSON.stringify(top5)}`);
+    } catch (err) {
+      logger.debug('Signal compression failed, using full prompt', { err, agent_name: this.name, error_type: 'compress' });
+      return prompt;
+    }
   }
 
   /**
@@ -307,66 +284,25 @@ class BaseAgent {
   }
 
   /**
-   * Override in subclass: parse Claude's response into structured signals.
+   * Parse Claude's response into structured output. Override in subclass for custom shapes.
+   * On TOTAL failure returns { signals: [], overallConfidence: null, parse_error } — run()
+   * treats parse_error as a failed agent instead of an empty (quiet-market) signal set.
    */
   parseOutput(text, symbols) {
-    // Default: try to parse JSON from the response
-    try {
-      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-      if (jsonMatch) return JSON.parse(jsonMatch[1]);
+    const res = llm.extractJson(text, { arrayKeys: ['signals', 'actions'] });
+    if (res.ok && !res.recovered) return res.value;
 
-      // Try parsing entire response as JSON
-      const trimmed = text.trim();
-      if (trimmed.startsWith('{')) return JSON.parse(trimmed);
-    } catch (err) {
-      logger.debug('JSON parse failed, attempting truncation recovery', { err, agent_name: this.name, error_type: 'json_parse' });
+    if (res.ok && res.recovered) {
+      const arrayKey = res.value.signals ? 'signals' : 'actions';
+      console.log(`[${this.name.toUpperCase()}] Recovered ${res.value[arrayKey].length} ${arrayKey} from truncated JSON`);
+      const result = { overallConfidence: null };
+      result[arrayKey] = res.value[arrayKey];
+      if (arrayKey !== 'signals') result.signals = [];
+      return result;
     }
 
-    // Truncated JSON recovery: extract individual objects from signals or actions array
-    try {
-      let signalsStart = text.indexOf('"signals"');
-      let arrayKey = 'signals';
-      // Synthesizer uses "actions" instead of "signals"
-      if (signalsStart === -1) {
-        signalsStart = text.indexOf('"actions"');
-        arrayKey = 'actions';
-      }
-      if (signalsStart === -1) return { signals: [], overallConfidence: null };
-
-      const arrayStart = text.indexOf('[', signalsStart);
-      if (arrayStart === -1) return { signals: [], overallConfidence: null };
-
-      // Find each complete {...} object in the signals array
-      const signals = [];
-      let depth = 0, objStart = -1;
-      for (let i = arrayStart + 1; i < text.length; i++) {
-        if (text[i] === '{' && depth === 0) { objStart = i; depth = 1; }
-        else if (text[i] === '{') depth++;
-        else if (text[i] === '}') {
-          depth--;
-          if (depth === 0 && objStart >= 0) {
-            try {
-              signals.push(JSON.parse(text.substring(objStart, i + 1)));
-            } catch (err) {
-              logger.debug('Skipped malformed signal object in recovery', { err, agent_name: this.name, error_type: 'json_recovery' });
-            }
-            objStart = -1;
-          }
-        }
-      }
-
-      if (signals.length > 0) {
-        console.log(`[${this.name.toUpperCase()}] Recovered ${signals.length} ${arrayKey} from truncated JSON`);
-        const result = { overallConfidence: null };
-        result[arrayKey] = signals;
-        if (arrayKey !== 'signals') result.signals = [];
-        return result;
-      }
-    } catch (err) {
-      logger.warn('Truncated JSON recovery failed', { err, agent_name: this.name, error_type: 'json_recovery' });
-    }
-
-    return { signals: [], overallConfidence: null };
+    logger.error('JSON parse and truncation recovery both failed', { agent_name: this.name, error_type: 'json_parse', err: res.error });
+    return { signals: [], overallConfidence: null, parse_error: res.error || 'unparseable output' };
   }
 
   /**
@@ -393,8 +329,7 @@ class BaseAgent {
   }
 
   calculateCost(inputTokens, outputTokens) {
-    const pricing = PRICING[this.model] || PRICING['claude-sonnet-4-6'];
-    return (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+    return aiCosts.calculateCost(this.model, inputTokens, outputTokens);
   }
 }
 

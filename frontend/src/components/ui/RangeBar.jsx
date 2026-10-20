@@ -37,7 +37,7 @@ export default function RangeBar({ current, low, high, side = 'buy' }) {
           className="v2-range-fill"
           style={{
             width: `${position}%`,
-            background: `linear-gradient(90deg, ${leftColor}33, ${rightColor}33)`,
+            background: `linear-gradient(90deg, color-mix(in srgb, ${leftColor} 20%, transparent), color-mix(in srgb, ${rightColor} 20%, transparent))`,
           }}
         />
         <div

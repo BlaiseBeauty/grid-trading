@@ -10,6 +10,11 @@
 
 const { queryAll, queryOne } = require('../../../db/connection');
 const { getRelevantMemory } = require('./memory-injection');
+const bus = require('../../../shared/intelligence-bus');
+const { trackedPairs } = require('../../../config/symbols');
+
+// Primary tracked pair (first in config/symbols.js) — used as the market-wide reference asset.
+const PRIMARY_PAIR = trackedPairs()[0];
 const {
   getCurrentRegime, getPortfolioState, getActiveSignals,
   getRecentTrades, getUpcomingEvents, getScramState,
@@ -415,7 +420,7 @@ async function buildMacroContext(trigger) {
   // Cross-asset price data
   // M-2: SPY/GLD/DXY may not be populated — inject clear message if empty
   const crossAsset = {};
-  const MACRO_ASSETS = ['BTC/USDT', 'SPY', 'GLD', 'DXY'];
+  const MACRO_ASSETS = [PRIMARY_PAIR, 'SPY', 'GLD', 'DXY'];
   const missingMacro = [];
   for (const sym of MACRO_ASSETS) {
     crossAsset[sym] = await queryAll(`
@@ -424,7 +429,7 @@ async function buildMacroContext(trigger) {
         AND timestamp > NOW() - INTERVAL '45 days'
       ORDER BY timestamp DESC LIMIT ${CONTEXT_LIMITS.MAX_CANDLES_RAW}
     `, [sym]);
-    if (crossAsset[sym].length === 0 && sym !== 'BTC/USDT') {
+    if (crossAsset[sym].length === 0 && sym !== PRIMARY_PAIR) {
       missingMacro.push(sym);
     }
   }
@@ -712,9 +717,10 @@ async function buildSynthesizerContext(trigger) {
   // ── COMPASS state injection (reads from intelligence bus) ─────────────────
   let compassState = null;
   try {
+    // Through the bus API (never raw cross-system SQL)
     const [compassRiskRow, compassPostureRow] = await Promise.all([
-      queryOne(`SELECT payload FROM intelligence_bus WHERE source_system = 'compass' AND event_type = 'portfolio_risk_state' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1`),
-      queryOne(`SELECT payload FROM intelligence_bus WHERE source_system = 'compass' AND event_type = 'allocation_guidance' AND (expires_at IS NULL OR expires_at > NOW()) ORDER BY created_at DESC LIMIT 1`),
+      bus.getRiskState(),
+      bus.getLatestAllocationGuidance(),
     ]);
     if (compassRiskRow || compassPostureRow) {
       compassState = {
@@ -729,7 +735,6 @@ async function buildSynthesizerContext(trigger) {
   // ── Oracle thesis injection (reads from intelligence bus) ────────────────
   let oracleThesisContext = null;
   try {
-    const bus = require('../../../shared/intelligence-bus');
     const signalSymbols = [...new Set(signals.map(s => s.symbol))];
     const allTheses = [];
     for (const sym of signalSymbols) {
@@ -927,7 +932,7 @@ async function buildRiskManagerContext(trigger) {
 
 async function buildRegimeContext(trigger) {
   // 30-day price data for key assets (daily candles)
-  const assets = ['BTC/USDT', 'ETH/USDT', 'SPY', 'DXY', 'GLD'];
+  const assets = [...trackedPairs().slice(0, 2), 'SPY', 'DXY', 'GLD'];
   const priceData = {};
   for (const sym of assets) {
     priceData[sym] = await queryAll(`
@@ -940,7 +945,7 @@ async function buildRegimeContext(trigger) {
 
   // Recent intraday data (1h candles, last 24h) for crypto assets
   // This ensures the classifier sees current-day moves, not just yesterday's close
-  const cryptoAssets = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
+  const cryptoAssets = trackedPairs();
   const intradayData = {};
   for (const sym of cryptoAssets) {
     const candles = await queryAll(`
@@ -966,9 +971,9 @@ async function buildRegimeContext(trigger) {
   // Volatility metrics
   const volatility = await queryOne(`
     SELECT data FROM external_data_cache
-    WHERE source = 'indicators' AND metric = 'volatility' AND symbol = 'BTC/USDT'
+    WHERE source = 'indicators' AND metric = 'volatility' AND symbol = $1
     ORDER BY fetched_at DESC LIMIT 1
-  `);
+  `, [PRIMARY_PAIR]);
 
   // MVRV from Glassnode
   const mvrv = await getExternalData('glassnode', ['mvrv_zscore', 'nupl']);
@@ -992,19 +997,15 @@ async function buildRegimeContext(trigger) {
   // Oracle macro regime context (if available)
   let oracleMacroRegime = null;
   try {
-    const oracleRegime = await queryOne(
-      `SELECT payload FROM intelligence_bus
-       WHERE event_type = 'macro_regime_update'
-         AND source_system = 'oracle'
-         AND (expires_at IS NULL OR expires_at > NOW())
-       ORDER BY created_at DESC LIMIT 1`
-    );
+    const oracleRegime = await bus.getLatestEvent('oracle', 'macro_regime_update');
     if (oracleRegime?.payload) {
       oracleMacroRegime = typeof oracleRegime.payload === 'string'
         ? JSON.parse(oracleRegime.payload)
         : oracleRegime.payload;
     }
-  } catch {}
+  } catch (err) {
+    console.warn('[REGIME] Failed to fetch ORACLE macro regime (non-critical):', err.message);
+  }
 
   const context = formatUserMessage({
     section1_market_data: {

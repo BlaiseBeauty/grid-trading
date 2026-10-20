@@ -1,6 +1,8 @@
 'use strict';
 
 const OracleBaseAgent = require('./base-agent');
+const { MODELS } = require('../../../shared/models');
+const { validatePostmortem, sanitizeExternal, wrapUntrusted, UNTRUSTED_INSTRUCTION } = require('./validation');
 const { queryAll, queryOne, query } = require('../../../db/connection');
 const { getTradeLinksForThesis, getThesisTradeStats } = require('../../../shared/thesis-linker');
 
@@ -58,8 +60,9 @@ async function runGraveyardAuditor() {
   const agent = new OracleBaseAgent({
     name:     'oracle-graveyard-auditor',
     domain:   'graveyard',
-    model:    'claude-opus-4-5',
+    model:    MODELS.oracle_auditor,
     costTier: 'oracle_graveyard',
+    cycleId:  Math.floor(Date.now() / 1000),
   });
 
   const learnings = [];
@@ -97,32 +100,38 @@ async function runGraveyardAuditor() {
           ).join(' | ')}`
         : `Conviction held at ${thesis.conviction} throughout`;
 
+      // Thesis text was LLM-written from external feeds: sanitise + delimit it.
       const userPrompt = `
 THESIS TO AUDIT:
-ID: ${thesis.thesis_id}
-Name: ${thesis.name}
-Domain: ${thesis.domain}
-Direction: ${thesis.direction}
-Conviction at open: ${thesis.conviction}/10
-Time horizon: ${thesis.time_horizon}
-Hold time: ${holdDays !== null ? `${holdDays} days` : 'unknown'}
-
-Original thesis: ${thesis.summary}
-Catalyst: ${thesis.catalyst || 'not specified'}
-Invalidation: ${thesis.invalidation || 'not specified'}
+${wrapUntrusted('thesis', [
+        `ID: ${sanitizeExternal(thesis.thesis_id, 60)}`,
+        `Name: ${sanitizeExternal(thesis.name, 120)}`,
+        `Domain: ${sanitizeExternal(thesis.domain, 30)}`,
+        `Direction: ${sanitizeExternal(thesis.direction, 10)}`,
+        `Conviction at open: ${Number(thesis.conviction)}/10`,
+        `Time horizon: ${sanitizeExternal(thesis.time_horizon, 20)}`,
+        `Hold time: ${holdDays !== null ? `${holdDays} days` : 'unknown'}`,
+        `Original thesis: ${sanitizeExternal(thesis.summary, 800)}`,
+        `Catalyst: ${sanitizeExternal(thesis.catalyst || 'not specified', 400)}`,
+        `Invalidation: ${sanitizeExternal(thesis.invalidation || 'not specified', 400)}`,
+      ])}
 
 ${convContext}
 ${tradeContext}
 
 Write the post-mortem. Return ONLY valid JSON.`;
 
-      const raw      = await agent.callClaude(AUDITOR_SYSTEM_PROMPT, userPrompt);
-      const postMortem = agent.parseThesis(raw); // reuse JSON parser
+      const raw = await agent.callClaude(`${AUDITOR_SYSTEM_PROMPT}\n\n${UNTRUSTED_INSTRUCTION}`, userPrompt);
+      // NOTE: previously reused parseThesis(), which requires thesis-only fields (name, conviction,
+      // time_horizon...) a post-mortem never has — so every audit failed. Dedicated validation now.
+      const obj = agent.parseJsonObject(raw);
+      const checked = obj ? validatePostmortem(obj) : { ok: false, error: 'unparseable JSON' };
 
-      if (!postMortem) {
-        console.error(`[GRAVEYARD] Failed to parse post-mortem for ${thesis.thesis_id}`);
+      if (!checked.ok) {
+        console.error(`[GRAVEYARD] Failed to parse/validate post-mortem for ${thesis.thesis_id}: ${checked.error}`);
         continue;
       }
+      const postMortem = checked.postmortem;
 
       // Save to graveyard table
       const graveyardResult = await query(
@@ -181,7 +190,7 @@ Write the post-mortem. Return ONLY valid JSON.`;
 
       // Rate limit between audits
       if (toAudit.indexOf(thesis) < toAudit.length - 1) {
-        await new Promise(r => setTimeout(r, 3000));
+        await new Promise(r => setTimeout(r, parseInt(process.env.GRAVEYARD_DELAY_MS || '3000', 10)));
       }
 
     } catch (err) {

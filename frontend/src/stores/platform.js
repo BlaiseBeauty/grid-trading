@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-const usePlatformStore = create((set, get) => ({
+const usePlatformStore = create((set) => ({
 
   // ── Active system ──────────────────────────────────────────────────────
   // 'grid' | 'compass' | 'oracle' | 'platform'
@@ -29,6 +29,12 @@ const usePlatformStore = create((set, get) => ({
   setPlatformHealth: (health) => set({ platformHealth: health }),
   lastHealthFetch: null,
   setLastHealthFetch: (ts) => set({ lastHealthFetch: ts }),
+
+  // ── God View refresh trigger ──────────────────────────────────────────
+  // Bump to make God View refetch now (e.g. after thesis/allocation bus events).
+  // Previously the WS handler blanked the strip data, which looked like "confirmed empty".
+  godViewTick: 0,
+  refreshGodView: () => set(state => ({ godViewTick: state.godViewTick + 1 })),
 
   // ── ORACLE strip data (for God View) ─────────────────────────────────
   oracleTheses: [],

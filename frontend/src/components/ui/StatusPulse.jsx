@@ -7,8 +7,9 @@
  *   label   (string, optional) — text label beside the dot
  */
 
+// 'active' is a live/ok status, not profit, so it uses the UI cyan (green is reserved for profit/loss)
 const STATUS_COLORS = {
-  active: 'var(--v2-accent-green)',
+  active: 'var(--v2-accent-cyan)',
   warning: 'var(--v2-accent-amber)',
   error: 'var(--v2-accent-red)',
   idle: 'var(--v2-text-muted)',
@@ -21,6 +22,9 @@ export default function StatusPulse({ status = 'idle', size = 8, label }) {
   return (
     <span className="v2-status-pulse">
       <span
+        role={label ? undefined : 'img'}
+        aria-label={label ? undefined : `status: ${status}`}
+        aria-hidden={label ? 'true' : undefined}
         className={`v2-status-dot ${shouldPulse ? 'v2-status-dot--pulsing' : ''}`}
         style={{
           width: size,

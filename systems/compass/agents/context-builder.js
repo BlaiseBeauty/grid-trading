@@ -2,6 +2,7 @@
 
 const { queryAll, queryOne } = require('../../../db/connection');
 const bus = require('../../../shared/intelligence-bus');
+const portfolioRead = require('../../../shared/portfolio-read');
 
 /**
  * Build full context for COMPASS agents.
@@ -18,7 +19,10 @@ async function buildCompassContext() {
     latestRisk,
   ] = await Promise.all([
     // ORACLE theses (via bus)
-    bus.getAllActiveTheses().catch(() => []),
+    bus.getAllActiveTheses().catch((err) => {
+      console.warn('[COMPASS-CTX] ORACLE theses unavailable:', err.message);
+      return [];
+    }),
 
     // Latest COMPASS allocation (for continuity — what did we say last cycle?)
     queryOne(
@@ -27,24 +31,22 @@ async function buildCompassContext() {
     ).catch(() => null),
 
     // Latest GRID performance digest (via bus)
-    bus.getLatestPerformanceDigest().catch(() => null),
+    bus.getLatestPerformanceDigest().catch((err) => {
+      console.warn('[COMPASS-CTX] performance digest unavailable:', err.message);
+      return null;
+    }),
 
-    // Current open positions (from portfolio_state — actual schema)
-    queryAll(
-      `SELECT symbol, quantity, avg_entry_price, current_price,
-              unrealised_pnl, unrealised_pnl_pct,
-              ROUND(quantity * current_price, 2) AS market_value
-       FROM portfolio_state
-       WHERE quantity > 0
-       ORDER BY quantity * current_price DESC`
-    ).catch(() => []),
+    // Current open positions — via shared read helper (no raw cross-system SQL against GRID tables)
+    portfolioRead.getOpenPositions().catch((err) => {
+      console.warn('[COMPASS-CTX] open positions unavailable:', err.message);
+      return [];
+    }),
 
-    // Recent trade performance (last 20 closed trades — actual schema)
-    queryAll(
-      `SELECT symbol, side, pnl_realised, pnl_pct, close_reason, closed_at
-       FROM trades WHERE status = 'closed'
-       ORDER BY closed_at DESC LIMIT 20`
-    ).catch(() => []),
+    // Recent trade performance (last 20 closed trades)
+    portfolioRead.getRecentClosedTrades(20).catch((err) => {
+      console.warn('[COMPASS-CTX] recent trades unavailable:', err.message);
+      return [];
+    }),
 
     // Latest risk assessment
     queryOne(

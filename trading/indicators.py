@@ -6,6 +6,12 @@ Computes indicators needed by the 8 knowledge agents.
 import numpy as np
 import pandas as pd
 
+import indicator_core as core
+
+# Closed candles required before the SMA(200) etc. are meaningful. Callers
+# should fetch at least this many (plus one forming candle).
+MIN_CANDLES_FULL = 250
+
 
 def compute_indicators(df):
     """Compute a comprehensive set of indicators and return as dict."""
@@ -41,11 +47,7 @@ def compute_indicators(df):
     results['macd_histogram'] = _last(macd_line - macd_signal)
 
     # Stochastic
-    low14 = l.rolling(14).min()
-    high14 = h.rolling(14).max()
-    stoch_denom = (high14 - low14).replace(0, np.nan)
-    stoch_k = 100 * (c - low14) / stoch_denom
-    stoch_d = stoch_k.rolling(3).mean()
+    stoch_k, stoch_d = core.stochastic(h, l, c, 14, 3)
     results['stoch_k'] = _last(stoch_k)
     results['stoch_d'] = _last(stoch_d)
 
@@ -68,15 +70,12 @@ def compute_indicators(df):
 
     # --- Volatility ---
     # Bollinger Bands
-    sma20 = c.rolling(20).mean()
-    std20 = c.rolling(20).std()
-    results['bb_upper'] = _last(sma20 + 2 * std20)
-    results['bb_mid'] = _last(sma20)
-    results['bb_lower'] = _last(sma20 - 2 * std20)
-    bb_width = (sma20 + 2 * std20 - (sma20 - 2 * std20)) / sma20
-    results['bb_bandwidth'] = _last(bb_width)
-    bb_pct = (c - (sma20 - 2 * std20)) / (4 * std20)
-    results['bb_pct'] = _last(bb_pct)
+    bb_mid, bb_up, bb_lo, bb_width, bb_pct = core.bollinger(c, 20, 2.0)
+    results['bb_upper'] = _last(bb_up)
+    results['bb_mid'] = _last(bb_mid)
+    results['bb_lower'] = _last(bb_lo)
+    results['bb_bandwidth'] = _last(bb_width)   # ratio (upper-lower)/mid
+    results['bb_pct'] = _last(bb_pct)           # %B in 0..1 (can exceed)
 
     # ATR
     atr = _atr(h, l, c, 14)
@@ -97,8 +96,28 @@ def compute_indicators(df):
     else:
         results['volume_ratio'] = None
 
-    # Current price
+    # Current price (last CLOSED candle's close — callers drop the forming candle)
     results['current_price'] = float(c.iloc[-1])
+
+    # Enforce minimum history per indicator: anything computed on too few
+    # closed candles is withheld (None -> key dropped) instead of reported
+    # as if it were converged/valid.
+    n = len(df)
+    groups = {
+        'sma_20': ['sma_20'], 'sma_50': ['sma_50'], 'sma_200': ['sma_200'],
+        'ema_12': ['ema_12'], 'ema_26': ['ema_26'],
+        'rsi_14': ['rsi_14'], 'atr_14': ['atr_14'],
+        'adx': ['adx', 'dmp', 'dmn'],
+        'macd': ['macd', 'macd_signal', 'macd_histogram'],
+        'stoch': ['stoch_k', 'stoch_d'], 'cci': ['cci'], 'willr': ['willr'],
+        'roc': ['roc'], 'mfi': ['mfi'],
+        'bb': ['bb_upper', 'bb_mid', 'bb_lower', 'bb_bandwidth', 'bb_pct'],
+        'volume_sma_20': ['volume_sma_20', 'volume_ratio'],
+    }
+    for name, keys in groups.items():
+        if n < core.WARMUP_BARS.get(name, 0):
+            for k in keys:
+                results[k] = None
 
     # Clean
     return {k: round(v, 8) if isinstance(v, float) else v
@@ -116,26 +135,13 @@ def _rsi(series, period=14):
 
 
 def _atr(high, low, close, period=14):
-    tr1 = high - low
-    tr2 = abs(high - close.shift(1))
-    tr3 = abs(low - close.shift(1))
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+    """ATR with Wilder smoothing (shared with the backtester)."""
+    return core.atr(high, low, close, period)
 
 
 def _adx(high, low, close, period=14):
-    up = high.diff()
-    down = -low.diff()
-    plus_dm = np.where((up > down) & (up > 0), up, 0)
-    minus_dm = np.where((down > up) & (down > 0), down, 0)
-
-    atr = _atr(high, low, close, period)
-    plus_di = 100 * pd.Series(plus_dm).rolling(period).mean() / atr
-    minus_di = 100 * pd.Series(minus_dm).rolling(period).mean() / atr
-    di_sum = (plus_di + minus_di).replace(0, np.nan)
-    dx = 100 * abs(plus_di - minus_di) / di_sum
-    adx = dx.rolling(period).mean()
-
+    """ADX / +DI / -DI with Wilder smoothing (shared with the backtester)."""
+    plus_di, minus_di, adx = core.adx_components(high, low, close, period)
     return {
         'adx': _last(adx),
         'dmp': _last(plus_di),

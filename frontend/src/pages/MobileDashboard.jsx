@@ -1,10 +1,12 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, memo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '../stores/data';
+import useDashboardData, { priceKey } from '../hooks/useDashboardData';
 import {
   TickingNumber, GlowCard, StatusPulse, SignalBadge,
   ProgressRing, CountdownTimer, RangeBar,
 } from '../components/ui';
-import { timeAgo, formatPrice } from '../lib/format';
+import { timeAgo, formatPrice, fmtSignedPct } from '../lib/format';
 
 const MARKET_SYMBOLS = [
   { key: 'BTC-USDT', label: 'BTC' },
@@ -29,24 +31,35 @@ function getSignalForSymbol(signals, symbol) {
 }
 
 // ── Position Card ──
-function MobilePositionCard({ trade, prices, expanded, onToggle }) {
-  const priceKey = trade.symbol.replace('/', '-');
-  const currentPrice = prices[priceKey]?.price;
+const MobilePositionCard = memo(function MobilePositionCard({ trade, currentPrice, expanded, onToggle }) {
+  const symbolKey = priceKey(trade.symbol) || '';
   const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
   const qty = parseFloat(trade.quantity || 0);
   const side = trade.side || 'buy';
-  const pnlRaw = currentPrice && entry
+  const pnlRaw = currentPrice > 0 && entry > 0
     ? (side === 'buy' ? (currentPrice - entry) : (entry - currentPrice)) * qty
     : null;
-  const pnlPct = entry && qty ? ((pnlRaw || 0) / (entry * qty)) * 100 : 0;
+  const pnlPct = pnlRaw != null && entry > 0 && qty > 0 ? (pnlRaw / (entry * qty)) * 100 : null;
   const sl = parseFloat(trade.sl_price) || 0;
   const tp = parseFloat(trade.tp_price) || 0;
 
   return (
-    <div className="mob-position-card" onClick={onToggle}>
+    <div
+      className="mob-position-card"
+      role="button"
+      tabIndex={0}
+      aria-expanded={expanded}
+      onClick={onToggle}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onToggle();
+        }
+      }}
+    >
       <div className="mob-position-header">
         <div className="mob-position-left">
-          <span className="mob-position-symbol">{priceKey.replace('-USDT', '')}</span>
+          <span className="mob-position-symbol">{symbolKey.replace('-USDT', '')}</span>
           <span className={`mob-side-badge mob-side-${side}`}>
             {side === 'buy' ? 'LONG' : 'SHORT'}
           </span>
@@ -55,9 +68,11 @@ function MobilePositionCard({ trade, prices, expanded, onToggle }) {
           {pnlRaw != null && (
             <TickingNumber value={pnlRaw} format="money" decimals={2} />
           )}
-          <span className={`mob-pnl-pct ${pnlPct >= 0 ? 'profit' : 'loss'}`}>
-            {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
-          </span>
+          {pnlPct != null && (
+            <span className={`mob-pnl-pct num ${pnlPct >= 0 ? 'profit' : 'loss'}`}>
+              {fmtSignedPct(pnlPct)}
+            </span>
+          )}
         </div>
       </div>
 
@@ -69,7 +84,7 @@ function MobilePositionCard({ trade, prices, expanded, onToggle }) {
           </div>
           <div className="mob-detail-row">
             <span className="mob-detail-label">Current</span>
-            <span className="num">{currentPrice ? formatPrice(currentPrice) : '—'}</span>
+            <span className="num">{currentPrice > 0 ? formatPrice(currentPrice) : '—'}</span>
           </div>
           <div className="mob-detail-row">
             <span className="mob-detail-label">Qty</span>
@@ -93,37 +108,35 @@ function MobilePositionCard({ trade, prices, expanded, onToggle }) {
       )}
     </div>
   );
-}
+});
 
 // ── Main Component ──
 export default function MobileDashboard() {
+  // Fetch + price polling + live P&L live in one shared hook (also used by Dashboard.jsx)
   const {
     portfolioValue, realisedPnl, tradeStats,
-    prices, openTrades, signals, feed, lastCycle,
-    system, cycleStatus,
-    fetchPortfolio, fetchTrades, fetchSignals, fetchSystem, fetchPrices,
-    triggerCycle, refreshData,
-  } = useDataStore();
+    prices, openTrades, resources, pnl, priceStatus, reload, retry,
+  } = useDashboardData();
+  const { signals, feed, lastCycle, system, cycleStatus, triggerCycle, refreshData } = useDataStore(useShallow(s => ({
+    signals: s.signals,
+    feed: s.feed,
+    lastCycle: s.lastCycle,
+    system: s.system,
+    cycleStatus: s.cycleStatus,
+    triggerCycle: s.triggerCycle,
+    refreshData: s.refreshData,
+  })));
 
   const [expandedTrade, setExpandedTrade] = useState(null);
   const [nextCycle] = useState(getNextCycleTime);
   const [cycleLoading, setCycleLoading] = useState(false);
+  const [actionError, setActionError] = useState(null);
 
   // Pull-to-refresh state
   const [pullDistance, setPullDistance] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const touchStartY = useRef(0);
   const containerRef = useRef(null);
-
-  useEffect(() => {
-    fetchPortfolio();
-    fetchTrades();
-    fetchSignals();
-    fetchSystem();
-    fetchPrices();
-    const priceInterval = setInterval(fetchPrices, 30_000);
-    return () => clearInterval(priceInterval);
-  }, []);
 
   // Pull-to-refresh handlers
   const onTouchStart = useCallback((e) => {
@@ -145,32 +158,39 @@ export default function MobileDashboard() {
     if (pullDistance >= 80) {
       setRefreshing(true);
       setPullDistance(80);
-      await Promise.all([
-        fetchPortfolio(), fetchTrades(), fetchSignals(),
-        fetchSystem(), fetchPrices(),
-      ]);
+      await reload();
       setRefreshing(false);
     }
     setPullDistance(0);
-  }, [pullDistance, fetchPortfolio, fetchTrades, fetchSignals, fetchSystem, fetchPrices]);
+  }, [pullDistance, reload]);
 
   const handleCycle = async () => {
     setCycleLoading(true);
-    try { await triggerCycle(); } catch {}
+    setActionError(null);
+    try {
+      await triggerCycle();
+    } catch (err) {
+      setActionError(`Could not start cycle: ${err?.message || 'unknown error'}`);
+    }
     setCycleLoading(false);
   };
 
   const handleRefresh = async () => {
-    try { await refreshData(); } catch {}
-    fetchPortfolio();
-    fetchTrades();
-    fetchSignals();
-    fetchPrices();
+    setActionError(null);
+    try {
+      await refreshData();
+    } catch (err) {
+      setActionError(`Refresh failed: ${err?.message || 'unknown error'}`);
+    }
+    reload();
   };
 
-  const closedCount = parseInt(tradeStats?.total_closed || 0);
-  const winRate = closedCount > 0 ? parseFloat(tradeStats?.win_rate || 0) : null;
-  const totalTrades = tradeStats?.total_trades ?? 0;
+  const { winRate } = pnl;
+  const heroValue = pnl.livePortfolioValue ?? portfolioValue;
+  const totalTrades = tradeStats?.total_trades ?? null;
+  const failed = ['portfolio', 'trades', 'system', 'signals']
+    .filter(k => resources[k]?.error)
+    .map(k => ({ key: k, message: resources[k].error }));
   const feedItems = (feed || []).slice(0, 5);
 
   const isRunning = cycleStatus?.running;
@@ -197,12 +217,28 @@ export default function MobileDashboard() {
       <section className="mob-hero">
         <div className="mob-hero-label">Portfolio Value</div>
         <div className="mob-hero-value">
-          <TickingNumber value={portfolioValue} format="money" decimals={2} colorize={false} flash={false} />
+          {heroValue != null
+            ? <TickingNumber value={heroValue} format="money" decimals={2} colorize={false} flash={false} />
+            : <span title="Portfolio not loaded">{'—'}</span>}
         </div>
         <div className="mob-hero-pnl">
-          <TickingNumber value={realisedPnl} format="money" decimals={2} prefix="" />
+          {realisedPnl != null
+            ? <TickingNumber value={realisedPnl} format="money" decimals={2} prefix="" />
+            : <span>{'—'}</span>}
           <span className="mob-hero-pnl-label">realised</span>
         </div>
+        {priceStatus.label && <span className="stale-chip" role="status">{priceStatus.label}</span>}
+        {(failed.length > 0 || actionError) && (
+          <div className="state-block state-block--error" role="alert" style={{ padding: '8px 0' }}>
+            {actionError && <span>{actionError}</span>}
+            {failed.map(f => (
+              <span key={f.key}>
+                {f.key} failed to load{' '}
+                <button type="button" className="state-block__btn" onClick={() => retry(f.key)}>Retry</button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className="mob-hero-ring">
           <ProgressRing
             value={winRate ?? 0}
@@ -211,7 +247,7 @@ export default function MobileDashboard() {
             color={winRate != null && winRate >= 50 ? 'var(--v2-accent-green)' : 'var(--v2-accent-amber)'}
             label={winRate === null ? '--' : undefined}
           />
-          <span className="mob-hero-ring-label">{totalTrades} trades</span>
+          <span className="mob-hero-ring-label">{totalTrades != null ? `${totalTrades} trades` : '—'}</span>
         </div>
       </section>
 
@@ -224,13 +260,15 @@ export default function MobileDashboard() {
             <GlowCard key={key} className="mob-price-card" padding="12px">
               <div className="mob-price-symbol">{label}</div>
               <div className="mob-price-value">
-                <TickingNumber
-                  value={p?.price || 0}
-                  format="money"
-                  decimals={p?.price >= 1000 ? 2 : p?.price >= 1 ? 4 : 6}
-                  colorize={false}
-                  flash
-                />
+                {p ? (
+                  <TickingNumber
+                    value={p.price}
+                    format="money"
+                    decimals={p.price >= 1000 ? 2 : p.price >= 1 ? 4 : 6}
+                    colorize={false}
+                    flash
+                  />
+                ) : <span>{'—'}</span>}
               </div>
               <div className="mob-price-change">
                 {p?.change24h != null && (
@@ -255,7 +293,7 @@ export default function MobileDashboard() {
             <MobilePositionCard
               key={trade.id}
               trade={trade}
-              prices={prices}
+              currentPrice={prices[priceKey(trade.symbol)]?.price}
               expanded={expandedTrade === trade.id}
               onToggle={() => setExpandedTrade(expandedTrade === trade.id ? null : trade.id)}
             />
@@ -311,11 +349,11 @@ export default function MobileDashboard() {
         <div className="mob-system-row">
           <StatusPulse status="active" label="Node" />
           <StatusPulse
-            status={system?.python_engine ? 'active' : 'error'}
+            status={!system ? 'idle' : system.python_engine ? 'active' : 'error'}
             label="Python"
           />
           <StatusPulse
-            status={system?.database ? 'active' : 'error'}
+            status={!system ? 'idle' : system.database ? 'active' : 'error'}
             label="Postgres"
           />
         </div>

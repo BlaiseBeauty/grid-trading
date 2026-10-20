@@ -1,5 +1,6 @@
 // Platform Health API — system health, bus stats, AI costs
 const { queryAll, queryOne } = require('../../db/connection');
+const { effectiveStatus } = require('../../shared/system-health');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -37,7 +38,7 @@ async function routes(fastify) {
     ]);
 
     return {
-      systems: systemHealth,
+      systems: systemHealth.map(row => ({ ...row, effective_status: effectiveStatus(row) })),
       intelligence_bus: busStats || { grid_events: 0, compass_events: 0, oracle_events: 0, total_events: 0 },
       ai_costs_24h: aiCosts,
       timestamp: Date.now(),

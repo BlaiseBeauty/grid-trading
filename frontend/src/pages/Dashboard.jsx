@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, memo } from 'react';
 import { useDataStore } from '../stores/data';
+import useDashboardData, { priceKey } from '../hooks/useDashboardData';
 import {
   TickingNumber, GlowCard, StatusPulse, SignalBadge,
   ProgressRing, Sparkline, CountdownTimer, RangeBar,
@@ -10,7 +11,8 @@ import AgentFeed from '../components/AgentFeed';
 import CycleReport from '../components/CycleReport';
 import TradeDetail from '../components/TradeDetail';
 import EventCalendar from '../components/EventCalendar';
-import { timeAgo } from '../lib/format';
+import { timeAgo, fmtMoney } from '../lib/format';
+import { ErrorState, LoadingState } from '../components/StateBlock';
 
 // Next cycle calculation (4h intervals aligned to 00:00 UTC)
 function getNextCycleTime() {
@@ -30,57 +32,22 @@ const MARKET_SYMBOLS = [
 ];
 
 export default function Dashboard() {
-  const fetchPortfolio = useDataStore(s => s.fetchPortfolio);
-  const fetchAgents = useDataStore(s => s.fetchAgents);
-  const fetchSignals = useDataStore(s => s.fetchSignals);
-  const fetchTrades = useDataStore(s => s.fetchTrades);
-  const fetchSystem = useDataStore(s => s.fetchSystem);
-  const fetchPrices = useDataStore(s => s.fetchPrices);
-  const fetchEquity = useDataStore(s => s.fetchEquity);
+  const {
+    prices, openTrades, resources, pnl, priceStatus, reload, retry,
+  } = useDashboardData({ agents: true, equity: true });
   const refreshData = useDataStore(s => s.refreshData);
-  const signals = useDataStore(s => s.signals);
   const regime = useDataStore(s => s.regime);
-  const openTrades = useDataStore(s => s.openTrades);
   const lastCycle = useDataStore(s => s.lastCycle);
   const system = useDataStore(s => s.system);
-  const prices = useDataStore(s => s.prices);
-  const realisedPnl = useDataStore(s => s.realisedPnl);
-  const startingCapital = useDataStore(s => s.startingCapital);
-  const tradeStats = useDataStore(s => s.tradeStats);
   const costs = useDataStore(s => s.costs);
   const equity = useDataStore(s => s.equity);
   const tradeFlash = useDataStore(s => s.tradeFlash);
   const setTradeFlash = useDataStore(s => s.setTradeFlash);
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [nextCycle] = useState(getNextCycleTime);
-  const [priceHistory, setPriceHistory] = useState({});
+  const [refreshError, setRefreshError] = useState(null);
 
-  useEffect(() => {
-    fetchPortfolio();
-    fetchAgents();
-    fetchSignals();
-    fetchTrades();
-    fetchSystem();
-    fetchEquity();
-    fetchPrices();
-    const priceInterval = setInterval(fetchPrices, 30_000);
-    return () => clearInterval(priceInterval);
-  }, []);
-
-  // Build sparkline data from price updates
-  useEffect(() => {
-    setPriceHistory(prev => {
-      const next = { ...prev };
-      for (const sym of MARKET_SYMBOLS) {
-        const p = prices[sym.key]?.price;
-        if (p) {
-          const arr = next[sym.key] || [];
-          next[sym.key] = [...arr, p].slice(-24);
-        }
-      }
-      return next;
-    });
-  }, [prices]);
+  const { winRate, total: totalPnl, livePortfolioValue } = pnl;
 
   // Clear trade flash after animation
   useEffect(() => {
@@ -88,15 +55,17 @@ export default function Dashboard() {
       const timer = setTimeout(() => setTradeFlash(false), 800);
       return () => clearTimeout(timer);
     }
-  }, [tradeFlash]);
+    return undefined;
+  }, [tradeFlash, setTradeFlash]);
 
   // Track previous trade IDs for slide-in animation
   const prevTradeIdsRef = useRef(null);
   if (prevTradeIdsRef.current === null) {
     prevTradeIdsRef.current = new Set((openTrades || []).map(t => t.id));
   }
-  const newTradeIds = new Set(
-    (openTrades || []).filter(t => !prevTradeIdsRef.current.has(t.id)).map(t => t.id)
+  const newTradeIds = useMemo(
+    () => new Set((openTrades || []).filter(t => !prevTradeIdsRef.current.has(t.id)).map(t => t.id)),
+    [openTrades]
   );
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -105,19 +74,22 @@ export default function Dashboard() {
     return () => clearTimeout(timer);
   }, [openTrades]);
 
-  // Compute live P&L
-  const liveUnrealisedPnl = (openTrades || []).reduce((sum, t) => {
-    const entry = parseFloat(t.actual_fill_price || t.entry_price);
-    const qty = parseFloat(t.quantity);
-    const curPrice = prices[t.symbol.replace('/', '-')]?.price;
-    if (!curPrice) return sum;
-    return sum + (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty);
-  }, 0);
-  const totalPnl = realisedPnl + liveUnrealisedPnl;
-  const livePortfolioValue = startingCapital + realisedPnl + liveUnrealisedPnl;
-  const closedCount = parseInt(tradeStats?.total_closed || 0);
-  const winRate = closedCount > 0 ? parseFloat(tradeStats?.win_rate || 0) : null;
   const totalCost = costs?.total_spend ? parseFloat(costs.total_spend) : 0;
+
+  const handleRefresh = async () => {
+    setRefreshError(null);
+    try {
+      await refreshData();
+    } catch (err) {
+      setRefreshError(err?.message || 'Refresh failed');
+    }
+    reload();
+  };
+
+  // Any failed core resource, shown as a banner with Retry (empty must mean confirmed-empty)
+  const failed = ['portfolio', 'trades', 'system', 'agents', 'equity']
+    .filter(k => resources[k]?.error)
+    .map(k => ({ key: k, message: resources[k].error }));
 
   return (
     <div className="v2-dashboard">
@@ -125,21 +97,38 @@ export default function Dashboard() {
       <div className="v2-header v2-animate-in">
         <h1 className="v2-title">COMMAND CENTRE</h1>
         <div className="v2-header-actions">
-          <button className="v2-btn" onClick={() => refreshData().catch(() => {})}>
+          {priceStatus.label && <span className="stale-chip" role="status">{priceStatus.label}</span>}
+          <button className="v2-btn" onClick={handleRefresh}>
             Refresh
           </button>
         </div>
       </div>
 
+      {(failed.length > 0 || refreshError) && (
+        <div className="state-block state-block--error" role="alert" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, padding: '8px 12px' }}>
+          {refreshError && <span>Refresh failed: {refreshError}</span>}
+          {failed.map(f => (
+            <span key={f.key}>
+              {f.key} failed to load ({f.message}){' '}
+              <button type="button" className="state-block__btn" onClick={() => retry(f.key)}>Retry</button>
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* ── KPI Strip ── */}
       <div className="v2-kpi-strip">
         <GlowCard className="v2-kpi v2-animate-in v2-stagger-1">
           <div className="v2-kpi-label">Portfolio Value</div>
-          <TickingNumber value={livePortfolioValue} format="money" decimals={2} colorize={false} />
+          {livePortfolioValue != null
+            ? <TickingNumber value={livePortfolioValue} format="money" decimals={2} colorize={false} />
+            : <span className="v2-muted" title="Portfolio not loaded">{'—'}</span>}
         </GlowCard>
-        <GlowCard className="v2-kpi v2-animate-in v2-stagger-2" glowColor={totalPnl >= 0 ? 'green' : 'red'}>
+        <GlowCard className="v2-kpi v2-animate-in v2-stagger-2" glowColor={totalPnl != null && totalPnl < 0 ? 'red' : 'green'}>
           <div className="v2-kpi-label">Total P&L</div>
-          <TickingNumber value={totalPnl} format="money" decimals={2} />
+          {totalPnl != null
+            ? <TickingNumber value={totalPnl} format="money" decimals={2} />
+            : <span className="v2-muted" title="Portfolio not loaded">{'—'}</span>}
         </GlowCard>
         <GlowCard className="v2-kpi v2-kpi--ring v2-animate-in v2-stagger-3">
           <div className="v2-kpi-label">Win Rate</div>
@@ -168,47 +157,21 @@ export default function Dashboard() {
 
       {/* ── Market Row ── */}
       <div className="v2-market-row">
-        {MARKET_SYMBOLS.map((sym, i) => {
-          const p = prices[sym.key];
-          const change = p?.change24h || 0;
-          const sparkData = priceHistory[sym.key] || [];
-          return (
-            <GlowCard
-              key={sym.key}
-              className={`v2-market-card v2-animate-in v2-stagger-${i + 1}`}
-              glowColor={change >= 0 ? 'green' : 'red'}
-            >
-              <div className="v2-market-top">
-                <div>
-                  <span className="v2-market-symbol">{sym.label}</span>
-                  <span className="v2-market-full">{sym.full}</span>
-                </div>
-                <StatusPulse status={p ? 'active' : 'idle'} size={6} />
-              </div>
-              <div className="v2-market-price">
-                <TickingNumber value={p?.price || 0} format="money" decimals={sym.label === 'SOL' ? 2 : 2} colorize={false} />
-              </div>
-              <div className="v2-market-bottom">
-                <SignalBadge direction={change >= 0.5 ? 'bullish' : change <= -0.5 ? 'bearish' : 'neutral'} />
-                <TickingNumber value={change} format="pct" decimals={2} />
-                <Sparkline
-                  data={sparkData}
-                  width={72}
-                  height={20}
-                  color={change >= 0 ? 'var(--v2-accent-green)' : 'var(--v2-accent-red)'}
-                  filled
-                />
-              </div>
-            </GlowCard>
-          );
-        })}
+        {MARKET_SYMBOLS.map((sym, i) => (
+          <MarketCard key={sym.key} sym={sym} index={i} price={prices[sym.key]} />
+        ))}
       </div>
 
       {/* ── Charts ── */}
       <div className="v2-charts-row v2-animate-in v2-stagger-3">
         <Chart />
         <GlowCard className="v2-equity-wrap" padding="0">
-          <EquityCurve data={equity} />
+          <EquityCurve
+            data={equity}
+            loaded={resources.equity?.loadedAt != null}
+            error={resources.equity?.error}
+            onRetry={() => retry('equity')}
+          />
         </GlowCard>
       </div>
 
@@ -217,7 +180,11 @@ export default function Dashboard() {
         {/* Positions */}
         <GlowCard className={`v2-section v2-animate-in v2-stagger-4 ${tradeFlash ? 'v2-trade-flash' : ''}`}>
           <div className="v2-section-title">Open Positions <span className="v2-count">{openTrades?.length || 0}</span></div>
-          {(!openTrades || openTrades.length === 0) ? (
+          {resources.trades?.loadedAt == null ? (
+            resources.trades?.error
+              ? <ErrorState error={resources.trades.error} onRetry={() => retry('trades')} title="Could not load positions" />
+              : <LoadingState />
+          ) : (!openTrades || openTrades.length === 0) ? (
             <div className="v2-empty">
               <StatusPulse status="idle" size={6} label="No open positions" />
             </div>
@@ -227,9 +194,9 @@ export default function Dashboard() {
                 <PositionCard
                   key={t.id || i}
                   trade={t}
-                  prices={prices}
+                  curPrice={prices[priceKey(t.symbol)]?.price}
                   isNew={newTradeIds.has(t.id)}
-                  onClick={() => setSelectedTrade(t)}
+                  onSelect={setSelectedTrade}
                 />
               ))}
             </div>
@@ -249,7 +216,11 @@ export default function Dashboard() {
         {/* Market Regime */}
         <GlowCard className="v2-section v2-animate-in v2-stagger-6">
           <div className="v2-section-title">Market Regime</div>
-          {regime.length === 0 ? (
+          {resources.agents?.loadedAt == null ? (
+            resources.agents?.error
+              ? <ErrorState error={resources.agents.error} onRetry={() => retry('agents')} title="Could not load regime" />
+              : <LoadingState />
+          ) : regime.length === 0 ? (
             <div className="v2-empty">No regime data</div>
           ) : regime.map((r, i) => {
             const glowStyle = r.regime?.includes('up') ? 'var(--v2-glow-green)'
@@ -330,7 +301,9 @@ export default function Dashboard() {
         <GlowCard className="v2-section v2-animate-in v2-stagger-8">
           <div className="v2-section-title">System Health</div>
           {!system ? (
-            <div className="v2-empty">Loading...</div>
+            resources.system?.error
+              ? <ErrorState error={resources.system.error} onRetry={() => retry('system')} title="Could not load system health" />
+              : <LoadingState />
           ) : (
             <div className="v2-health">
               <div className="v2-health-row">
@@ -782,25 +755,65 @@ export default function Dashboard() {
   );
 }
 
-function PositionCard({ trade, prices, isNew, onClick }) {
+// Market card with its own store selector so only the card whose history changed re-renders
+const MarketCard = memo(function MarketCard({ sym, index, price: p }) {
+  const sparkData = useDataStore(s => s.priceHistory[sym.key]) || EMPTY_HISTORY;
+  const change = p?.change24h ?? 0;
+  return (
+    <GlowCard
+      className={`v2-market-card v2-animate-in v2-stagger-${index + 1}`}
+      glowColor={change >= 0 ? 'green' : 'red'}
+    >
+      <div className="v2-market-top">
+        <div>
+          <span className="v2-market-symbol">{sym.label}</span>
+          <span className="v2-market-full">{sym.full}</span>
+        </div>
+        <StatusPulse status={p ? 'active' : 'idle'} size={6} />
+      </div>
+      <div className="v2-market-price">
+        {p
+          ? <TickingNumber value={p.price} format="money" decimals={2} colorize={false} />
+          : <span className="v2-muted" title="No price yet">{'—'}</span>}
+      </div>
+      <div className="v2-market-bottom">
+        <SignalBadge direction={change >= 0.5 ? 'bullish' : change <= -0.5 ? 'bearish' : 'neutral'} />
+        <TickingNumber value={change} format="pct" decimals={2} />
+        <Sparkline
+          data={sparkData}
+          width={72}
+          height={20}
+          color={change >= 0 ? 'var(--v2-accent-green)' : 'var(--v2-accent-red)'}
+          filled
+        />
+      </div>
+    </GlowCard>
+  );
+});
+
+const EMPTY_HISTORY = [];
+
+const PositionCard = memo(function PositionCard({ trade, curPrice, isNew, onSelect }) {
   const pnlRef = useRef(null);
   const [pulse, setPulse] = useState(null);
 
   const entry = parseFloat(trade.actual_fill_price || trade.entry_price);
   const qty = parseFloat(trade.quantity);
-  const curPrice = prices[trade.symbol.replace('/', '-')]?.price;
-  const pnl = curPrice ? (trade.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty) : null;
+  const pnl = curPrice > 0 ? (trade.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty) : null;
   const pnlPct = pnl != null ? (pnl / (entry * qty)) * 100 : null;
   const sl = parseFloat(trade.sl_price) || 0;
   const tp = parseFloat(trade.tp_price) || 0;
 
   useEffect(() => {
-    if (pnlRef.current !== null && pnl !== null && pnl !== pnlRef.current) {
-      setPulse(pnl > pnlRef.current ? 'green' : 'red');
+    if (pnl === null) return undefined;
+    const prev = pnlRef.current;
+    pnlRef.current = pnl;
+    if (prev !== null && pnl !== prev) {
+      setPulse(pnl > prev ? 'green' : 'red');
       const timer = setTimeout(() => setPulse(null), 600);
       return () => clearTimeout(timer);
     }
-    if (pnl !== null) pnlRef.current = pnl;
+    return undefined;
   }, [pnl]);
 
   const pulseClass = pulse === 'green' ? 'v2-border-pulse-green'
@@ -809,7 +822,16 @@ function PositionCard({ trade, prices, isNew, onClick }) {
   return (
     <div
       className={`v2-position ${pulseClass} ${isNew ? 'v2-slide-in' : ''}`}
-      onClick={onClick}
+      role="button"
+      tabIndex={0}
+      aria-label={`Open details for ${trade.symbol || 'position'}`}
+      onClick={() => onSelect(trade)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect(trade);
+        }
+      }}
     >
       <div className="v2-pos-header">
         <span className="v2-pos-symbol">{trade.symbol}</span>
@@ -819,11 +841,11 @@ function PositionCard({ trade, prices, isNew, onClick }) {
       <div className="v2-pos-prices">
         <div className="v2-pos-col">
           <span className="v2-pos-label">Entry</span>
-          <span className="v2-pos-entry">${entry.toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+          <span className="v2-pos-entry">{fmtMoney(entry)}</span>
         </div>
         <div className="v2-pos-col">
           <span className="v2-pos-label">Current</span>
-          {curPrice ? <TickingNumber value={curPrice} format="money" colorize={false} /> : <span className="v2-muted">--</span>}
+          {curPrice > 0 ? <TickingNumber value={curPrice} format="money" colorize={false} /> : <span className="v2-muted">--</span>}
         </div>
         <div className="v2-pos-col">
           <span className="v2-pos-label">P&L</span>
@@ -834,7 +856,7 @@ function PositionCard({ trade, prices, isNew, onClick }) {
           {pnlPct != null ? <TickingNumber value={pnlPct} format="pct" /> : <span className="v2-muted">--</span>}
         </div>
       </div>
-      {sl > 0 && tp > 0 && curPrice && (
+      {sl > 0 && tp > 0 && curPrice > 0 && (
         <RangeBar
           current={curPrice}
           low={Math.min(sl, tp)}
@@ -844,4 +866,4 @@ function PositionCard({ trade, prices, isNew, onClick }) {
       )}
     </div>
   );
-}
+});

@@ -2,6 +2,7 @@
 
 const { getThesisById, retireThesis } = require('../db/theses');
 const { queryAll, queryOne } = require('../../../db/connection');
+const cycleGate = require('../../../shared/cycle-gate');
 
 module.exports = async function (fastify) {
 
@@ -120,6 +121,10 @@ module.exports = async function (fastify) {
   fastify.post('/cycle/run', { preHandler: fastify.authenticate, config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
     async (request, reply) => {
       const { runCycle } = require('../agents/orchestrator');
+      const gate = await cycleGate.gate({ override: request.body?.override === true });
+      if (!gate.ok) {
+        return reply.code(gate.status).send({ error: gate.error });
+      }
       try {
         const result = await runCycle();
         return reply.send({
@@ -142,7 +147,8 @@ module.exports = async function (fastify) {
       try {
         const result = await runGraveyardAuditor();
         const domains = ['macro', 'geopolitical', 'technology', 'commodity', 'equity', 'crypto'];
-        for (const d of domains) await updateDomainCalibration(d).catch(() => {});
+        for (const d of domains) await updateDomainCalibration(d).catch(err =>
+          console.error(`[ORACLE] Calibration update failed for ${d}:`, err.message));
         return reply.send({ ok: true, ...result });
       } catch (err) {
         return reply.code(500).send({ error: err.message });

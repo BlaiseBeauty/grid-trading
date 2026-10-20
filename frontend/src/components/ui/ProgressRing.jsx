@@ -8,7 +8,7 @@ import { useEffect, useState } from 'react';
  *   size        (number, default 64) — diameter in px
  *   strokeWidth (number, default 4)
  *   color       (string, default 'var(--v2-accent-cyan)')
- *   trackColor  (string, default 'rgba(255,255,255,0.06)')
+ *   trackColor  (string, default 'var(--v2-fill-3)')
  *   label       (string, optional) — shown in center instead of value
  */
 export default function ProgressRing({
@@ -16,7 +16,7 @@ export default function ProgressRing({
   size = 64,
   strokeWidth = 4,
   color = 'var(--v2-accent-cyan)',
-  trackColor = 'rgba(255,255,255,0.06)',
+  trackColor = 'var(--v2-fill-3)',
   label,
 }) {
   const [mounted, setMounted] = useState(false);
@@ -24,7 +24,9 @@ export default function ProgressRing({
 
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
-  const clamped = Math.max(0, Math.min(100, value));
+  // NUMERIC values may arrive as strings; non-numeric input renders as 0 instead of NaN
+  const numeric = parseFloat(value);
+  const clamped = Number.isFinite(numeric) ? Math.max(0, Math.min(100, numeric)) : 0;
   const offset = circumference - (clamped / 100) * circumference;
 
   return (

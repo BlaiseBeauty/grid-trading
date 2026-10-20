@@ -1,6 +1,7 @@
 const decisionsDb = require('../../../db/queries/decisions');
 const orchestrator = require('../agents/orchestrator');
 const { queryAll, queryOne } = require('../../../db/connection');
+const cycleGate = require('../../../shared/cycle-gate');
 
 const AGENT_REGISTRY = {
   knowledge: [
@@ -51,7 +52,7 @@ async function routes(fastify) {
 
   // POST /api/agents/cycle — manually trigger a full agent cycle
   fastify.post('/agents/cycle', {
-    schema: { body: { type: 'object', properties: {} } },
+    schema: { body: { type: 'object', properties: { override: { type: 'boolean' } } } },
     config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     // Guard: reject if a cycle is already running
@@ -59,13 +60,10 @@ async function routes(fastify) {
       return reply.code(409).send({ error: 'Cycle already running' });
     }
 
-    // Rate limit guard
-    const recentRow = await queryOne(
-      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
-    );
-    const recentCount = parseInt(recentRow?.cnt || '0');
-    if (recentCount >= 10) {
-      return reply.code(429).send({ error: `Rate limit: ${recentCount} cycles already ran in the last 24h (max 10)` });
+    // Pause switch + daily AI budget + 10-cycles/24h limit (fails closed)
+    const gate = await cycleGate.gate({ override: request.body?.override === true, checkCycles: true });
+    if (!gate.ok) {
+      return reply.code(gate.status).send({ error: gate.error });
     }
 
     // Run async — don't block the response

@@ -4,16 +4,36 @@ const OracleBaseAgent     = require('./base-agent');
 const { getEvidenceSummary } = require('../ingestion/orchestrator');
 const { queryAll }        = require('../../../db/connection');
 const { computeMultipliers, getLearningsForDomain } = require('./calibration');
+const llm                 = require('../../../shared/llm-client');
+const { MODELS }          = require('../../../shared/models');
+const {
+  UNTRUSTED_INSTRUCTION, sanitizeExternal, cleanText, wrapUntrusted,
+} = require('./validation');
+
+const HEADLINE_MAX = 300;
+const DESCRIPTION_MAX = 800;
+const SENTIMENTS = ['bullish', 'bearish', 'neutral'];
 
 // ── SHARED CONTEXT BUILDER ────────────────────────────────────────────────────
+
+/**
+ * Format one evidence row as a single sanitised line (no tags, no control chars, capped).
+ * Pure — exported for tests.
+ */
+function formatEvidenceLine(e) {
+  const rel = Number.isFinite(Number(e.relevance_score)) ? Number(e.relevance_score) : 0;
+  const sentiment = SENTIMENTS.includes(e.sentiment) ? e.sentiment : 'unknown';
+  return `[${sanitizeExternal(e.source_name, 60)}] ${sanitizeExternal(e.headline, HEADLINE_MAX)} ` +
+         `(relevance: ${rel}, sentiment: ${sentiment})`;
+}
 
 async function buildEvidenceContext() {
   const summary = await getEvidenceSummary();
 
-  // Format recent high-relevance evidence for agent consumption
+  // Format recent high-relevance evidence for agent consumption — EXTERNAL TEXT: sanitised + delimited
   const evidenceLines = summary.recent
     .slice(0, 20)
-    .map(e => `[${e.source_name}] ${e.headline} (relevance: ${e.relevance_score}, sentiment: ${e.sentiment || 'unknown'})`)
+    .map(formatEvidenceLine)
     .join('\n');
 
   // Get FRED macro snapshot
@@ -22,16 +42,17 @@ async function buildEvidenceContext() {
      WHERE source_type = 'fred_macro'
      ORDER BY created_at DESC LIMIT 10`
   );
-  const fredLines = fredEvidence.map(e => e.headline).join('\n');
+  const fredLines = fredEvidence.map(e => sanitizeExternal(e.headline, HEADLINE_MAX)).join('\n');
 
-  // Get active theses (for cross-reference)
+  // Get active theses (for cross-reference). These are LLM-written from external text, so they are
+  // treated as untrusted too (second-order injection).
   const activeTheses = await queryAll(
     `SELECT name, domain, direction, conviction, summary
      FROM oracle_theses WHERE status = 'active'
      ORDER BY conviction DESC LIMIT 10`
   );
   const thesisLines = activeTheses.length > 0
-    ? activeTheses.map(t => `- ${t.name} (${t.direction}, ${t.conviction}/10): ${t.summary}`).join('\n')
+    ? activeTheses.map(t => `- ${sanitizeExternal(t.name, 120)} (${t.direction}, ${t.conviction}/10): ${sanitizeExternal(t.summary, DESCRIPTION_MAX)}`).join('\n')
     : 'No active theses yet.';
 
   const multipliers = await computeMultipliers().catch(() => ({}));
@@ -64,7 +85,9 @@ ${new OracleBaseAgent().getThesisSchema()}
 
 If the evidence does not support any strong thesis in your domain right now,
 return a thesis with conviction between 4-5 and direction 'neutral'.
-Do not invent evidence. Only use what is provided.`;
+Do not invent evidence. Only use what is provided.
+
+${UNTRUSTED_INSTRUCTION}`;
 }
 
 // ── THE 6 DOMAIN AGENTS ───────────────────────────────────────────────────────
@@ -149,8 +172,8 @@ const DOMAIN_CONFIGS = [
   },
 ];
 
-async function runDomainAgents() {
-  console.log('[ORACLE-AGENTS] Running 6 domain thesis agents...');
+async function runDomainAgents({ cycleId = null } = {}) {
+  console.log(`[ORACLE-AGENTS${cycleId != null ? ` c${cycleId}` : ''}] Running ${DOMAIN_CONFIGS.length} domain thesis agents...`);
   const context = await buildEvidenceContext();
   const results = [];
 
@@ -163,7 +186,9 @@ async function runDomainAgents() {
         const agent = new OracleBaseAgent({
           name:     config.name,
           domain:   config.domain,
+          model:    MODELS.oracle_domain,
           costTier: 'oracle_domain',
+          cycleId,
         });
 
         const systemPrompt = makeSystemPrompt(
@@ -172,13 +197,13 @@ async function runDomainAgents() {
 
         const userPrompt = `
 CURRENT EVIDENCE (last 24 hours):
-${context.evidenceLines || 'No recent evidence available.'}
+${wrapUntrusted('news_evidence', context.evidenceLines || 'No recent evidence available.')}
 
 FRED MACRO DATA:
-${context.fredLines || 'No FRED data available.'}
+${wrapUntrusted('fred', context.fredLines || 'No FRED data available.')}
 
 EXISTING ACTIVE THESES (do not duplicate):
-${context.thesisLines}
+${wrapUntrusted('existing_theses', context.thesisLines)}
 
 Based on this evidence, generate your single highest-conviction thesis
 for the ${config.domain} domain right now. Return ONLY valid JSON.`;
@@ -197,7 +222,7 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
               : '',
             learnings.length > 0
               ? `\nRECENT LEARNINGS FOR ${config.domain.toUpperCase()} DOMAIN:\n` +
-                learnings.map(l => `  - ${l.learning_type}: ${l.summary}${l.adjustment_rule ? '\n    Rule: ' + l.adjustment_rule : ''}`).join('\n')
+                learnings.map(l => `  - ${cleanText(l.learning_type, 60)}: ${cleanText(l.summary, 400)}${l.adjustment_rule ? '\n    Rule: ' + cleanText(l.adjustment_rule, 400) : ''}`).join('\n')
               : '',
           ].filter(Boolean).join('\n');
 
@@ -213,7 +238,7 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
           // Apply calibration multiplier to conviction
           if (multiplier !== 1.0) {
             const originalConviction = thesis.conviction;
-            thesis.conviction = Math.max(1, Math.min(10,
+            thesis.conviction = Math.max(0, Math.min(10,
               parseFloat((thesis.conviction * multiplier).toFixed(2))
             ));
             if (thesis.conviction !== originalConviction) {
@@ -224,11 +249,11 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
             }
           }
 
-          // Assign a unique thesis_id if not provided
-          if (!thesis.thesis_id || thesis.thesis_id.includes('XXX')) {
-            const ts = Date.now().toString(36).toUpperCase();
-            thesis.thesis_id = `oracle-${config.domain.slice(0, 4)}-${ts}`;
-          }
+          // Always mint our own thesis_id. An LLM-chosen id could collide with (and via the
+          // ON CONFLICT (thesis_id) upsert overwrite) a thesis from another domain.
+          const ts = Date.now().toString(36).toUpperCase();
+          const rnd = Math.random().toString(36).slice(2, 6).toUpperCase();
+          thesis.thesis_id = `oracle-${config.domain.slice(0, 4)}-${ts}${rnd}`;
 
           console.log(
             `[ORACLE-AGENTS] ${config.name}: "${thesis.name}" ` +
@@ -245,10 +270,10 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
 
     results.push(...batchResults);
 
-    // 60s delay between batches (same as GRID knowledge agents)
+    // Rate-limit spacing between batches: LLM_BATCH_DELAY_MS (default 20s), tripled for 5 min
+    // after any 429 (see shared/llm-client.js batchDelayMs).
     if (i + 2 < DOMAIN_CONFIGS.length) {
-      console.log('[ORACLE-AGENTS] Batch complete, waiting 60s...');
-      await new Promise(r => setTimeout(r, 60000));
+      await llm.waitBetweenBatches('[ORACLE-AGENTS] Batch');
     }
   }
 
@@ -259,4 +284,4 @@ for the ${config.domain} domain right now. Return ONLY valid JSON.`;
   return results;
 }
 
-module.exports = { runDomainAgents, buildEvidenceContext };
+module.exports = { runDomainAgents, buildEvidenceContext, formatEvidenceLine };

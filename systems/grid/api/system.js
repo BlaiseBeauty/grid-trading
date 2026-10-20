@@ -5,6 +5,7 @@ const { notifications } = require('../../../services/notifications');
 const { checkLiveTradingReadiness } = require('../agents/readiness-check');
 const bus = require('../../../shared/intelligence-bus');
 const platformNotifications = require('../../../shared/notifications');
+const cycleGate = require('../../../shared/cycle-gate');
 
 async function routes(fastify) {
   fastify.addHook('preHandler', fastify.authenticate);
@@ -100,23 +101,39 @@ async function routes(fastify) {
 
   // POST /api/system/scram/activate — manually activate SCRAM
   fastify.post('/system/scram/activate', async (request, reply) => {
-    const { level } = request.body || {};
+    const { level, close_mode } = request.body || {};
     if (!['elevated', 'crisis', 'emergency'].includes(level)) {
       return reply.code(400).send({ error: 'Invalid SCRAM level. Use: elevated, crisis, emergency' });
     }
-    // Clear any existing active SCRAM first
-    await queryAll("UPDATE scram_events SET cleared_at = NOW(), duration_seconds = EXTRACT(EPOCH FROM (NOW() - activated_at))::int WHERE cleared_at IS NULL");
-    // Activate new
+    // Optional: also close positions ('losing' | 'all'). Default stays "block new entries only".
+    if (close_mode != null && !['losing', 'all'].includes(close_mode)) {
+      return reply.code(400).send({ error: "Invalid close_mode. Use: 'losing', 'all' (or omit to only block new entries)" });
+    }
+    // Replace only an earlier MANUAL SCRAM. An automatic SCRAM (e.g. max_drawdown_exceeded)
+    // must never be wiped by a manual activation — the strictest active level always applies.
+    await queryAll("UPDATE scram_events SET cleared_at = NOW(), duration_seconds = EXTRACT(EPOCH FROM (NOW() - activated_at))::int WHERE cleared_at IS NULL AND trigger_name = 'manual'");
+    // Activate new. trigger_name 'manual' marks it as never-auto-cleared (orchestrator checks it).
     const result = await queryOne(`
       INSERT INTO scram_events (level, trigger_name) VALUES ($1, 'manual')
       RETURNING *
     `, [level]);
+    if (close_mode) {
+      // close_mode column comes from migration 032; the SCRAM above is already in force without it
+      try {
+        await query('UPDATE scram_events SET close_mode = $2 WHERE id = $1', [result.id, close_mode]);
+        result.close_mode = close_mode;
+      } catch (err) {
+        console.error('[SYSTEM] SCRAM activated but close_mode could not be stored (migration 032 applied?):', err.message);
+      }
+    }
     fastify.broadcast('scram_activated', { level });
-    notifications.scramActivated(level).catch(() => {});
+    notifications.scramActivated(level).catch(err => console.warn('[SYSTEM] SCRAM notification failed:', err.message));
     try {
       await bus.publish({ source: 'grid', eventType: 'scram_triggered', payload: { level, trigger: 'manual' } });
       await platformNotifications.notifyScram(level);
-    } catch (e) { /* best-effort */ }
+    } catch (e) {
+      console.warn('[SYSTEM] SCRAM bus/notify publish failed (best-effort):', e.message);
+    }
     return result;
   });
 
@@ -129,7 +146,7 @@ async function routes(fastify) {
     `);
     if (cleared.length > 0) {
       fastify.broadcast('scram_cleared', {});
-      notifications.scramCleared().catch(() => {});
+      notifications.scramCleared().catch(err => console.warn('[SYSTEM] SCRAM-cleared notification failed:', err.message));
     }
     return { cleared: cleared.length };
   });
@@ -142,7 +159,8 @@ async function routes(fastify) {
 
   // POST /api/system/reset-drawdown-hwm — reset high-water mark to current equity
   // Allows trading to resume after reviewing a drawdown period.
-  // This deletes all equity snapshots above current equity, effectively resetting the HWM.
+  // Records a reset marker (hwm_resets); equity_snapshots history is kept and drawdown is
+  // computed from the marker onwards.
   fastify.post('/system/reset-drawdown-hwm', async (request, reply) => {
     // Compute current equity
     const startingCapital = parseFloat(process.env.STARTING_CAPITAL || '10000');
@@ -154,18 +172,21 @@ async function routes(fastify) {
       + parseFloat(realisedRow?.total || 0)
       + parseFloat(unrealisedRow?.total || 0);
 
-    // Get old HWM for logging
-    const hwmRow = await queryOne('SELECT MAX(total_value) as hwm FROM equity_snapshots');
+    // Get old HWM (since the previous reset marker, if any) for logging
+    const hwmRow = await queryOne(`
+      SELECT MAX(total_value) as hwm FROM equity_snapshots
+      WHERE created_at >= COALESCE((SELECT MAX(reset_at) FROM hwm_resets), '-infinity'::timestamptz)
+    `);
     const oldHwm = parseFloat(hwmRow?.hwm || 0);
 
-    // Delete all snapshots with total_value above current equity
-    // This resets the HWM to current equity level
+    // Record a reset MARKER instead of deleting history: drawdown is computed only from snapshots
+    // taken at/after the latest marker (see risk-manager getHighWaterMark). equity_snapshots stays intact.
     await query(
-      'DELETE FROM equity_snapshots WHERE total_value > $1',
-      [currentEquity]
+      'INSERT INTO hwm_resets (old_hwm, new_hwm, reset_by) VALUES ($1, $2, $3)',
+      [oldHwm, currentEquity, String(request.user?.email || request.user?.sub || request.user?.id || 'api').slice(0, 100)]
     );
 
-    // Insert a fresh snapshot at current equity to establish the new HWM
+    // Insert a fresh snapshot at current equity to establish the new HWM (after the marker)
     await query(`
       INSERT INTO equity_snapshots (cycle_number, total_value, realised_pnl, unrealised_pnl, open_positions)
       VALUES (-2, $1, $2, $3, (SELECT COUNT(*)::int FROM trades WHERE status = 'open'))
@@ -183,18 +204,16 @@ async function routes(fastify) {
 
   // POST /api/system/run-cycle — trigger a full agent cycle (fire-and-forget)
   fastify.post('/system/run-cycle', {
-    schema: { body: { type: 'object', properties: {} } },
+    schema: { body: { type: 'object', properties: { override: { type: 'boolean' } } } },
+    config: { rateLimit: { max: 5, timeWindow: '15 minutes' } },
   }, async (request, reply) => {
     const orchestrator = require('../agents/orchestrator');
     if (orchestrator.isCycleRunning()) {
       return reply.code(409).send({ error: 'Cycle already running' });
     }
-    const recentRow = await queryOne(
-      `SELECT COUNT(*) as cnt FROM cycle_reports WHERE created_at > NOW() - INTERVAL '24 hours'`
-    );
-    const recentCount = parseInt(recentRow?.cnt || '0');
-    if (recentCount >= 10) {
-      return reply.code(429).send({ error: `Rate limit: ${recentCount} cycles already ran in the last 24h (max 10)` });
+    const gate = await cycleGate.gate({ override: request.body?.override === true, checkCycles: true });
+    if (!gate.ok) {
+      return reply.code(gate.status).send({ error: gate.error });
     }
     orchestrator.runCycle({ broadcast: fastify.broadcast }).catch(err => {
       console.error('[CYCLE] Failed:', err.message);

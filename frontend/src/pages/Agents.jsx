@@ -1,28 +1,81 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '../stores/data';
 import { api } from '../lib/api';
 import { timeAgo } from '../lib/format';
 import {
   GlowCard, StatusPulse, SignalBadge, ProgressRing,
 } from '../components/ui';
-import Modal from '../components/Modal';
+import DetailPanel from '../components/DetailPanel';
 import CalibrationChart from '../components/CalibrationChart';
+import { ErrorState, LoadingState } from '../components/StateBlock';
 
+// Decorative agent accents. Green/red are reserved for profit/loss, so agents use cyan/amber/purple only
+// (riskManager keeps red: it is the loss-guarding agent).
 const AGENT_COLORS = {
-  trend: 'cyan', momentum: 'green', volatility: 'amber', volume: 'cyan',
-  pattern: 'magenta', orderflow: 'green', macro: 'amber', sentiment: 'magenta',
+  trend: 'cyan', momentum: 'cyan', volatility: 'amber', volume: 'cyan',
+  pattern: 'magenta', orderflow: 'cyan', macro: 'amber', sentiment: 'magenta',
   strategySynthesizer: 'cyan', riskManager: 'red', positionReviewer: 'amber',
-  regimeClassifier: 'green', performanceAnalyst: 'magenta', patternDiscovery: 'magenta',
+  regimeClassifier: 'cyan', performanceAnalyst: 'magenta', patternDiscovery: 'magenta',
 };
 
 export default function Agents() {
-  const { fetchAgents, agents, decisions, regime, rejected, triggerCycle, triggerAnalysis } = useDataStore();
+  const { fetchAgents, agents, decisions, regime, rejected, triggerCycle, triggerAnalysis } = useDataStore(useShallow(s => ({
+    fetchAgents: s.fetchAgents,
+    agents: s.agents,
+    decisions: s.decisions,
+    regime: s.regime,
+    rejected: s.rejected,
+    triggerCycle: s.triggerCycle,
+    triggerAnalysis: s.triggerAnalysis,
+  })));
+  const agentsRes = useDataStore(s => s.resources.agents);
   const [selectedDecision, setSelectedDecision] = useState(null);
   const [decisionDetail, setDecisionDetail] = useState(null);
+  const [detailError, setDetailError] = useState(null);
   const [cycleRunning, setCycleRunning] = useState(false);
   const [analysisRunning, setAnalysisRunning] = useState(false);
+  const [actionError, setActionError] = useState(null);
+  const refreshTimers = useRef(new Set());
 
-  useEffect(() => { fetchAgents(); }, []);
+  useEffect(() => { fetchAgents(); }, [fetchAgents]);
+
+  // Clear any pending delayed refreshes on unmount
+  useEffect(() => {
+    const timers = refreshTimers.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
+
+  function refreshSoon(done) {
+    const t = setTimeout(() => {
+      refreshTimers.current.delete(t);
+      fetchAgents();
+      done();
+    }, 2000);
+    refreshTimers.current.add(t);
+  }
+
+  function openDecision(d) {
+    setSelectedDecision(d);
+    setDecisionDetail(null);
+    setDetailError(null);
+    api(`/agents/decisions/${d.id}`)
+      .then(setDecisionDetail)
+      .catch((err) => {
+        console.error('[Agents] decision detail failed:', err);
+        setDetailError(err?.message || 'Failed to load the full decision');
+        setDecisionDetail(d); // fall back to the list row, with the error shown above it
+      });
+  }
+
+  function closeDecision() {
+    setSelectedDecision(null);
+    setDecisionDetail(null);
+    setDetailError(null);
+  }
 
   // Derive per-agent stats from decisions
   const agentStats = useMemo(() => {
@@ -52,15 +105,27 @@ export default function Agents() {
 
   async function handleCycle() {
     setCycleRunning(true);
-    try { await triggerCycle(); } catch {}
-    setTimeout(() => { fetchAgents(); setCycleRunning(false); }, 2000);
+    setActionError(null);
+    try {
+      await triggerCycle();
+    } catch (err) {
+      setActionError(`Could not start cycle: ${err?.message || 'unknown error'}`);
+    }
+    refreshSoon(() => setCycleRunning(false));
   }
 
   async function handleAnalysis() {
     setAnalysisRunning(true);
-    try { await triggerAnalysis(); } catch {}
-    setTimeout(() => { fetchAgents(); setAnalysisRunning(false); }, 2000);
+    setActionError(null);
+    try {
+      await triggerAnalysis();
+    } catch (err) {
+      setActionError(`Could not start analysis: ${err?.message || 'unknown error'}`);
+    }
+    refreshSoon(() => setAnalysisRunning(false));
   }
+
+  const agentsLoaded = agentsRes?.loadedAt != null;
 
   return (
     <div className="v2-agents">
@@ -77,6 +142,16 @@ export default function Agents() {
         </div>
       </div>
 
+      {actionError && <ErrorState error={actionError} title="Action failed" />}
+      {agentsRes?.error && (
+        <ErrorState
+          error={agentsRes.error}
+          onRetry={fetchAgents}
+          title={agentsLoaded ? 'Refresh failed — showing the last loaded data' : 'Could not load agents'}
+        />
+      )}
+      {!agentsLoaded && !agentsRes?.error && <LoadingState />}
+
       {/* Agent Grid by Layer */}
       {agents && Object.entries(agents).map(([layer, list], li) => (
         <div key={layer} className={`v2-layer v2-animate-in v2-stagger-${Math.min(li + 1, 4)}`}>
@@ -92,12 +167,7 @@ export default function Agents() {
                   className={`v2-agent-card v2-animate-in v2-stagger-${Math.min(i + 1, 8)}`}
                   glowColor={color}
                   onClick={() => {
-                    if (stats.lastDecision) {
-                      setSelectedDecision(stats.lastDecision);
-                      api(`/agents/decisions/${stats.lastDecision.id}`)
-                        .then(setDecisionDetail)
-                        .catch(() => setDecisionDetail(stats.lastDecision));
-                    }
+                    if (stats.lastDecision) openDecision(stats.lastDecision);
                   }}
                 >
                   <div className="v2-ac-top">
@@ -152,11 +222,19 @@ export default function Agents() {
             <span className="v2-dt-col v2-dt-status">Status</span>
           </div>
           {decisions.map((d, i) => (
-            <div key={i} className="v2-dt-row" onClick={async () => {
-              setSelectedDecision(d);
-              try { setDecisionDetail(await api(`/agents/decisions/${d.id}`)); }
-              catch { setDecisionDetail(d); }
-            }}>
+            <div
+              key={i}
+              className="v2-dt-row"
+              role="button"
+              tabIndex={0}
+              onClick={() => openDecision(d)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  openDecision(d);
+                }
+              }}
+            >
               <span className="v2-dt-col v2-dt-agent v2-agent-name-tag">{d.agent_name}</span>
               <span className="v2-dt-col v2-dt-cycle v2-mono">{d.cycle_number}</span>
               <span className="v2-dt-col v2-dt-model v2-mono">{d.model_used?.replace('claude-', '').replace('-4-6', '')}</span>
@@ -175,7 +253,9 @@ export default function Agents() {
       <div className="v2-two-col">
         <GlowCard className="v2-animate-in v2-stagger-6">
           <div className="v2-section-title">Market Regime</div>
-          {regime.length === 0 ? (
+          {!agentsLoaded ? (
+            <div className="v2-empty">{agentsRes?.error ? 'Unavailable' : 'Loading…'}</div>
+          ) : regime.length === 0 ? (
             <div className="v2-empty">No regime classifications yet</div>
           ) : regime.map((r, i) => {
             const color = r.regime?.includes('up') ? 'var(--v2-accent-green)'
@@ -193,7 +273,9 @@ export default function Agents() {
 
         <GlowCard className="v2-animate-in v2-stagger-7">
           <div className="v2-section-title">Rejected Opportunities <span className="v2-count">{rejected.length}</span></div>
-          {rejected.length === 0 ? (
+          {!agentsLoaded ? (
+            <div className="v2-empty">{agentsRes?.error ? 'Unavailable' : 'Loading…'}</div>
+          ) : rejected.length === 0 ? (
             <div className="v2-empty">No rejected opportunities</div>
           ) : rejected.slice(0, 10).map((r, i) => (
             <div key={i} className="v2-rejected-row">
@@ -212,11 +294,13 @@ export default function Agents() {
       </GlowCard>
 
       {/* Decision Detail Modal */}
-      <Modal
+      <DetailPanel
         open={!!selectedDecision}
-        onClose={() => { setSelectedDecision(null); setDecisionDetail(null); }}
-        title={`${selectedDecision?.agent_name || ''} \u2014 Cycle ${selectedDecision?.cycle_number || ''}`}
+        onClose={closeDecision}
+        title={`${selectedDecision?.agent_name || ''} \u2014 Cycle ${selectedDecision?.cycle_number ?? ''}`}
       >
+        {detailError && <ErrorState error={detailError} title="Showing the summary row only" />}
+        {!decisionDetail && !detailError && <LoadingState />}
         {decisionDetail && (
           <div className="v2-dd">
             <div className="v2-dd-meta">
@@ -272,7 +356,7 @@ export default function Agents() {
             )}
           </div>
         )}
-      </Modal>
+      </DetailPanel>
 
       <style>{`
         .v2-agents { display: flex; flex-direction: column; gap: var(--v2-space-sm); }
@@ -282,7 +366,7 @@ export default function Agents() {
         .v2-btn { padding: 6px 14px; border: 1px solid var(--v2-border-hover); border-radius: var(--v2-radius-sm); font-family: var(--v2-font-data); font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; color: var(--v2-text-secondary); background: transparent; cursor: pointer; transition: all var(--v2-duration-fast) var(--v2-ease-out); display: flex; align-items: center; gap: var(--v2-space-xs); }
         .v2-btn:hover { border-color: var(--v2-accent-cyan); color: var(--v2-accent-cyan); }
         .v2-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .v2-btn--primary { background: var(--v2-accent-cyan); color: var(--v2-bg-primary); border-color: var(--v2-accent-cyan); font-weight: 600; }
+        .v2-btn--primary { background: var(--v2-accent-cyan); color: var(--v2-on-accent); border-color: var(--v2-accent-cyan); font-weight: 600; }
         .v2-btn--primary:hover { opacity: 0.85; }
 
         .v2-layer-title { font-family: var(--v2-font-data); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted); margin-bottom: var(--v2-space-sm); }
@@ -300,7 +384,7 @@ export default function Agents() {
         .v2-ac-stat { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-muted); }
         .v2-ac-cost { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-accent-magenta); }
         .v2-ac-model { font-family: var(--v2-font-data); font-size: 9px; font-weight: 500; padding: 1px 5px; border-radius: var(--v2-radius-sm); background: var(--v2-bg-hover); color: var(--v2-text-muted); border: 1px solid var(--v2-border); margin-left: auto; }
-        .v2-ac-model--opus { color: var(--v2-accent-magenta); border-color: rgba(179,157,219,0.3); background: rgba(179,157,219,0.05); }
+        .v2-ac-model--opus { color: var(--v2-accent-magenta); border-color: var(--v2-tint-magenta-strong); background: var(--v2-tint-magenta); }
 
         .v2-section-title { font-family: var(--v2-font-data); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--v2-text-muted); margin-bottom: var(--v2-space-md); }
         .v2-count { color: var(--v2-accent-cyan); margin-left: var(--v2-space-xs); }

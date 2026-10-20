@@ -1,6 +1,7 @@
 'use strict';
 
-const { queryAll, queryOne, query } = require('../../../db/connection');
+const { queryOne, query } = require('../../../db/connection');
+const portfolioRead = require('../../../shared/portfolio-read');
 
 /**
  * Calculate rolling correlation between GRID symbols using recent trade P&L.
@@ -9,14 +10,7 @@ const { queryAll, queryOne, query } = require('../../../db/connection');
  */
 async function calculateCorrelations() {
   // Get last 30 days of closed trades, grouped by day and symbol
-  const trades = await queryAll(
-    `SELECT symbol, side, pnl_pct,
-            DATE_TRUNC('day', closed_at) AS day
-     FROM trades
-     WHERE status = 'closed'
-       AND closed_at > NOW() - INTERVAL '30 days'
-     ORDER BY day, symbol`
-  );
+  const trades = await portfolioRead.getClosedTradesByDay(30);
 
   if (trades.length < 10) {
     return {}; // Not enough data

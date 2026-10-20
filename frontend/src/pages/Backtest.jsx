@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { createChart, AreaSeries, LineSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
-import { formatPct, formatNum, formatPrice } from '../lib/format';
+import { formatPrice, fmtSignedPct, fmtPlainPct } from '../lib/format';
 import { GlowCard } from '../components/ui';
 import { useDataStore } from '../stores/data';
+import { useTheme } from '../lib/theme';
+import { getChartOptions, getChartColors, withAlpha } from '../lib/chartConfig';
+import { ErrorState } from '../components/StateBlock';
 
 const DEFAULT_SYMBOLS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT'];
 
@@ -12,11 +15,22 @@ export default function Backtest() {
   const [selectedRun, setSelectedRun] = useState(null);
   const [runDetail, setRunDetail] = useState(null);
   const [equityCurve, setEquityCurve] = useState(null);
-  const [loading, setLoading] = useState(false);
   const [running, setRunning] = useState(false);
   const [feedResult, setFeedResult] = useState(null);
   const [tradePage, setTradePage] = useState(0);
+  const [runsLoaded, setRunsLoaded] = useState(false);
+  const [runsError, setRunsError] = useState(null);
+  const [detailError, setDetailError] = useState(null);
+  const [runError, setRunError] = useState(null);
+  const [feedError, setFeedError] = useState(null);
   const progress = useDataStore(s => s.backtestProgress);
+  const theme = useTheme();
+
+  // Polling bookkeeping: one interval at a time, cleared on unmount and before every new run
+  const pollRef = useRef(null);
+  const lastProgressAtRef = useRef(0);
+  const wasProgressRef = useRef(false);
+  const activeRunIdRef = useRef(null);
 
   // Config form
   const [name, setName] = useState('');
@@ -33,6 +47,9 @@ export default function Backtest() {
     fetchRuns();
   }, []);
 
+  // Stop any poll when leaving the page
+  useEffect(() => stopPolling, []);
+
   // Auto-select most recent run
   useEffect(() => {
     if (runs.length > 0 && !selectedRun) {
@@ -40,21 +57,39 @@ export default function Backtest() {
     }
   }, [runs]);
 
-  // Draw equity chart when data changes
+  // WebSocket progress is the preferred signal. The store gets backtest_progress / backtest_complete
+  // (progress -> null) / backtest_failed (progress.failed). Polling below is only the fallback.
   useEffect(() => {
-    if (!equityRef.current || !equityCurve?.curve?.length) return;
+    if (progress && !progress.failed) {
+      lastProgressAtRef.current = Date.now();
+      wasProgressRef.current = true;
+      return;
+    }
+    if (!running) return;
+    if (progress?.failed) {
+      stopPolling();
+      setRunning(false);
+      setRunError(`Backtest failed: ${progress.error || progress.message || 'unknown error'}`);
+      fetchRuns();
+    } else if (wasProgressRef.current && !progress) {
+      // backtest_complete arrived over the socket
+      wasProgressRef.current = false;
+      stopPolling();
+      setRunning(false);
+      fetchRuns();
+      if (activeRunIdRef.current != null) selectRun(activeRunIdRef.current);
+    }
+  }, [progress, running]);
 
-    const chartOpts = {
-      layout: { background: { color: 'transparent' }, textColor: '#55575e', fontFamily: "'JetBrains Mono', monospace", fontSize: 10 },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.07)', timeVisible: true },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.07)' },
-      crosshair: { mode: 0 },
+  // Draw equity chart when data (or the theme) changes
+  useEffect(() => {
+    if (!equityRef.current || !equityCurve?.curve?.length) return undefined;
+
+    const chart = createChart(equityRef.current, {
+      ...getChartOptions(),
       handleScale: { mouseWheel: true },
-      handleScroll: { mouseWheel: true, pressedMouseMove: true },
-    };
-
-    const chart = createChart(equityRef.current, chartOpts);
+    });
+    const colors = getChartColors();
 
     // Split curve into in-sample and out-of-sample segments
     const isSample = equityCurve.curve.filter(p => p.is_in_sample);
@@ -63,8 +98,8 @@ export default function Backtest() {
     // In-sample line (magenta/AI color)
     if (isSample.length > 0) {
       const isSeries = chart.addSeries(AreaSeries, {
-        topColor: 'rgba(179,157,219,0.15)', bottomColor: 'rgba(179,157,219,0.01)',
-        lineColor: '#b39ddb', lineWidth: 2,
+        topColor: withAlpha(colors.magenta, 0.15), bottomColor: withAlpha(colors.magenta, 0.01),
+        lineColor: colors.magenta, lineWidth: 2,
       });
       isSeries.setData(isSample.map(p => ({
         time: Math.floor(new Date(p.timestamp).getTime() / 1000),
@@ -75,8 +110,8 @@ export default function Backtest() {
     // Out-of-sample line (cyan)
     if (oosSample.length > 0) {
       const oosSeries = chart.addSeries(AreaSeries, {
-        topColor: 'rgba(79,195,247,0.15)', bottomColor: 'rgba(79,195,247,0.01)',
-        lineColor: '#4fc3f7', lineWidth: 2,
+        topColor: withAlpha(colors.cyan, 0.15), bottomColor: withAlpha(colors.cyan, 0.01),
+        lineColor: colors.cyan, lineWidth: 2,
       });
       oosSeries.setData(oosSample.map(p => ({
         time: Math.floor(new Date(p.timestamp).getTime() / 1000),
@@ -93,19 +128,26 @@ export default function Backtest() {
     obs.observe(equityRef.current);
 
     return () => { obs.disconnect(); chart.remove(); };
-  }, [equityCurve]);
+  }, [equityCurve, theme]);
 
   async function fetchRuns() {
+    setRunsError(null);
     try {
       const data = await api('/backtest/runs');
       setRuns(data.runs || []);
-    } catch (err) { console.error('fetchRuns:', err); }
+      setRunsLoaded(true);
+    } catch (err) {
+      console.error('fetchRuns:', err);
+      setRunsError(err?.message || 'Failed to load backtest runs');
+    }
   }
 
   async function selectRun(id) {
     setSelectedRun(id);
     setTradePage(0);
     setFeedResult(null);
+    setFeedError(null);
+    setDetailError(null);
     try {
       const [detail, curve] = await Promise.all([
         api(`/backtest/runs/${id}`),
@@ -113,11 +155,25 @@ export default function Backtest() {
       ]);
       setRunDetail(detail);
       setEquityCurve(curve);
-    } catch (err) { console.error('selectRun:', err); }
+    } catch (err) {
+      console.error('selectRun:', err);
+      setDetailError(err?.message || 'Failed to load this run');
+    }
+  }
+
+  function stopPolling() {
+    if (pollRef.current !== null) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
   }
 
   async function handleRun() {
+    // A new run replaces any poll still in flight
+    stopPolling();
+    setRunError(null);
     setRunning(true);
+    wasProgressRef.current = false;
     try {
       const result = await api('/backtest/run', {
         method: 'POST',
@@ -128,36 +184,59 @@ export default function Backtest() {
           in_sample_cutoff: splitDate,
         }),
       });
-      // Poll for completion
+      activeRunIdRef.current = result.run_id;
       pollRun(result.run_id);
     } catch (err) {
       console.error('handleRun:', err);
+      setRunError(`Could not start the backtest: ${err?.message || 'unknown error'}`);
       setRunning(false);
     }
   }
 
+  const MAX_POLL_ERRORS = 5;
+
+  // Fallback to WebSocket progress: every 3s, skipped while socket progress is fresh.
+  // Gives up after MAX_POLL_ERRORS consecutive failures and says so.
   function pollRun(runId) {
-    const interval = setInterval(async () => {
+    stopPolling();
+    let consecutiveErrors = 0;
+    pollRef.current = setInterval(async () => {
+      if (Date.now() - lastProgressAtRef.current < 6000) return;
       try {
         const data = await api(`/backtest/runs/${runId}`);
-        if (data.run?.status === 'complete' || data.run?.status === 'failed') {
-          clearInterval(interval);
+        consecutiveErrors = 0;
+        const status = data.run?.status;
+        if (status === 'complete' || status === 'failed') {
+          stopPolling();
           setRunning(false);
+          if (status === 'failed') setRunError('The backtest run failed on the server.');
           fetchRuns();
           selectRun(runId);
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        consecutiveErrors += 1;
+        console.error(`pollRun error ${consecutiveErrors}/${MAX_POLL_ERRORS}:`, err);
+        if (consecutiveErrors >= MAX_POLL_ERRORS) {
+          stopPolling();
+          setRunning(false);
+          setRunError(`Lost contact with the backtest after ${MAX_POLL_ERRORS} failed checks (${err?.message || 'unknown error'}). It may still be running; refresh the run list to check.`);
+        }
+      }
     }, 3000);
   }
 
   async function handleFeedLearnings() {
     if (!selectedRun) return;
+    setFeedError(null);
     try {
       const result = await api(`/backtest/runs/${selectedRun}/feed-learnings`, {
         method: 'POST', body: '{}',
       });
       setFeedResult(result);
-    } catch (err) { console.error('feedLearnings:', err); }
+    } catch (err) {
+      console.error('feedLearnings:', err);
+      setFeedError(err?.message || 'Failed to feed learnings');
+    }
   }
 
   function toggleSymbol(sym) {
@@ -228,6 +307,7 @@ export default function Backtest() {
         >
           {running ? 'RUNNING...' : 'RUN BACKTEST'}
         </button>
+        {runError && <ErrorState error={runError} onRetry={fetchRuns} title="Backtest problem" />}
         {/* Progress bar */}
         {(running && progress) && (
           <div className="bt-progress">
@@ -242,6 +322,21 @@ export default function Backtest() {
       </GlowCard>
 
       {/* SECTION 2: Run History Table */}
+      {runsError && (
+        <GlowCard className="v2-animate-in v2-stagger-2">
+          <ErrorState error={runsError} onRetry={fetchRuns} title="Could not load backtest runs" />
+        </GlowCard>
+      )}
+      {detailError && (
+        <GlowCard>
+          <ErrorState error={detailError} onRetry={() => selectedRun != null && selectRun(selectedRun)} title="Could not load this run" />
+        </GlowCard>
+      )}
+      {runsLoaded && !runsError && runs.length === 0 && (
+        <GlowCard className="v2-animate-in v2-stagger-2">
+          <div className="state-block">No backtest runs yet. Configure and start one above.</div>
+        </GlowCard>
+      )}
       {runs.length > 0 && (
         <GlowCard className="v2-animate-in v2-stagger-2">
           <div className="bt-section-title">RUN HISTORY</div>
@@ -260,20 +355,29 @@ export default function Backtest() {
               <div
                 key={r.id}
                 className={`bt-tbl-row ${selectedRun === r.id ? 'active' : ''}`}
+                role="button"
+                tabIndex={0}
+                aria-pressed={selectedRun === r.id}
                 onClick={() => selectRun(r.id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    selectRun(r.id);
+                  }
+                }}
               >
                 <span className="bt-col" style={{ flex: 2 }}>{r.name || `Run #${r.id}`}</span>
                 <span className="bt-col bt-mono">{r.date_from?.slice(0, 10)} &rarr; {r.date_to?.slice(0, 10)}</span>
                 <span className="bt-col bt-mono">{r.total_trades ?? '\u2014'}</span>
-                <span className="bt-col bt-mono">{r.win_rate != null ? `${parseFloat(r.win_rate).toFixed(1)}%` : '\u2014'}</span>
+                <span className="bt-col bt-mono">{r.win_rate != null ? fmtPlainPct(r.win_rate, 1) : '\u2014'}</span>
                 <span className={`bt-col bt-mono ${parseFloat(r.total_return) >= 0 ? 'profit' : 'loss'}`}>
-                  {r.total_return != null ? `${parseFloat(r.total_return) >= 0 ? '+' : ''}${parseFloat(r.total_return).toFixed(2)}%` : '\u2014'}
+                  {r.total_return != null ? fmtSignedPct(r.total_return, 2) : '\u2014'}
                 </span>
                 <span className={`bt-col bt-mono ${parseFloat(r.sharpe_ratio) >= 1 ? 'profit' : parseFloat(r.sharpe_ratio) >= 0.5 ? 'warn' : 'loss'}`}>
                   {r.sharpe_ratio != null ? parseFloat(r.sharpe_ratio).toFixed(2) : '\u2014'}
                 </span>
                 <span className="bt-col bt-mono loss">
-                  {r.max_drawdown != null ? `${parseFloat(r.max_drawdown).toFixed(2)}%` : '\u2014'}
+                  {r.max_drawdown != null ? fmtPlainPct(r.max_drawdown, 2) : '\u2014'}
                 </span>
                 <span className="bt-col">
                   <span className={`bt-status bt-status--${r.status}`}>{r.status}</span>
@@ -296,13 +400,13 @@ export default function Backtest() {
             <GlowCard className="bt-kpi" glowColor={parseFloat(run.win_rate) > 50 ? 'green' : 'red'}>
               <div className="bt-kpi-label">Win Rate</div>
               <div className={`bt-kpi-value ${parseFloat(run.win_rate) > 50 ? 'profit' : 'loss'}`}>
-                {parseFloat(run.win_rate).toFixed(1)}%
+                {fmtPlainPct(run.win_rate, 1)}
               </div>
             </GlowCard>
             <GlowCard className="bt-kpi" glowColor={parseFloat(run.total_return) >= 0 ? 'green' : 'red'}>
               <div className="bt-kpi-label">Total Return</div>
               <div className={`bt-kpi-value ${parseFloat(run.total_return) >= 0 ? 'profit' : 'loss'}`}>
-                {parseFloat(run.total_return) >= 0 ? '+' : ''}{parseFloat(run.total_return).toFixed(2)}%
+                {fmtSignedPct(run.total_return, 2)}
               </div>
             </GlowCard>
             <GlowCard className="bt-kpi" glowColor={parseFloat(run.sharpe_ratio) >= 1 ? 'green' : parseFloat(run.sharpe_ratio) >= 0.5 ? 'amber' : 'red'}>
@@ -313,7 +417,7 @@ export default function Backtest() {
             </GlowCard>
             <GlowCard className="bt-kpi" glowColor="red">
               <div className="bt-kpi-label">Max Drawdown</div>
-              <div className="bt-kpi-value loss">{parseFloat(run.max_drawdown).toFixed(2)}%</div>
+              <div className="bt-kpi-value loss">{fmtPlainPct(run.max_drawdown, 2)}</div>
             </GlowCard>
           </div>
 
@@ -324,8 +428,8 @@ export default function Backtest() {
               <GlowCard>
                 <div className="bt-section-title">EQUITY CURVE</div>
                 <div className="bt-chart-legend">
-                  <span className="bt-legend-dot" style={{ background: '#b39ddb' }} /> In-Sample
-                  <span className="bt-legend-dot" style={{ background: '#4fc3f7', marginLeft: 16 }} /> Out-of-Sample
+                  <span className="bt-legend-dot" style={{ background: 'var(--v2-accent-magenta)' }} /> In-Sample
+                  <span className="bt-legend-dot" style={{ background: 'var(--v2-accent-cyan)', marginLeft: 16 }} /> Out-of-Sample
                 </div>
                 <div ref={equityRef} className="bt-chart-container" />
               </GlowCard>
@@ -351,7 +455,7 @@ export default function Backtest() {
                       <span className="bt-col bt-mono">{formatPrice(t.entry_price)}</span>
                       <span className="bt-col bt-mono">{formatPrice(t.exit_price)}</span>
                       <span className={`bt-col bt-mono ${parseFloat(t.pnl_pct) >= 0 ? 'profit' : 'loss'}`}>
-                        {parseFloat(t.pnl_pct) >= 0 ? '+' : ''}{parseFloat(t.pnl_pct).toFixed(2)}%
+                        {fmtSignedPct(t.pnl_pct, 2)}
                       </span>
                       <span className="bt-col bt-mono">{formatHeld(t.entry_time, t.exit_time)}</span>
                       <span className="bt-col">{t.regime?.replace('_', ' ')}</span>
@@ -390,7 +494,7 @@ export default function Backtest() {
                     </div>
                     <span className="bt-mono bt-breakdown-stat">{data.trades} trades</span>
                     <span className={`bt-mono bt-breakdown-stat ${data.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                      {Number(data.win_rate).toFixed(1)}%
+                      {fmtPlainPct(data.win_rate, 1)}
                     </span>
                   </div>
                 ))}
@@ -414,10 +518,10 @@ export default function Backtest() {
                         <span className="bt-col" style={{ flex: 2 }} title={name}>{name.slice(0, 25)}</span>
                         <span className="bt-col bt-mono">{data.trades}</span>
                         <span className={`bt-col bt-mono ${data.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                          {Number(data.win_rate || 0).toFixed(1)}%
+                          {fmtPlainPct(data.win_rate || 0, 1)}
                         </span>
                         <span className={`bt-col bt-mono ${Number(data.avg_return || 0) >= 0 ? 'profit' : 'loss'}`}>
-                          {Number(data.avg_return || 0) >= 0 ? '+' : ''}{Number(data.avg_return || 0).toFixed(2)}%
+                          {fmtSignedPct(data.avg_return || 0, 2)}
                         </span>
                         <span className={`bt-col bt-mono ${(Number(data.sharpe) || 0) >= 1 ? 'profit' : (Number(data.sharpe) || 0) >= 0.5 ? 'warn' : 'loss'}`}>
                           {data.sharpe != null ? Number(data.sharpe).toFixed(2) : '\u2014'}
@@ -433,23 +537,23 @@ export default function Backtest() {
                   <div className="bt-section-title">IN-SAMPLE vs OUT-OF-SAMPLE</div>
                   <div className="bt-comparison">
                     <div className="bt-comp-col">
-                      <div className="bt-comp-header" style={{ color: '#b39ddb' }}>IN-SAMPLE</div>
+                      <div className="bt-comp-header" style={{ color: 'var(--v2-accent-magenta)' }}>IN-SAMPLE</div>
                       <div className="bt-comp-stat">{sc.in_sample.trades} trades</div>
                       <div className={`bt-comp-stat ${sc.in_sample.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                        {Number(sc.in_sample.win_rate).toFixed(1)}% win rate
+                        {fmtPlainPct(sc.in_sample.win_rate, 1)} win rate
                       </div>
                       <div className={`bt-comp-stat ${Number(sc.in_sample.avg_return) >= 0 ? 'profit' : 'loss'}`}>
-                        {Number(sc.in_sample.avg_return) >= 0 ? '+' : ''}{Number(sc.in_sample.avg_return).toFixed(2)}% avg
+                        {fmtSignedPct(sc.in_sample.avg_return, 2)} avg
                       </div>
                     </div>
                     <div className="bt-comp-col">
-                      <div className="bt-comp-header" style={{ color: '#4fc3f7' }}>OUT-OF-SAMPLE</div>
+                      <div className="bt-comp-header" style={{ color: 'var(--v2-accent-cyan)' }}>OUT-OF-SAMPLE</div>
                       <div className="bt-comp-stat">{sc.out_of_sample.trades} trades</div>
                       <div className={`bt-comp-stat ${sc.out_of_sample.win_rate >= 50 ? 'profit' : 'loss'}`}>
-                        {Number(sc.out_of_sample.win_rate).toFixed(1)}% win rate
+                        {fmtPlainPct(sc.out_of_sample.win_rate, 1)} win rate
                       </div>
                       <div className={`bt-comp-stat ${Number(sc.out_of_sample.avg_return) >= 0 ? 'profit' : 'loss'}`}>
-                        {Number(sc.out_of_sample.avg_return) >= 0 ? '+' : ''}{Number(sc.out_of_sample.avg_return).toFixed(2)}% avg
+                        {fmtSignedPct(sc.out_of_sample.avg_return, 2)} avg
                       </div>
                     </div>
                   </div>
@@ -467,6 +571,7 @@ export default function Backtest() {
                 <button className="bt-feed-btn" onClick={handleFeedLearnings}>
                   FEED TO LEARNING LOOP
                 </button>
+                {feedError && <ErrorState error={feedError} onRetry={handleFeedLearnings} title="Could not feed learnings" />}
                 {feedResult && (
                   <div className="bt-feed-result">
                     <span className="profit">{feedResult.learnings_stored} learnings stored</span>
@@ -545,12 +650,12 @@ export default function Backtest() {
         .bt-symbol-btn.active {
           color: var(--v2-accent-cyan);
           border-color: var(--v2-accent-cyan);
-          background: rgba(79,195,247,0.08);
+          background: var(--v2-tint-cyan);
         }
         .bt-run-btn {
           width: 100%;
           padding: var(--v2-space-md) var(--v2-space-lg);
-          background: rgba(79,195,247,0.10);
+          background: var(--v2-tint-cyan-strong);
           border: 1px solid var(--v2-accent-cyan);
           border-radius: var(--v2-radius-sm);
           color: var(--v2-accent-cyan);
@@ -561,7 +666,7 @@ export default function Backtest() {
           cursor: pointer;
           transition: all var(--v2-duration-fast);
         }
-        .bt-run-btn:hover:not(:disabled) { background: rgba(79,195,247,0.18); }
+        .bt-run-btn:hover:not(:disabled) { background: var(--v2-tint-cyan-strong); }
         .bt-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
         /* Progress */
@@ -605,13 +710,13 @@ export default function Backtest() {
           display: flex;
           align-items: center;
           padding: var(--v2-space-xs) 0;
-          border-bottom: 1px solid rgba(255,255,255,0.03);
+          border-bottom: 1px solid var(--v2-border-faint);
           cursor: pointer;
           transition: background var(--v2-duration-fast);
         }
         .bt-tbl-row:hover { background: var(--v2-bg-secondary); }
         .bt-tbl-row.active {
-          background: rgba(79,195,247,0.05);
+          background: var(--v2-tint-cyan);
           border-left: 2px solid var(--v2-accent-cyan);
         }
         .bt-col {
@@ -642,10 +747,10 @@ export default function Backtest() {
           padding: 2px 6px;
           border-radius: var(--v2-radius-sm);
         }
-        .bt-status--complete { color: var(--v2-accent-green); background: rgba(102,187,106,0.1); }
-        .bt-status--running { color: var(--v2-accent-cyan); background: rgba(79,195,247,0.1); }
-        .bt-status--pending { color: var(--v2-accent-amber); background: rgba(255,167,38,0.1); }
-        .bt-status--failed { color: var(--v2-accent-red); background: rgba(239,83,80,0.1); }
+        .bt-status--complete { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan); }
+        .bt-status--running { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan-strong); }
+        .bt-status--pending { color: var(--v2-accent-amber); background: var(--v2-tint-amber); }
+        .bt-status--failed { color: var(--v2-accent-red); background: var(--v2-tint-red); }
 
         .bt-sample-badge {
           font-family: var(--v2-font-data);
@@ -655,8 +760,8 @@ export default function Backtest() {
           padding: 1px 5px;
           border-radius: var(--v2-radius-sm);
         }
-        .bt-sample-badge.is { color: #b39ddb; background: rgba(179,157,219,0.12); }
-        .bt-sample-badge.oos { color: #4fc3f7; background: rgba(79,195,247,0.12); }
+        .bt-sample-badge.is { color: var(--v2-accent-magenta); background: var(--v2-tint-magenta-strong); }
+        .bt-sample-badge.oos { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan-strong); }
 
         /* KPI strip */
         .bt-kpi-strip {
@@ -782,16 +887,16 @@ export default function Backtest() {
           padding: 4px 16px;
           border-radius: var(--v2-radius-full);
         }
-        .bt-validation--validated { color: var(--v2-accent-green); background: rgba(102,187,106,0.12); border: 1px solid rgba(102,187,106,0.3); }
-        .bt-validation--overfitted { color: var(--v2-accent-red); background: rgba(239,83,80,0.12); border: 1px solid rgba(239,83,80,0.3); }
-        .bt-validation--inconclusive { color: var(--v2-accent-amber); background: rgba(255,167,38,0.12); border: 1px solid rgba(255,167,38,0.3); }
+        .bt-validation--validated { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan-strong); border: 1px solid var(--v2-tint-cyan-strong); }
+        .bt-validation--overfitted { color: var(--v2-accent-red); background: var(--v2-tint-red-strong); border: 1px solid var(--v2-tint-red-strong); }
+        .bt-validation--inconclusive { color: var(--v2-accent-amber); background: var(--v2-tint-amber-strong); border: 1px solid var(--v2-tint-amber-strong); }
         .bt-validation--insufficient_data { color: var(--v2-text-muted); background: var(--v2-bg-tertiary); border: 1px solid var(--v2-border); }
 
         /* Feed button */
         .bt-feed-btn {
           width: 100%;
           padding: var(--v2-space-md);
-          background: rgba(179,157,219,0.10);
+          background: var(--v2-tint-magenta-strong);
           border: 1px solid var(--v2-accent-magenta);
           border-radius: var(--v2-radius-sm);
           color: var(--v2-accent-magenta);
@@ -802,7 +907,7 @@ export default function Backtest() {
           cursor: pointer;
           transition: background var(--v2-duration-fast);
         }
-        .bt-feed-btn:hover { background: rgba(179,157,219,0.18); }
+        .bt-feed-btn:hover { background: var(--v2-tint-magenta-strong); }
         .bt-feed-result {
           margin-top: var(--v2-space-sm);
           font-family: var(--v2-font-data);

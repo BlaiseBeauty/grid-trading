@@ -1,3 +1,62 @@
+// ── Plain-string formatters (no JSX) ─────────────────────────────────────────
+// Single source of truth for number text. Always U+2212 for minus (never ASCII hyphen),
+// parseFloat first (Postgres NUMERIC arrives as strings), '—' for missing/invalid.
+const MINUS = '−';
+
+function toNum(value) {
+  if (value == null || value === '') return null;
+  const n = typeof value === 'number' ? value : parseFloat(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function groupDigits(absStr) {
+  const [whole, dec] = absStr.split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return dec !== undefined ? `${grouped}.${dec}` : grouped;
+}
+
+// "$1,234.56" / "−$1,234.56". Use for unsigned amounts such as balances.
+export function fmtMoney(value, decimals = 2, prefix = '$') {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : ''}${prefix}${groupDigits(Math.abs(n).toFixed(decimals))}`;
+}
+
+// "+$1,234.56" / "−$1,234.56". Use for P&L.
+export function fmtSignedMoney(value, decimals = 2, prefix = '$') {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : '+'}${prefix}${groupDigits(Math.abs(n).toFixed(decimals))}`;
+}
+
+// "+1.23%" / "−1.23%"
+export function fmtSignedPct(value, decimals = 2) {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : '+'}${Math.abs(n).toFixed(decimals)}%`;
+}
+
+// "12.3%" / "−1.2%" (no plus sign)
+export function fmtPlainPct(value, decimals = 1) {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : ''}${Math.abs(n).toFixed(decimals)}%`;
+}
+
+// "1,234.50" / "−1,234.50"
+export function fmtNumber(value, decimals = 2, prefix = '') {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : ''}${prefix}${groupDigits(Math.abs(n).toFixed(decimals))}`;
+}
+
+// "$2.31T" market cap in trillions
+export function fmtTrillions(value) {
+  const n = toNum(value);
+  if (n == null) return '—';
+  return `${n < 0 ? MINUS : ''}$${(Math.abs(n) / 1e12).toFixed(2)}T`;
+}
+
 export function formatMoney(value) {
   if (value == null || !isFinite(value)) return '\u2014';
   const abs = Math.abs(value);

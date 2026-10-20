@@ -1,20 +1,92 @@
 """
 Position Monitor — checks TP/SL on open positions.
-Paper trades: polls exchange prices and checks against TP/SL levels.
-Live trades: checks exchange order status (reconciliation, not enforcement).
+
+Paper / micro trades: polls prices AND recent candle highs/lows (so an
+intra-poll wick through a level is not missed) and closes in the DB.
+Live trades: NEVER closed DB-only. The monitor
+  * reconciles the exchange stop-loss order (booked with real fills when it filled),
+  * places a missing stop-loss (or market-closes if price is already through it),
+  * enforces the take-profit itself (TP is not an exchange order on spot — see
+    live.py) by calling LiveTrader.close(), which cancels the SL and market-closes.
+Each trade is processed and committed independently so one failure cannot roll
+back or abort the others.
 """
 
 import os
 import time
-import ccxt
-import psycopg2
-from data import MarketData
 
-PRIMARY_EXCHANGE = os.getenv('CCXT_EXCHANGE', 'kucoin')
+from data import MarketData
+from live import LiveTrader
+from common import (
+    TAKER_FEE, SLIPPAGE_BPS, get_db, get_authenticated_exchange,
+    apply_slippage, close_side_for, compute_pnl, estimate_fee,
+)
+
+CANDLE_TF = os.getenv('MONITOR_CANDLE_TF', '5m')
+CANDLE_LIMIT = int(os.getenv('MONITOR_CANDLE_LIMIT', '12'))   # 12 x 5m = 1h lookback > 15-min cron
+
+
+def _log(msg):
+    print(f'[MONITOR] {msg}', flush=True)
+
+
+def _effective_stop(buy, sl, peak, activated, trail_dist_pct):
+    """Tightest of the initial SL and the trailing level.
+    Returns (level, kind) or (None, None). A trail can therefore never sit
+    looser than the original stop."""
+    cands = []
+    if sl is not None:
+        cands.append((float(sl), 'sl_hit'))
+    if activated and peak:
+        lvl = peak * (1 - trail_dist_pct / 100) if buy else peak * (1 + trail_dist_pct / 100)
+        cands.append((lvl, 'trail_hit'))
+    if not cands:
+        return None, None
+    # tighter = higher for longs, lower for shorts; ties prefer the SL label
+    key = (lambda c: c[0]) if buy else (lambda c: -c[0])
+    best = max(cands, key=lambda c: (key(c), 1 if c[1] == 'sl_hit' else 0))
+    return best
+
+
+def evaluate_exit(side, entry, sl, tp, peak, activated, bars, price,
+                  trail_activate_pct, trail_distance_pct, slippage_bps=SLIPPAGE_BPS):
+    """Replay candles then the latest price against SL / trail / TP.
+
+    bars: chronological (open, high, low, close) tuples since entry.
+    Conservative intra-bar rules: within one bar the stop is tested before the
+    TP, and the peak used for the trail is the peak BEFORE that bar (a bar's own
+    high cannot trigger its own trail). Stops fill at the worse of the level and
+    the bar open (gap) with adverse slippage; TP fills at the level (or the open
+    if it gapped through).
+    Returns {'action': None|'sl_hit'|'trail_hit'|'tp_hit', 'exit_price', 'peak', 'activated'}.
+    Pure function (no I/O)."""
+    buy = side == 'buy'
+    entry = float(entry)
+    tp = float(tp) if tp is not None else None
+    peak = float(peak) if peak else entry
+    activated = bool(activated)
+    close_side = close_side_for(side)
+
+    seq = list(bars) + [(price, price, price, price)]
+    for (o, h, l, c) in seq:
+        stop, kind = _effective_stop(buy, sl, peak, activated, trail_distance_pct)
+        if stop is not None and ((l <= stop) if buy else (h >= stop)):
+            level = min(stop, o) if buy else max(stop, o)       # gap through the stop
+            return {'action': kind, 'exit_price': apply_slippage(close_side, level, slippage_bps),
+                    'peak': peak, 'activated': activated}
+        if tp is not None and ((h >= tp) if buy else (l <= tp)):
+            fill = max(tp, o) if buy else min(tp, o)            # limit fills at level or better
+            return {'action': 'tp_hit', 'exit_price': fill, 'peak': peak, 'activated': activated}
+        fav = h if buy else l
+        peak = max(peak, fav) if buy else min(peak, fav)
+        profit_pct = ((fav - entry) / entry if buy else (entry - fav) / entry) * 100
+        if profit_pct >= trail_activate_pct:
+            activated = True
+    return {'action': None, 'exit_price': None, 'peak': peak, 'activated': activated}
 
 
 class PositionMonitor:
-    TAKER_FEE = 0.001  # 0.10% — must match PaperTrader.TAKER_FEE
+    TAKER_FEE = TAKER_FEE  # 0.10% — shared with PaperTrader via common.py
 
     # Trailing stop config
     TRAIL_ACTIVATE_PCT = 1.0   # profit % required before trailing starts
@@ -23,312 +95,232 @@ class PositionMonitor:
     def __init__(self):
         self.db_url = os.getenv('DATABASE_URL', 'postgresql://localhost:5432/grid')
         self.market_data = MarketData()
-        self._exchange = None
+        self.live = LiveTrader()
+        self._validate_trail_params()
 
-    def _get_authenticated_exchange(self):
-        """Authenticated CCXT instance for checking order status."""
-        if self._exchange is not None:
-            return self._exchange
-
-        api_key = os.environ.get('CCXT_API_KEY')
-        if not api_key:
-            return None  # No keys = paper-only mode
-
-        exchange_class = getattr(ccxt, PRIMARY_EXCHANGE)
-        config = {
-            'apiKey': api_key,
-            'secret': os.environ['CCXT_API_SECRET'],
-            'enableRateLimit': True,
-        }
-        if PRIMARY_EXCHANGE == 'kucoin':
-            config['password'] = os.environ.get('CCXT_API_PASSPHRASE', '')
-
-        self._exchange = exchange_class(config)
-        return self._exchange
+    def _validate_trail_params(self):
+        """The effective stop is max(initial SL, trail level), so a trail exit is
+        never looser than the original stop. With the current parameters the
+        trail level at activation (peak*(1-2%) = entry*0.9898) is still BELOW
+        entry, i.e. a trail exit shortly after activation can be a small net
+        loss; that is intentional ('keep current params') but flagged here."""
+        if self.TRAIL_DISTANCE_PCT <= 0 or self.TRAIL_ACTIVATE_PCT <= 0:
+            raise ValueError('trail parameters must be > 0')
+        if self.TRAIL_DISTANCE_PCT >= self.TRAIL_ACTIVATE_PCT:
+            _log(f'NOTE trail distance {self.TRAIL_DISTANCE_PCT}% >= activation {self.TRAIL_ACTIVATE_PCT}%: '
+                 'an early trail exit can be below entry (still never worse than the initial SL).')
 
     def _get_db(self):
-        return psycopg2.connect(self.db_url)
+        return get_db(self.db_url)
 
-    def _fetch_price(self, symbol, exchange):
-        """Fetch current price with symbol normalization and 1 retry."""
-        # ccxt expects '/' separator (e.g. BTC/USDT), DB may store with '-'
-        normalized = symbol.replace('-', '/')
-        exc = exchange or None  # None → uses PRIMARY_EXCHANGE from data.py
-
-        try:
-            return self.market_data.get_current_price(normalized, exc)
-        except Exception as first_err:
-            print(f'[MONITOR] Price fetch failed for {normalized} (attempt 1): {first_err}')
-            time.sleep(2)
-            try:
-                return self.market_data.get_current_price(normalized, exc)
-            except Exception as retry_err:
-                print(f'[MONITOR] Price fetch failed for {normalized} (attempt 2): {retry_err}')
-                raise retry_err
+    # ── main loop ────────────────────────────────────────────────────────────
 
     def check_all(self):
-        """Check all open positions for TP/SL hits.
-        Paper trades: poll prices and check levels.
-        Live trades: check exchange order status (reconciliation).
-        """
+        """Check all open positions. Every trade runs in its own transaction."""
         conn = self._get_db()
+        results = []
         try:
             cur = conn.cursor()
             cur.execute("""
                 SELECT id, symbol, side, quantity, entry_price, tp_price, sl_price,
                        exchange, entry_fee, mode,
                        exchange_sl_order_id, exchange_tp_order_id,
-                       peak_price, trail_activated
+                       peak_price, trail_activated, opened_at
                 FROM trades
                 WHERE status = 'open'
             """)
-            positions = cur.fetchall()
-            results = []
-
-            for pos in positions:
-                (trade_id, symbol, side, quantity, entry_price, tp_price, sl_price,
-                 exchange, entry_fee, mode, exchange_sl_id, exchange_tp_id,
-                 peak_price, trail_activated) = pos
-
-                if mode == 'live' and (exchange_sl_id or exchange_tp_id):
-                    # Live trade: reconcile via exchange order status
-                    result = self._check_live_trade(
-                        cur, trade_id, symbol, side, quantity, entry_price,
-                        tp_price, sl_price, entry_fee, exchange_sl_id, exchange_tp_id
-                    )
-                    results.append(result)
-                else:
-                    # Paper trade (or live trade missing exchange orders): poll prices
-                    result = self._check_paper_trade(
-                        cur, trade_id, symbol, side, quantity, entry_price,
-                        tp_price, sl_price, exchange, entry_fee,
-                        peak_price, trail_activated
-                    )
-                    results.append(result)
-
+            cols = [d[0] for d in cur.description]
+            trades = [dict(zip(cols, r)) for r in cur.fetchall()]
             conn.commit()
+
+            prices = self._batch_prices(trades)
+            candle_cache = {}
+
+            for trade in trades:
+                tid = trade['id']
+                try:
+                    result = self._check_trade(conn, cur, trade, prices, candle_cache)
+                    conn.commit()
+                    results.append(result)
+                except Exception as e:
+                    conn.rollback()
+                    _log(f"ERROR trade #{tid} ({trade['symbol']}): {e} — continuing with remaining trades")
+                    results.append({'trade_id': tid, 'error': str(e)})
             cur.close()
         finally:
             conn.close()
         return results
 
-    def _check_paper_trade(self, cur, trade_id, symbol, side, quantity, entry_price,
-                           tp_price, sl_price, exchange, entry_fee,
-                           peak_price=None, trail_activated=False):
-        """Price-polling logic for paper trades, with trailing stop."""
-        try:
-            current_price = self._fetch_price(symbol, exchange)
-        except Exception as e:
-            print(f'[MONITOR] SKIPPING trade #{trade_id} ({symbol}) — could not fetch price: {e}')
-            return {'trade_id': trade_id, 'error': str(e)}
+    def _batch_prices(self, trades):
+        """One fetch_tickers call per exchange instead of serial fetch+sleep."""
+        by_exchange = {}
+        for t in trades:
+            by_exchange.setdefault(t['exchange'] or None, set()).add(t['symbol'].replace('-', '/'))
+        prices = {}
+        for exch, syms in by_exchange.items():
+            prices.update(self.market_data.get_prices(list(syms), exch))
+        return prices
 
-        if not entry_price or float(entry_price) <= 0:
-            return {'trade_id': trade_id, 'error': f'Invalid entry_price: {entry_price}'}
-
-        entry = float(entry_price)
-
-        # ── Trailing stop logic ───────────────────────────────────────────────
-        # Track the best price seen since entry. Once profit >= TRAIL_ACTIVATE_PCT,
-        # trailing is active. If price then drops TRAIL_DISTANCE_PCT from peak → close.
-        current_peak = float(peak_price) if peak_price else None
-        currently_activated = bool(trail_activated)
-
-        if side == 'buy':
-            unrealised_pct = ((current_price - entry) / entry) * 100
-            new_peak = max(current_peak, current_price) if current_peak else current_price
-        else:
-            unrealised_pct = ((entry - current_price) / entry) * 100
-            # For shorts, peak = lowest price seen (most profitable point)
-            new_peak = min(current_peak, current_price) if current_peak else current_price
-
-        # Activate trailing once profit threshold is reached
-        new_activated = currently_activated or (unrealised_pct >= self.TRAIL_ACTIVATE_PCT)
-
-        # Persist peak_price and trail_activated updates (best-effort, separate from close)
-        if new_peak != current_peak or new_activated != currently_activated:
+    def _bars_since_open(self, trade, candle_cache):
+        """(o,h,l,c) of candles that opened at/after the trade's open time."""
+        symbol = trade['symbol'].replace('-', '/')
+        key = (symbol, trade['exchange'])
+        if key not in candle_cache:
             try:
-                cur.execute(
-                    "UPDATE trades SET peak_price = %s, trail_activated = %s WHERE id = %s AND status = 'open'",
-                    (new_peak, new_activated, trade_id)
-                )
+                candle_cache[key] = self.market_data.fetch_ohlcv(
+                    symbol, CANDLE_TF, CANDLE_LIMIT, trade['exchange'] or None) or []
             except Exception as e:
-                print(f'[MONITOR] Failed to update peak for trade #{trade_id}: {e}')
+                _log(f'candle fetch failed for {symbol} ({e}) — falling back to last price only')
+                candle_cache[key] = []
+        opened = trade.get('opened_at')
+        opened_ms = int(opened.timestamp() * 1000) if opened else 0
+        return [(float(c[1]), float(c[2]), float(c[3]), float(c[4]))
+                for c in candle_cache[key] if c[0] >= opened_ms and None not in c[1:5]]
 
-        # Check if trailing stop triggered
-        trail_hit = False
-        if new_activated and new_peak:
-            if side == 'buy':
-                drop_from_peak = ((new_peak - current_price) / new_peak) * 100
-                trail_hit = drop_from_peak >= self.TRAIL_DISTANCE_PCT
-            else:
-                rise_from_peak = ((current_price - new_peak) / new_peak) * 100
-                trail_hit = rise_from_peak >= self.TRAIL_DISTANCE_PCT
+    def _check_trade(self, conn, cur, trade, prices, candle_cache):
+        symbol = trade['symbol'].replace('-', '/')
+        tid = trade['id']
+        price = prices.get(symbol)
+        if price is None:
+            _log(f'SKIPPING trade #{tid} ({symbol}) — no price available')
+            return {'trade_id': tid, 'error': f'no price for {symbol}'}
+        if not trade['entry_price'] or float(trade['entry_price']) <= 0:
+            return {'trade_id': tid, 'error': f"Invalid entry_price: {trade['entry_price']}"}
+        bars = self._bars_since_open(trade, candle_cache)
+        if trade['mode'] == 'live':
+            return self._check_live_trade(conn, cur, trade, price, bars)
+        return self._check_paper_trade(cur, trade, price, bars)
 
-        if trail_hit:
-            print(f'[MONITOR] TRAIL_HIT — trade #{trade_id} {symbol} {side} '
-                  f'peak={new_peak} current={current_price} '
-                  f'drop={((new_peak - current_price) / new_peak * 100):.2f}%')
-        # ─────────────────────────────────────────────────────────────────────
+    # ── paper / micro ────────────────────────────────────────────────────────
 
-        action = None
-        if side == 'buy':
-            pnl_pct = ((current_price - entry) / entry) * 100
-            if tp_price and current_price >= float(tp_price):
-                action = 'tp_hit'
-            elif sl_price and current_price <= float(sl_price):
-                action = 'sl_hit'
-            elif trail_hit:
-                action = 'trail_hit'
-        else:
-            pnl_pct = ((entry - current_price) / entry) * 100
-            if tp_price and current_price <= float(tp_price):
-                action = 'tp_hit'
-            elif sl_price and current_price >= float(sl_price):
-                action = 'sl_hit'
-            elif trail_hit:
-                action = 'trail_hit'
+    def _check_paper_trade(self, cur, trade, current_price, bars):
+        """Candle + price polling with trailing stop. DB-only close (paper)."""
+        tid, symbol, side = trade['id'], trade['symbol'], trade['side']
+        entry = float(trade['entry_price'])
+        quantity = float(trade['quantity'])
 
-        if action:
-            if side == 'buy':
-                pnl_realised = float(quantity) * (current_price - float(entry_price))
-            else:
-                pnl_realised = float(quantity) * (float(entry_price) - current_price)
+        ev = evaluate_exit(side, entry, trade['sl_price'], trade['tp_price'],
+                           trade['peak_price'], trade['trail_activated'], bars, current_price,
+                           self.TRAIL_ACTIVATE_PCT, self.TRAIL_DISTANCE_PCT)
 
-            ef = float(entry_fee) if entry_fee else float(quantity) * float(entry_price) * self.TAKER_FEE
-            exit_fee = float(quantity) * current_price * self.TAKER_FEE
-            fees_paid = ef + exit_fee
-            pnl_realised -= fees_paid
-            pnl_pct = (pnl_realised / (float(quantity) * float(entry_price))) * 100
-
-            cur.execute("""
-                UPDATE trades SET
-                    exit_price = %s, pnl_realised = %s, pnl_pct = %s, fees_paid = %s,
-                    status = 'closed', closed_at = NOW(), close_reason = %s
-                WHERE id = %s AND status = 'open'
-                RETURNING id
-            """, (current_price, round(pnl_realised, 4), round(pnl_pct, 4), round(fees_paid, 4), action, trade_id))
-
-            closed_row = cur.fetchone()
-            if not closed_row:
-                print(f'[MONITOR] Trade #{trade_id} already closed by another process — skipping')
-                return {'trade_id': trade_id, 'action': 'already_closed'}
-
-            print(f'[MONITOR] {action.upper()} — trade #{trade_id} {symbol} {side} closed @ {current_price} (P&L: {round(pnl_pct, 2)}%, fees: {round(fees_paid, 4)})')
-            return {
-                'trade_id': trade_id,
-                'action': action,
-                'exit_price': current_price,
-                'pnl_realised': round(pnl_realised, 4),
-                'pnl_pct': round(pnl_pct, 4),
-                'fees_paid': round(fees_paid, 4),
-            }
-        else:
-            return {
-                'trade_id': trade_id,
-                'action': 'holding',
-                'current_price': current_price,
-                'pnl_pct': round(pnl_pct, 4),
-            }
-
-    def _check_live_trade(self, cur, trade_id, symbol, side, quantity, entry_price,
-                          tp_price, sl_price, entry_fee, exchange_sl_id, exchange_tp_id):
-        """Reconciliation for live trades: check if SL or TP order filled on exchange."""
-        exchange = self._get_authenticated_exchange()
-        if not exchange:
-            print(f'[MONITOR] No API keys — falling back to price polling for live trade #{trade_id}')
-            return self._check_paper_trade(
-                cur, trade_id, symbol, side, quantity, entry_price,
-                tp_price, sl_price, None, entry_fee
-            )
-
-        filled_order = None
-        action = None
-        cancel_order_id = None
-
-        # Check SL order status
-        if exchange_sl_id:
+        # Persist peak / activation (best effort: a failure rolls back to the
+        # savepoint only, it can never poison the close below).
+        old_peak = float(trade['peak_price']) if trade['peak_price'] else None
+        if ev['peak'] != old_peak or ev['activated'] != bool(trade['trail_activated']):
+            cur.execute('SAVEPOINT peak_update')
             try:
-                sl_order = exchange.fetch_order(exchange_sl_id, symbol)
-                if sl_order['status'] == 'closed':
-                    filled_order = sl_order
-                    action = 'sl_hit'
-                    cancel_order_id = exchange_tp_id
+                cur.execute("UPDATE trades SET peak_price = %s, trail_activated = %s "
+                            "WHERE id = %s AND status = 'open'", (ev['peak'], ev['activated'], tid))
+                cur.execute('RELEASE SAVEPOINT peak_update')
             except Exception as e:
-                print(f'[MONITOR] Failed to fetch SL order {exchange_sl_id}: {e}')
+                cur.execute('ROLLBACK TO SAVEPOINT peak_update')
+                _log(f'Failed to update peak for trade #{tid}: {e}')
 
-        # Check TP order status (only if SL hasn't filled)
-        if not filled_order and exchange_tp_id:
-            try:
-                tp_order = exchange.fetch_order(exchange_tp_id, symbol)
-                if tp_order['status'] == 'closed':
-                    filled_order = tp_order
-                    action = 'tp_hit'
-                    cancel_order_id = exchange_sl_id
-            except Exception as e:
-                print(f'[MONITOR] Failed to fetch TP order {exchange_tp_id}: {e}')
+        action = ev['action']
+        if not action:
+            pnl_pct = ((current_price - entry) / entry if side == 'buy' else (entry - current_price) / entry) * 100
+            return {'trade_id': tid, 'action': 'holding', 'current_price': current_price,
+                    'pnl_pct': round(pnl_pct, 4)}
 
-        if not filled_order:
-            # Neither filled — still holding
-            try:
-                current_price = self._fetch_price(symbol, None)
-                if side == 'buy':
-                    pnl_pct = ((current_price - float(entry_price)) / float(entry_price)) * 100
-                else:
-                    pnl_pct = ((float(entry_price) - current_price) / float(entry_price)) * 100
-                return {
-                    'trade_id': trade_id,
-                    'action': 'holding',
-                    'current_price': current_price,
-                    'pnl_pct': round(pnl_pct, 4),
-                    'mode': 'live',
-                }
-            except Exception:
-                return {'trade_id': trade_id, 'action': 'holding', 'mode': 'live'}
-
-        # One leg filled — cancel the other
-        if cancel_order_id:
-            try:
-                exchange.cancel_order(cancel_order_id, symbol)
-                print(f'[MONITOR] Cancelled opposite order {cancel_order_id}')
-            except Exception as e:
-                print(f'[MONITOR] Cancel opposite order {cancel_order_id} skipped: {e}')
-
-        # Calculate P&L from filled order
-        exit_price = float(filled_order.get('average') or filled_order.get('price') or 0)
-        filled_qty = float(filled_order.get('filled') or quantity)
-
-        if side == 'buy':
-            pnl_realised = filled_qty * (exit_price - float(entry_price))
-        else:
-            pnl_realised = filled_qty * (float(entry_price) - exit_price)
-
-        ef = float(entry_fee) if entry_fee else float(quantity) * float(entry_price) * self.TAKER_FEE
-        exit_fee = filled_qty * exit_price * self.TAKER_FEE
-        fees_paid = ef + exit_fee
-        pnl_realised -= fees_paid
-        pnl_pct = (pnl_realised / (float(quantity) * float(entry_price))) * 100
-
+        exit_price = ev['exit_price']
+        ef = float(trade['entry_fee']) if trade['entry_fee'] else estimate_fee(quantity, entry)
+        pnl, pnl_pct, fees_paid = compute_pnl(side, quantity, entry, exit_price, ef,
+                                              quantity * exit_price * self.TAKER_FEE)
         cur.execute("""
             UPDATE trades SET
                 exit_price = %s, pnl_realised = %s, pnl_pct = %s, fees_paid = %s,
-                status = 'closed', closed_at = NOW(), close_reason = %s,
-                exchange_sl_order_id = NULL, exchange_tp_order_id = NULL
+                status = 'closed', closed_at = NOW(), close_reason = %s
             WHERE id = %s AND status = 'open'
             RETURNING id
-        """, (exit_price, round(pnl_realised, 4), round(pnl_pct, 4), round(fees_paid, 4), action, trade_id))
+        """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), round(fees_paid, 4), action, tid))
+        if not cur.fetchone():
+            _log(f'Trade #{tid} already closed by another process — skipping')
+            return {'trade_id': tid, 'action': 'already_closed'}
 
-        closed_row = cur.fetchone()
-        if not closed_row:
-            print(f'[MONITOR] Trade #{trade_id} already closed — skipping')
-            return {'trade_id': trade_id, 'action': 'already_closed', 'mode': 'live'}
+        _log(f'{action.upper()} — trade #{tid} {symbol} {side} closed @ {exit_price} '
+             f'(P&L: {round(pnl_pct, 2)}%, fees: {round(fees_paid, 4)})')
+        return {'trade_id': tid, 'action': action, 'exit_price': exit_price,
+                'pnl_realised': round(pnl, 4), 'pnl_pct': round(pnl_pct, 4),
+                'fees_paid': round(fees_paid, 4)}
 
-        print(f'[MONITOR] {action.upper()} — live trade #{trade_id} {symbol} {side} closed @ {exit_price} (P&L: {round(pnl_pct, 2)}%, fees: {round(fees_paid, 4)})')
-        return {
-            'trade_id': trade_id,
-            'action': action,
-            'exit_price': exit_price,
-            'pnl_realised': round(pnl_realised, 4),
-            'pnl_pct': round(pnl_pct, 4),
-            'fees_paid': round(fees_paid, 4),
-            'mode': 'live',
-        }
+    # ── live ─────────────────────────────────────────────────────────────────
+
+    def _check_live_trade(self, conn, cur, trade, price, bars):
+        """Reconcile / protect / TP-enforce a live trade. Never DB-only closes."""
+        tid, symbol, side = trade['id'], trade['symbol'].replace('-', '/'), trade['side']
+        entry = float(trade['entry_price'])
+        exchange = get_authenticated_exchange()
+        if exchange is None:
+            _log(f'ALERT live trade #{tid} cannot be managed: no exchange credentials — NOT closing DB-only')
+            return {'trade_id': tid, 'action': 'error', 'mode': 'live', 'alert': True,
+                    'error': 'no exchange credentials; live trade left untouched'}
+
+        sl_id, tp_id = trade['exchange_sl_order_id'], trade['exchange_tp_order_id']
+        sl_price = float(trade['sl_price']) if trade['sl_price'] else None
+        tp_price = float(trade['tp_price']) if trade['tp_price'] else None
+
+        # 1. Did an exchange exit order fill? (SL first — worst case wins ties)
+        for oid, reason, other in ((sl_id, 'sl_hit', tp_id), (tp_id, 'tp_hit', sl_id)):
+            if not oid:
+                continue
+            try:
+                order = self.live._exit_order_state(exchange, symbol, oid)
+            except Exception as e:
+                _log(f'Failed to fetch exit order {oid} for trade #{tid}: {e}')
+                continue
+            if order and order.get('status') == 'closed' and (order.get('filled') or 0) > 0:
+                if other:
+                    try:
+                        self.live._cancel_checked(exchange, symbol, other)
+                    except Exception as e:
+                        _log(f'ALERT cancel of opposite order {other} failed for trade #{tid}: {e}')
+                result = self.live._book_close(cur, trade, order, reason, exchange)
+                _log(f"{reason.upper()} — live trade #{tid} {symbol} {side} closed @ {result['exit_price']} "
+                     f"(P&L: {result['pnl_pct']}%, fees: {result['fees_paid']})")
+                return {'trade_id': tid, 'action': reason, 'exit_price': result['exit_price'],
+                        'pnl_realised': result['pnl'], 'pnl_pct': result['pnl_pct'],
+                        'fees_paid': result['fees_paid'], 'mode': 'live'}
+
+        # 2. Monitor-driven TP (no exchange TP order on spot) and SL-through detection.
+        ev = evaluate_exit(side, entry, sl_price, tp_price if not tp_id else None, None, False, bars, price,
+                           float('inf'), self.TRAIL_DISTANCE_PCT)
+        conn.commit()   # release any row locks: LiveTrader opens its own connection + FOR UPDATE
+
+        if ev['action'] == 'tp_hit':
+            _log(f'TP level reached for live trade #{tid} {symbol} — market-closing via exchange')
+            res = self.live.close(tid, close_reason='tp_hit')
+            return {'trade_id': tid, 'action': 'tp_hit', 'exit_price': res['exit_price'],
+                    'pnl_realised': res['pnl'], 'pnl_pct': res['pnl_pct'],
+                    'fees_paid': res['fees_paid'], 'mode': 'live'}
+
+        # 3. Missing stop-loss: protect or close — never leave it bare.
+        if sl_price and not sl_id:
+            if ev['action'] in ('sl_hit', 'trail_hit'):
+                _log(f'ALERT live trade #{tid} has no SL order and price is through {sl_price} — market-closing')
+                res = self.live.close(tid, close_reason='sl_hit')
+                return {'trade_id': tid, 'action': 'sl_hit', 'exit_price': res['exit_price'],
+                        'pnl_realised': res['pnl'], 'pnl_pct': res['pnl_pct'],
+                        'fees_paid': res['fees_paid'], 'mode': 'live'}
+            try:
+                placed = self.live.place_sl_tp(trade)
+                _log(f"live trade #{tid} lacked an SL order — recovery: {placed['action']} {placed['sl_order_id']}")
+                return {'trade_id': tid, 'action': 'sl_recovered', 'mode': 'live', 'alert': True, **placed}
+            except Exception as e:
+                _log(f'ALERT live trade #{tid} UNPROTECTED — could not place stop-loss: {e}')
+                return {'trade_id': tid, 'action': 'unprotected', 'mode': 'live', 'alert': True,
+                        'error': str(e)}
+        if not sl_price and not sl_id:
+            _log(f'NOTE live trade #{tid} has no sl_price at all (no stop by design)')
+
+        # 4. SL order exists but price is through it and it has not filled.
+        alert = False
+        if sl_id and ev['action'] == 'sl_hit':
+            alert = True
+            _log(f'ALERT live trade #{tid}: price {price} through SL {sl_price} but SL order {sl_id} not filled')
+
+        pnl_pct = ((price - entry) / entry if side == 'buy' else (entry - price) / entry) * 100
+        out = {'trade_id': tid, 'action': 'holding', 'current_price': price,
+               'pnl_pct': round(pnl_pct, 4), 'mode': 'live'}
+        if alert:
+            out['alert'] = True
+        return out

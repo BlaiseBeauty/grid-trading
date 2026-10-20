@@ -36,7 +36,7 @@ export default function Sidebar({ open, onClose }) {
         <span className="v2-obs-text">Observation Mode</span>
       </div>
 
-      <nav className="v2-sidebar-nav">
+      <nav className="v2-sidebar-nav" aria-label="Primary">
         {NAV.map(({ path, label, icon }) => (
           <NavLink
             key={path}
@@ -58,7 +58,7 @@ export default function Sidebar({ open, onClose }) {
             <span className="v2-scram-text">SCRAM: {system.scram_level.toUpperCase()}</span>
           </div>
         )}
-        <button className="v2-logout-btn" onClick={logout}>Logout</button>
+        <button type="button" className="v2-logout-btn" onClick={logout}>Logout</button>
       </div>
 
       <style>{`
@@ -87,7 +87,7 @@ export default function Sidebar({ open, onClose }) {
           font-size: 24px;
           letter-spacing: 8px;
           color: var(--v2-accent-cyan);
-          text-shadow: 0 0 20px rgba(0,229,255,0.3);
+          text-shadow: var(--v2-brand-glow);
         }
         .v2-phase-badge {
           font-family: var(--v2-font-data);
@@ -100,10 +100,9 @@ export default function Sidebar({ open, onClose }) {
           border: 1px solid var(--v2-border);
           color: var(--v2-text-secondary);
         }
-        .v2-phase-infant { color: var(--v2-accent-amber); border-color: rgba(255,171,0,0.3); }
-        .v2-phase-learning { color: var(--v2-accent-cyan); border-color: rgba(0,229,255,0.3); }
-        .v2-phase-maturing { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); }
-        .v2-phase-graduated { color: var(--v2-accent-green); border-color: rgba(0,230,118,0.3); }
+        .v2-phase-infant, .v2-phase-learning { color: var(--v2-accent-amber); border-color: var(--v2-tint-amber-strong); }
+        .v2-phase-maturing { color: var(--v2-accent-cyan); border-color: var(--v2-tint-cyan-strong); }
+        .v2-phase-graduated { color: var(--v2-accent-green); border-color: var(--v2-tint-green-strong); }
         .v2-sidebar-nav {
           flex: 1;
           padding: var(--v2-space-lg) 0;
@@ -130,7 +129,7 @@ export default function Sidebar({ open, onClose }) {
         }
         .v2-nav-item.active {
           color: var(--v2-accent-cyan);
-          background: rgba(0,229,255,0.05);
+          background: var(--v2-tint-cyan);
           border-left-color: var(--v2-accent-cyan);
         }
         .v2-nav-icon { font-size: 16px; width: 20px; text-align: center; }
@@ -145,8 +144,8 @@ export default function Sidebar({ open, onClose }) {
           padding: var(--v2-space-sm) var(--v2-space-md);
           margin-bottom: var(--v2-space-sm);
           border-radius: var(--v2-radius-sm);
-          background: rgba(255,23,68,0.08);
-          border: 1px solid rgba(255,23,68,0.2);
+          background: var(--v2-tint-red);
+          border: 1px solid var(--v2-tint-red-strong);
         }
         .v2-scram-text {
           font-family: var(--v2-font-data);
@@ -165,21 +164,20 @@ export default function Sidebar({ open, onClose }) {
         }
         .v2-logout-btn:hover { color: var(--v2-text-primary); }
 
-        /* Observation Mode Banner */
+        /* Observation Mode Banner — neutral UI colour (green is reserved for profit/loss) */
         .v2-obs-banner {
           display: flex;
           align-items: center;
           gap: 7px;
           padding: 8px 20px;
-          background: rgba(102, 187, 106, 0.08);
-          border-bottom: 1px solid rgba(102, 187, 106, 0.15);
+          background: var(--v2-tint-cyan);
+          border-bottom: 1px solid var(--v2-border);
         }
         .v2-obs-dot {
           width: 7px;
           height: 7px;
           border-radius: 50%;
-          background: #66bb6a;
-          box-shadow: 0 0 6px rgba(102, 187, 106, 0.7);
+          background: var(--v2-accent-cyan);
           flex-shrink: 0;
           animation: obs-sidebar-pulse 2.5s ease-in-out infinite;
         }
@@ -187,9 +185,20 @@ export default function Sidebar({ open, onClose }) {
           font-family: var(--v2-font-data);
           font-size: 10px;
           font-weight: 600;
-          color: #66bb6a;
+          color: var(--v2-accent-cyan);
           letter-spacing: 0.8px;
           text-transform: uppercase;
+        }
+
+        /* Tablet / narrow desktop: the sidebar becomes an off-canvas drawer opened from .mobile-header */
+        @media (max-width: 1023px) {
+          .v2-sidebar {
+            width: 220px;
+            transform: translateX(-100%);
+            transition: transform var(--transition-normal);
+            z-index: 10;
+          }
+          .v2-sidebar.open { transform: translateX(0); box-shadow: var(--v2-shadow-lg); }
         }
         @keyframes obs-sidebar-pulse {
           0%, 100% { opacity: 1; }

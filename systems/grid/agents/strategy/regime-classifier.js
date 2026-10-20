@@ -4,6 +4,7 @@
  */
 
 const BaseAgent = require('../base-agent');
+const { MODELS } = require('../../../../shared/models');
 const { queryOne, queryAll, query } = require('../../../../db/connection');
 
 const BRAIN_API_URL    = 'https://brain-web-production-41af.up.railway.app';
@@ -20,7 +21,7 @@ const REGIME_MAP = {
 
 class RegimeClassifierAgent extends BaseAgent {
   constructor() {
-    super({ name: 'regime_classifier', layer: 'strategy', model: 'claude-sonnet-4-6', costTier: 'grid_knowledge' });
+    super({ name: 'regime_classifier', layer: 'strategy', model: MODELS.grid_strategy, costTier: 'grid_knowledge' });
   }
 
   /**
@@ -148,7 +149,7 @@ class RegimeClassifierAgent extends BaseAgent {
       const trimmed = text.trim();
       if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
     } catch (err) { console.warn('[REGIME_CLASSIFIER] JSON parse failed in parseOutput:', err.message); }
-    return { regimes: [], signals: [], overallConfidence: null };
+    return { regimes: [], signals: [], overallConfidence: null, parse_error: 'no parseable JSON in output' };
   }
 }
 

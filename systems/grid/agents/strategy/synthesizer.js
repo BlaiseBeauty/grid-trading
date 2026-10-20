@@ -8,10 +8,15 @@ const BaseAgent = require('../base-agent');
 const signalsDb = require('../../../../db/queries/signals');
 const templatesDb = require('../../../../db/queries/templates');
 const { queryAll } = require('../../../../db/connection');
+const llm = require('../../../../shared/llm-client');
+const { MODELS } = require('../../../../shared/models');
+
+// Arrays the synthesizer may emit; used for truncation recovery.
+const RECOVERY_KEYS = ['actions', 'proposals', 'trades', 'standing_orders'];
 
 class SynthesizerAgent extends BaseAgent {
   constructor() {
-    super({ name: 'synthesizer', layer: 'strategy', model: 'claude-opus-4-6', costTier: 'grid_synthesizer' });
+    super({ name: 'synthesizer', layer: 'strategy', model: MODELS.grid_synthesizer, costTier: 'grid_synthesizer' });
   }
 
   /**
@@ -84,68 +89,39 @@ class SynthesizerAgent extends BaseAgent {
   }
 
   parseOutput(text) {
-    // Try clean JSON parse first
-    try {
-      const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1]);
-        return {
-          ...parsed,
-          signals: [], // Synthesizer doesn't emit signals — it emits proposals
-          overallConfidence: parsed.proposals?.[0]?.confidence || parsed.actions?.[0]?.confidence || null,
-        };
-      }
-      const trimmed = text.trim();
-      if (trimmed.startsWith('{')) return { ...JSON.parse(trimmed), signals: [] };
-    } catch (err) {
-      console.warn('[SYNTHESIZER] Clean JSON parse failed, attempting truncation recovery');
+    const res = llm.extractJson(text, { arrayKeys: RECOVERY_KEYS });
+
+    // Clean parse
+    if (res.ok && !res.recovered) {
+      const parsed = res.value;
+      return {
+        ...parsed,
+        signals: [], // Synthesizer doesn't emit signals — it emits proposals
+        overallConfidence: parsed.proposals?.[0]?.confidence || parsed.actions?.[0]?.confidence || null,
+      };
     }
 
-    // Truncated JSON recovery — search for all possible array keys
-    const RECOVERY_KEYS = ['actions', 'proposals', 'trades', 'standing_orders'];
-    const recovered = { signals: [], overallConfidence: null };
-    let totalRecovered = 0;
-
-    for (const key of RECOVERY_KEYS) {
-      const keyIdx = text.indexOf(`"${key}"`);
-      if (keyIdx === -1) continue;
-
-      const arrayStart = text.indexOf('[', keyIdx);
-      if (arrayStart === -1) continue;
-
-      const objects = [];
-      let depth = 0, objStart = -1;
-      for (let i = arrayStart + 1; i < text.length; i++) {
-        if (text[i] === '{' && depth === 0) { objStart = i; depth = 1; }
-        else if (text[i] === '{') depth++;
-        else if (text[i] === '}') {
-          depth--;
-          if (depth === 0 && objStart >= 0) {
-            try {
-              objects.push(JSON.parse(text.substring(objStart, i + 1)));
-            } catch { /* skip malformed object */ }
-            objStart = -1;
-          }
+    // Truncated JSON recovery — whichever arrays we could salvage
+    if (res.ok && res.recovered) {
+      const recovered = { signals: [], overallConfidence: null };
+      for (const key of RECOVERY_KEYS) {
+        if (res.value[key]) {
+          recovered[key] = res.value[key];
+          console.log(`[SYNTHESIZER] Recovered ${res.value[key].length} "${key}" from truncated JSON`);
         }
       }
-
-      if (objects.length > 0) {
-        recovered[key] = objects;
-        totalRecovered += objects.length;
-        console.log(`[SYNTHESIZER] Recovered ${objects.length} "${key}" from truncated JSON`);
-      }
-    }
-
-    if (totalRecovered > 0) {
       return recovered;
     }
 
-    // Zero recovery from a long response = probable truncation loss
-    if (text.length > 20000) {
+    // Zero recovery: explicit failure (run() marks the decision failed) — never a silent empty set.
+    if (String(text || '').length > 20000) {
       console.error(`[SYNTHESIZER] CRITICAL: Probable truncation — response length ${text.length} chars, zero actions extracted. Cycle proposals lost.`);
     }
-
-    return { proposals: [], rejections: [], actions: [], standing_orders: [], signals: [], overallConfidence: null };
+    return {
+      proposals: [], rejections: [], actions: [], standing_orders: [], signals: [],
+      overallConfidence: null,
+      parse_error: res.error || 'unparseable synthesizer output',
+    };
   }
 }
 

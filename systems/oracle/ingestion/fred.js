@@ -1,7 +1,7 @@
 'use strict';
 
-const https = require('https');
 const { query, queryAll } = require('../../../db/connection');
+const { fetchText, recordSource } = require('./http-fetch');
 
 // FRED series we track for ORACLE macro context
 // All freely available. API key optional but recommended for prod.
@@ -38,33 +38,30 @@ async function fetchSeries(seriesId) {
       url = `${FRED_BASE}${seriesId}`;
     }
 
-    https.get(url, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          if (apiKey) {
-            const json = JSON.parse(data);
-            const obs  = json.observations || [];
-            const latest = obs.find(o => o.value !== '.' && o.value !== '');
-            resolve({
-              seriesId,
-              value: latest ? parseFloat(latest.value) : null,
-              date:  latest ? latest.date : null,
-            });
-          } else {
-            // Parse CSV: date,value pairs, last line is latest
-            const lines = data.trim().split('\n').filter(l => !l.startsWith('DATE'));
-            const last  = lines[lines.length - 1];
-            if (!last) return resolve({ seriesId, value: null, date: null });
-            const [date, value] = last.split(',');
-            resolve({ seriesId, value: parseFloat(value), date });
-          }
-        } catch (err) {
-          reject(new Error(`FRED parse error for ${seriesId}: ${err.message}`));
+    // https-only, timeout, bounded redirects/body (see ./http-fetch.js)
+    fetchText(url).then((data) => {
+      try {
+        if (apiKey) {
+          const json = JSON.parse(data);
+          const obs  = json.observations || [];
+          const latest = obs.find(o => o.value !== '.' && o.value !== '');
+          resolve({
+            seriesId,
+            value: latest ? parseFloat(latest.value) : null,
+            date:  latest ? latest.date : null,
+          });
+        } else {
+          // Parse CSV: date,value pairs, last line is latest
+          const lines = data.trim().split('\n').filter(l => !l.startsWith('DATE'));
+          const last  = lines[lines.length - 1];
+          if (!last) return resolve({ seriesId, value: null, date: null });
+          const [date, value] = last.split(',');
+          resolve({ seriesId, value: parseFloat(value), date });
         }
-      });
-    }).on('error', err => reject(err));
+      } catch (err) {
+        reject(new Error(`FRED parse error for ${seriesId}: ${err.message}`));
+      }
+    }).catch(reject);
   });
 }
 
@@ -93,7 +90,7 @@ async function ingestFred() {
       }
     } catch (err) {
       errors.push({ series: series.id, error: err.message });
-      console.error(`[FRED] ${series.id} failed:`, err.message);
+      recordSource(`fred:${series.id}`, false, err);
     }
   }
 

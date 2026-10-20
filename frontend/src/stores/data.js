@@ -1,13 +1,59 @@
 import { create } from 'zustand';
 import { api } from '../lib/api';
 
+// Postgres NUMERIC arrives as strings. Returns a finite number or null (never a fake default).
+function numOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = typeof v === 'number' ? v : parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+const PRICE_HISTORY_LEN = 24;
+const FALLBACK_SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
+
+// Per-resource request tracking: { loading, error, loadedAt }.
+// "Empty" in the UI must mean "server confirmed empty"; a failed load sets `error`.
+const inflight = {};
+
+function track(key, set, fn) {
+  if (inflight[key]) return inflight[key];
+  set(s => ({
+    resources: {
+      ...s.resources,
+      [key]: { loading: true, error: s.resources[key]?.error ?? null, loadedAt: s.resources[key]?.loadedAt ?? null },
+    },
+  }));
+  const p = (async () => {
+    try {
+      await fn();
+      set(s => ({ resources: { ...s.resources, [key]: { loading: false, error: null, loadedAt: Date.now() } } }));
+    } catch (err) {
+      console.error(`[data] ${key} fetch failed:`, err);
+      const message = err?.message || 'Request failed';
+      set(s => ({
+        resources: {
+          ...s.resources,
+          [key]: { loading: false, error: message, loadedAt: s.resources[key]?.loadedAt ?? null },
+        },
+      }));
+    } finally {
+      delete inflight[key];
+    }
+  })();
+  inflight[key] = p;
+  return p;
+}
+
 export const useDataStore = create((set, get) => ({
-  // Portfolio
+  // Per-resource { loading, error, loadedAt } keyed by resource name
+  resources: {},
+
+  // Portfolio (null = not loaded yet / unknown; never a made-up default)
   portfolio: [],
-  portfolioValue: 0,
-  startingCapital: 10000,
-  realisedPnl: 0,
-  unrealisedPnl: 0,
+  portfolioValue: null,
+  startingCapital: null,
+  realisedPnl: null,
+  unrealisedPnl: null,
   tradeStats: null,
 
   // Equity curve
@@ -37,6 +83,11 @@ export const useDataStore = create((set, get) => ({
 
   // Live prices { 'BTC-USDT': { price, change24h } }
   prices: {},
+  // Short rolling history per symbol for sparklines { 'BTC-USDT': [n, ...] } (capped)
+  priceHistory: {},
+  pricesUpdatedAt: null,      // ms epoch of the last price write (live or fallback)
+  pricesSource: null,         // 'live' | 'candles' | null
+  priceError: null,           // string message when the last price fetch failed, else null
 
   // System
   system: null,
@@ -55,14 +106,36 @@ export const useDataStore = create((set, get) => ({
   tradeFlash: false,
   setTradeFlash: (val) => set({ tradeFlash: val }),
 
-  // Loading states
-  loading: {},
+  // Batch price write: only changed symbols get new objects / history arrays.
+  // `batch` is { [symbol]: { price, change24h } }.
+  applyPrices: (batch, source = 'live') => set(s => {
+    let prices = s.prices;
+    let priceHistory = s.priceHistory;
+    let changed = false;
+    for (const [symbol, data] of Object.entries(batch)) {
+      const price = numOrNull(data.price);
+      if (price == null) continue;
+      const change24h = data.change24h == null ? null : numOrNull(data.change24h);
+      const prev = prices[symbol];
+      if (prev && prev.price === price && prev.change24h === change24h) continue;
+      if (!changed) {
+        prices = { ...prices };
+        priceHistory = { ...priceHistory };
+        changed = true;
+      }
+      prices[symbol] = { price, change24h };
+      priceHistory[symbol] = [...(priceHistory[symbol] || []), price].slice(-PRICE_HISTORY_LEN);
+    }
+    return {
+      prices,
+      priceHistory,
+      pricesUpdatedAt: Date.now(),
+      pricesSource: source,
+      priceError: null,
+    };
+  }),
 
-  setLoading: (key, val) => set(s => ({ loading: { ...s.loading, [key]: val } })),
-
-  updatePrice: (symbol, price, change24h) => set(s => ({
-    prices: { ...s.prices, [symbol]: { price, change24h } },
-  })),
+  updatePrice: (symbol, price, change24h) => get().applyPrices({ [symbol]: { price, change24h } }),
 
   addFeedItem: (item) => set(s => ({
     feed: [{ ...item, ts: Date.now() }, ...s.feed].slice(0, 100),
@@ -76,144 +149,135 @@ export const useDataStore = create((set, get) => ({
   backtestProgress: null,
   setBacktestProgress: (data) => set({ backtestProgress: data }),
 
+  // Calibration updates (WebSocket 'calibration_update'): a counter + last payload that
+  // components can subscribe to (see CalibrationChart).
+  calibrationUpdate: null,
+  setCalibrationUpdate: (data) => set({ calibrationUpdate: { data, at: Date.now() } }),
+
   addCompletedAgent: (data) => set(s => {
     if (!s.cycleStatus) return {};
     return { cycleStatus: { ...s.cycleStatus, completed: [...s.cycleStatus.completed, data] } };
   }),
 
-  // Fetchers
-  fetchPortfolio: async () => {
-    get().setLoading('portfolio', true);
-    try {
-      const [portfolioData, stats] = await Promise.all([
-        api('/portfolio'),
-        api('/trades/stats'),
-      ]);
-      const { holdings = [], total_value, realised_pnl, unrealised_pnl, starting_capital } = portfolioData;
-      set({
-        portfolio: holdings,
-        portfolioValue: total_value || starting_capital || 10000,
-        startingCapital: parseFloat(starting_capital || 10000),
-        realisedPnl: parseFloat(realised_pnl || 0),
-        unrealisedPnl: parseFloat(unrealised_pnl || 0),
-        tradeStats: stats,
-      });
-    } catch (err) { console.error('Portfolio fetch:', err); }
-    get().setLoading('portfolio', false);
-  },
+  // Fetchers — each sets resources[key] = { loading, error, loadedAt }
+  fetchPortfolio: () => track('portfolio', set, async () => {
+    const [portfolioData, stats] = await Promise.all([
+      api('/portfolio'),
+      api('/trades/stats'),
+    ]);
+    const { holdings = [], total_value, realised_pnl, unrealised_pnl, starting_capital } = portfolioData;
+    const starting = numOrNull(starting_capital);
+    set({
+      portfolio: holdings,
+      // total_value from the server; else the server's starting capital; else unknown (null).
+      portfolioValue: numOrNull(total_value) ?? starting,
+      startingCapital: starting,
+      realisedPnl: numOrNull(realised_pnl),
+      unrealisedPnl: numOrNull(unrealised_pnl),
+      tradeStats: stats,
+    });
+  }),
 
-  fetchAgents: async () => {
-    get().setLoading('agents', true);
-    try {
-      const [agents, decisions, regime, rejected] = await Promise.all([
-        api('/agents'),
-        api('/agents/decisions?limit=30'),
-        api('/agents/regime'),
-        api('/agents/rejected?limit=20'),
-      ]);
-      set({ agents, decisions, regime, rejected });
-    } catch (err) { console.error('Agents fetch:', err); }
-    get().setLoading('agents', false);
-  },
+  fetchAgents: () => track('agents', set, async () => {
+    const [agents, decisions, regime, rejected] = await Promise.all([
+      api('/agents'),
+      api('/agents/decisions?limit=30'),
+      api('/agents/regime'),
+      api('/agents/rejected?limit=20'),
+    ]);
+    set({ agents, decisions, regime, rejected });
+  }),
 
-  fetchSignals: async () => {
-    try {
-      const signals = await api('/signals/active');
-      set({ signals });
-    } catch (err) { console.error('Signals fetch:', err); }
-  },
+  fetchSignals: () => track('signals', set, async () => {
+    const signals = await api('/signals/active');
+    set({ signals });
+  }),
 
-  fetchTrades: async () => {
-    get().setLoading('trades', true);
-    try {
-      const [trades, openTrades] = await Promise.all([
-        api('/trades?limit=50'),
-        api('/trades/open'),
-      ]);
-      set({ trades, openTrades });
-    } catch (err) { console.error('Trades fetch:', err); }
-    get().setLoading('trades', false);
-  },
+  fetchTrades: () => track('trades', set, async () => {
+    const [trades, openTrades] = await Promise.all([
+      api('/trades?limit=50'),
+      api('/trades/open'),
+    ]);
+    set({ trades, openTrades });
+  }),
 
-  fetchStandingOrders: async () => {
-    try {
-      const standingOrders = await api('/standing-orders');
-      set({ standingOrders });
-    } catch (err) { console.error('Standing orders fetch:', err); }
-  },
+  fetchStandingOrders: () => track('standingOrders', set, async () => {
+    const standingOrders = await api('/standing-orders');
+    set({ standingOrders });
+  }),
 
-  fetchTemplates: async () => {
-    get().setLoading('templates', true);
-    try {
-      const [templates, antiPatterns] = await Promise.all([
-        api('/templates'),
-        api('/anti-patterns'),
-      ]);
-      set({ templates, antiPatterns });
-    } catch (err) { console.error('Templates fetch:', err); }
-    get().setLoading('templates', false);
-  },
+  fetchTemplates: () => track('templates', set, async () => {
+    const [templates, antiPatterns] = await Promise.all([
+      api('/templates'),
+      api('/anti-patterns'),
+    ]);
+    set({ templates, antiPatterns });
+  }),
 
-  fetchLearnings: async () => {
-    try {
-      const [learnings, learningsSummary] = await Promise.all([
-        api('/learnings?limit=50'),
-        api('/learnings/summary'),
-      ]);
-      set({ learnings, learningsSummary });
-    } catch (err) { console.error('Learnings fetch:', err); }
-  },
+  fetchLearnings: () => track('learnings', set, async () => {
+    const [learnings, learningsSummary] = await Promise.all([
+      api('/learnings?limit=50'),
+      api('/learnings/summary'),
+    ]);
+    set({ learnings, learningsSummary });
+  }),
 
-  fetchSystem: async () => {
-    try {
-      const [system, costs, lastCycle] = await Promise.all([
-        api('/system/health-detail'),
-        api('/costs/summary'),
-        api('/system/last-cycle'),
-      ]);
-      set({ system, costs, lastCycle });
-    } catch (err) { console.error('System fetch:', err); }
-  },
+  fetchSystem: () => track('system', set, async () => {
+    const [system, costs, lastCycle] = await Promise.all([
+      api('/system/health-detail'),
+      api('/costs/summary'),
+      api('/system/last-cycle'),
+    ]);
+    set({ system, costs, lastCycle });
+  }),
 
-  fetchEquity: async () => {
-    try {
-      const equity = await api('/system/equity');
-      set({ equity: equity || [] });
-    } catch (err) { console.error('Equity fetch:', err); }
-  },
+  fetchEquity: () => track('equity', set, async () => {
+    const equity = await api('/system/equity');
+    set({ equity: equity || [] });
+  }),
 
+  // Goes through api() so the Authorization header, 401 refresh and timeout apply.
   fetchPrices: async () => {
     let fetched = 0;
+    let liveError = null;
     try {
-      const res = await fetch('/api/prices/live');
-      if (res.ok) {
-        const prices = await res.json();
-        for (const [symbol, data] of Object.entries(prices)) {
-          if (data.price) {
-            get().updatePrice(symbol, data.price, data.change24h ?? null);
-            fetched++;
-          }
+      const prices = await api('/prices/live');
+      const batch = {};
+      for (const [symbol, data] of Object.entries(prices || {})) {
+        if (data && numOrNull(data.price) != null && numOrNull(data.price) !== 0) {
+          batch[symbol] = { price: data.price, change24h: data.change24h ?? null };
+          fetched++;
         }
       }
+      if (fetched > 0) get().applyPrices(batch, 'live');
     } catch (err) {
-      console.error('[PRICES] Live price fetch failed:', err.message || err);
-      set({ priceError: true });
+      liveError = err?.message || 'Live price fetch failed';
+      console.error('[PRICES] Live price fetch failed:', liveError);
     }
 
-    // Fallback: read from DB candles if live endpoint returned nothing
-    if (fetched === 0) {
-      const symbols = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
-      for (const symbol of symbols) {
-        try {
-          const candles = await api(`/market-data/${symbol}?timeframe=1h&limit=25`);
-          if (!candles?.length) continue;
-          const latest = candles[candles.length - 1];
-          const close = parseFloat(latest.close);
-          const old = candles.length >= 25 ? parseFloat(candles[0].close) : parseFloat(candles[0].close);
-          const change24h = old > 0 ? ((close - old) / old) * 100 : 0;
-          get().updatePrice(symbol, close, change24h);
-        } catch (err) { console.error(`[PRICES] DB candle fallback failed for ${symbol}:`, err.message || err); }
-      }
+    if (fetched > 0) return;
+
+    // Fallback: read DB candles in parallel when the live endpoint returned nothing or failed
+    const results = await Promise.allSettled(
+      FALLBACK_SYMBOLS.map(async (symbol) => {
+        const candles = await api(`/market-data/${symbol}?timeframe=1h&limit=25`);
+        if (!candles?.length) return null;
+        const close = numOrNull(candles[candles.length - 1].close);
+        const old = numOrNull(candles[0].close);
+        if (close == null) return null;
+        const change24h = old != null && old > 0 ? ((close - old) / old) * 100 : null;
+        return [symbol, { price: close, change24h }];
+      })
+    );
+    const batch = {};
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value) batch[r.value[0]] = r.value[1];
+      else if (r.status === 'rejected') console.error('[PRICES] DB candle fallback failed:', r.reason?.message || r.reason);
+    }
+    if (Object.keys(batch).length > 0) {
+      get().applyPrices(batch, 'candles');
+    } else {
+      set({ priceError: liveError || 'No price data available' });
     }
   },
 

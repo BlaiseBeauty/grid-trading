@@ -1,22 +1,26 @@
 import { useEffect, useRef } from 'react';
 import { createChart, AreaSeries } from 'lightweight-charts';
-import { CHART_OPTIONS, EQUITY_AREA_OPTIONS } from '../lib/chartConfig';
+import { getChartOptions, getEquityAreaOptions, useChartTheme } from '../lib/chartConfig';
+import { ErrorState } from './StateBlock';
 
-export default function EquityCurve({ data }) {
+// `loaded` = the equity request has completed at least once; `error` = last request failed.
+// An empty curve is only shown as "no data" when the server confirmed there is none.
+export default function EquityCurve({ data, loaded = true, error = null, onRetry }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
 
   // Create chart on mount
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current) return undefined;
 
+    const base = getChartOptions();
     const chart = createChart(containerRef.current, {
-      ...CHART_OPTIONS,
-      layout: { ...CHART_OPTIONS.layout, fontSize: 11 },
+      ...base,
+      layout: { ...base.layout, fontSize: 11 },
     });
 
     const areaSeries = chart.addSeries(AreaSeries, {
-      ...EQUITY_AREA_OPTIONS,
+      ...getEquityAreaOptions(),
     });
 
     chartRef.current = { chart, areaSeries };
@@ -32,6 +36,11 @@ export default function EquityCurve({ data }) {
       chart.remove();
     };
   }, []);
+
+  useChartTheme(() => [
+    [chartRef.current?.chart, () => ({ ...getChartOptions(), layout: { ...getChartOptions().layout, fontSize: 11 } })],
+    [chartRef.current?.areaSeries, getEquityAreaOptions],
+  ]);
 
   // Update chart when data prop changes
   useEffect(() => {
@@ -51,7 +60,13 @@ export default function EquityCurve({ data }) {
       <div className="v2-equity-header">
         <div className="v2-equity-title">Equity Curve</div>
       </div>
-      {!hasData && (
+      {!hasData && error && (
+        <ErrorState error={error} onRetry={onRetry} title="Could not load equity curve" />
+      )}
+      {!hasData && !error && !loaded && (
+        <div className="v2-equity-empty" role="status">Loading equity curve…</div>
+      )}
+      {!hasData && !error && loaded && (
         <div className="v2-equity-empty">No equity data yet — run a cycle to start tracking</div>
       )}
       <div ref={containerRef} className="v2-equity-container" style={{ display: hasData ? 'block' : 'none' }} />

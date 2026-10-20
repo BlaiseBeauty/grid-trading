@@ -22,6 +22,8 @@ export default function Login() {
           <input
             type="email"
             placeholder="Email"
+            aria-label="Email"
+            autoComplete="username"
             value={email}
             onChange={e => setEmail(e.target.value)}
             className="v2-login-input"
@@ -31,12 +33,14 @@ export default function Login() {
           <input
             type="password"
             placeholder="Password"
+            aria-label="Password"
+            autoComplete="current-password"
             value={password}
             onChange={e => setPassword(e.target.value)}
             className="v2-login-input"
             required
           />
-          {error && <div className="v2-login-error">{error}</div>}
+          {error && <div className="v2-login-error" role="alert">{error}</div>}
           <button type="submit" disabled={loading} className="v2-login-btn">
             {loading ? (
               <span className="v2-login-loading">
@@ -55,7 +59,7 @@ export default function Login() {
           align-items: center;
           justify-content: center;
           background: var(--v2-bg-primary);
-          background-image: radial-gradient(ellipse at 50% 0%, rgba(79,195,247,0.04) 0%, transparent 60%);
+          background-image: radial-gradient(ellipse at 50% 0%, var(--v2-tint-cyan) 0%, transparent 60%);
         }
         .v2-login-card {
           background: var(--v2-glass-bg);
@@ -63,7 +67,9 @@ export default function Login() {
           border: 1px solid var(--v2-border);
           border-radius: var(--v2-radius-lg);
           padding: var(--v2-space-3xl);
-          width: 380px;
+          width: 100%;
+          max-width: 380px;
+          margin: 0 var(--v2-space-lg);
           text-align: center;
           box-shadow: var(--v2-glow-cyan);
           animation: v2-fade-in-up var(--v2-duration-slow) var(--v2-ease-out);
@@ -75,7 +81,7 @@ export default function Login() {
           letter-spacing: 10px;
           color: var(--v2-accent-cyan);
           margin-bottom: var(--v2-space-xs);
-          text-shadow: 0 0 24px rgba(79,195,247,0.25);
+          text-shadow: var(--v2-brand-glow);
         }
         .v2-login-subtitle {
           font-family: var(--v2-font-body);
@@ -104,7 +110,7 @@ export default function Login() {
         }
         .v2-login-input:focus {
           border-color: var(--v2-accent-cyan);
-          box-shadow: 0 0 0 1px rgba(79,195,247,0.15);
+          box-shadow: 0 0 0 1px var(--v2-tint-cyan-strong);
         }
         .v2-login-input::placeholder {
           color: var(--v2-text-muted);
@@ -113,7 +119,7 @@ export default function Login() {
           width: 100%;
           padding: var(--v2-space-md);
           background: var(--v2-accent-cyan);
-          color: var(--v2-bg-primary);
+          color: var(--v2-on-accent);
           font-family: var(--v2-font-data);
           font-weight: 600;
           font-size: 12px;
@@ -124,7 +130,7 @@ export default function Login() {
           cursor: pointer;
         }
         .v2-login-btn:hover {
-          box-shadow: 0 0 24px rgba(79,195,247,0.2);
+          box-shadow: var(--v2-glow-cyan-strong);
         }
         .v2-login-loading {
           display: flex;
@@ -142,8 +148,8 @@ export default function Login() {
           font-family: var(--v2-font-data);
           font-size: 12px;
           padding: var(--v2-space-sm);
-          background: rgba(239,83,80,0.08);
-          border: 1px solid rgba(239,83,80,0.2);
+          background: var(--v2-tint-red);
+          border: 1px solid var(--v2-tint-red-strong);
           border-radius: var(--v2-radius-sm);
         }
       `}</style>

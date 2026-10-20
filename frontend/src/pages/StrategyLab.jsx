@@ -1,24 +1,29 @@
 import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useDataStore } from '../stores/data';
 import { api } from '../lib/api';
-import { timeAgo } from '../lib/format';
+import useApiResource from '../hooks/useApiResource';
+import { timeAgo, fmtMoney } from '../lib/format';
 import { GlowCard, SignalBadge, StatusPulse, CountdownTimer, RangeBar } from '../components/ui';
+import { ErrorState, LoadingState } from '../components/StateBlock';
+
+// Returns the loading / error JSX for a store resource, or null once it has loaded.
+function gate(res, retry, title) {
+  if (res?.loadedAt != null) return null;
+  if (res?.error) return <ErrorState error={res.error} onRetry={retry} title={title} />;
+  return <LoadingState />;
+}
 
 function SignalPatternsPanel() {
-  const [patterns, setPatterns] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const res = useApiResource('/patterns', { initial: null });
+  const patterns = res.data?.patterns || [];
 
-  useEffect(() => {
-    api('/patterns')
-      .then(r => setPatterns(r?.patterns || []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) return (
+  if (!res.loaded) return (
     <GlowCard>
       <div className="v2-section-title">Signal Patterns</div>
-      <div className="v2-empty">Loading patterns...</div>
+      {res.error
+        ? <ErrorState error={res.error} onRetry={res.reload} title="Could not load patterns" />
+        : <LoadingState>Loading patterns...</LoadingState>}
     </GlowCard>
   );
 
@@ -79,19 +84,36 @@ function SignalPatternsPanel() {
 }
 
 export default function StrategyLab() {
-  const { fetchTemplates, fetchLearnings, fetchStandingOrders, templates, antiPatterns, learnings, learningsSummary, standingOrders, prices } = useDataStore();
+  const {
+    fetchTemplates, fetchLearnings, fetchStandingOrders,
+    templates, antiPatterns, learnings, learningsSummary, standingOrders, prices, resources,
+  } = useDataStore(useShallow(s => ({
+    fetchTemplates: s.fetchTemplates,
+    fetchLearnings: s.fetchLearnings,
+    fetchStandingOrders: s.fetchStandingOrders,
+    templates: s.templates,
+    antiPatterns: s.antiPatterns,
+    learnings: s.learnings,
+    learningsSummary: s.learningsSummary,
+    standingOrders: s.standingOrders,
+    prices: s.prices,
+    resources: s.resources,
+  })));
   const [cancellingId, setCancellingId] = useState(null);
+  const [cancelError, setCancelError] = useState(null);
 
-  useEffect(() => { fetchTemplates(); fetchLearnings(); fetchStandingOrders(); }, []);
+  useEffect(() => { fetchTemplates(); fetchLearnings(); fetchStandingOrders(); }, [fetchTemplates, fetchLearnings, fetchStandingOrders]);
 
   async function cancelOrder(id) {
     if (!confirm('Cancel this standing order?')) return;
     setCancellingId(id);
+    setCancelError(null);
     try {
       await api(`/standing-orders/${id}/cancel`, { method: 'PATCH', body: JSON.stringify({ reason: 'manual' }), headers: { 'Content-Type': 'application/json' } });
       fetchStandingOrders();
     } catch (e) {
       console.error('Cancel failed:', e);
+      setCancelError(`Could not cancel order #${id}: ${e?.message || 'unknown error'}`);
     } finally {
       setCancellingId(null);
     }
@@ -105,13 +127,19 @@ export default function StrategyLab() {
       <div className="v2-animate-in v2-stagger-1">
         <GlowCard glowColor="cyan">
           <div className="v2-section-title">Standing Orders ({standingOrders.length})</div>
-          {standingOrders.length === 0 ? (
+          {cancelError && <ErrorState error={cancelError} title="Cancel failed" />}
+          {gate(resources.standingOrders, fetchStandingOrders, 'Could not load standing orders')}
+          {resources.standingOrders?.loadedAt == null ? null : standingOrders.length === 0 ? (
             <div className="v2-empty">No standing orders. Synthesizer creates these during cycles.</div>
           ) : (
             <div className="v2-so-grid">
               {standingOrders.map((o, i) => {
                 let cond = {};
-                try { cond = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {}); } catch {}
+                try {
+                  cond = typeof o.conditions === 'string' ? JSON.parse(o.conditions) : (o.conditions || {});
+                } catch (err) {
+                  console.warn(`[StrategyLab] order ${o.id} has unparseable conditions:`, err?.message || err);
+                }
                 const priceKeys = ['price_below', 'price_above', 'price', 'entry_price', 'price_level'];
                 let triggerPrice = null;
                 let triggerLabel = null;
@@ -123,8 +151,8 @@ export default function StrategyLab() {
                     break;
                   }
                 }
-                const condText = triggerPrice
-                  ? `${triggerLabel} $${Number(triggerPrice).toLocaleString()}`
+                const condText = triggerPrice > 0
+                  ? `${triggerLabel} ${fmtMoney(triggerPrice, 2)}`
                   : cond.entry_trigger || cond.logic || '\u2014';
 
                 const currentPrice = prices[o.symbol]?.price;
@@ -133,7 +161,7 @@ export default function StrategyLab() {
 
                 // Build RangeBar bounds: use trigger price as target, current as position
                 let rangeLow = null, rangeHigh = null;
-                if (triggerPrice && currentPrice) {
+                if (triggerPrice > 0 && currentPrice > 0) {
                   if (o.side === 'buy') {
                     // Buy order triggers when price drops to trigger
                     rangeLow = triggerPrice * 0.95;
@@ -172,7 +200,7 @@ export default function StrategyLab() {
                         <span className="v2-so-value">{condText}</span>
                       </div>
 
-                      {triggerPrice && currentPrice && rangeLow && rangeHigh && (
+                      {triggerPrice > 0 && currentPrice > 0 && rangeLow > 0 && rangeHigh > 0 && (
                         <div className="v2-so-range-wrap">
                           <RangeBar
                             current={currentPrice}
@@ -197,7 +225,7 @@ export default function StrategyLab() {
                         </span>
                       </div>
 
-                      {o.template_id && (
+                      {o.template_id != null && (
                         <div className="v2-so-card-row">
                           <span className="v2-so-label">Template</span>
                           <span className="v2-so-value v2-tag">#{o.template_id}</span>
@@ -226,7 +254,8 @@ export default function StrategyLab() {
       <div className="v2-animate-in v2-stagger-2">
         <GlowCard>
           <div className="v2-section-title">Strategy Templates ({templates.length})</div>
-          {templates.length === 0 ? (
+          {gate(resources.templates, fetchTemplates, 'Could not load templates')}
+          {resources.templates?.loadedAt == null ? null : templates.length === 0 ? (
             <div className="v2-empty">No templates yet. Run analysis to discover patterns.</div>
           ) : (
             <div className="v2-template-grid">
@@ -269,7 +298,8 @@ export default function StrategyLab() {
         {/* Anti-Patterns */}
         <GlowCard glowColor="red">
           <div className="v2-section-title">Anti-Patterns ({antiPatterns.length})</div>
-          {antiPatterns.length === 0 ? (
+          {gate(resources.templates, fetchTemplates, 'Could not load anti-patterns')}
+          {resources.templates?.loadedAt == null ? null : antiPatterns.length === 0 ? (
             <div className="v2-empty">No anti-patterns identified</div>
           ) : antiPatterns.map((ap, i) => (
             <div key={i} className="v2-ap-row">
@@ -293,7 +323,8 @@ export default function StrategyLab() {
         {/* Learning Categories */}
         <GlowCard glowColor="amber">
           <div className="v2-section-title">Learning Categories</div>
-          {learningsSummary.length === 0 ? (
+          {gate(resources.learnings, fetchLearnings, 'Could not load learning categories')}
+          {resources.learnings?.loadedAt == null ? null : learningsSummary.length === 0 ? (
             <div className="v2-empty">No learnings yet</div>
           ) : learningsSummary.map((cat, i) => (
             <div key={i} className="v2-cat-row">
@@ -313,7 +344,8 @@ export default function StrategyLab() {
       <div className="v2-animate-in v2-stagger-5">
         <GlowCard>
           <div className="v2-section-title">Recent Learnings ({learnings.length})</div>
-          {learnings.length === 0 ? (
+          {gate(resources.learnings, fetchLearnings, 'Could not load learnings')}
+          {resources.learnings?.loadedAt == null ? null : learnings.length === 0 ? (
             <div className="v2-empty">No learnings extracted yet. Run analysis after some trades.</div>
           ) : (
             <div className="v2-learnings-list">
@@ -406,19 +438,19 @@ export default function StrategyLab() {
         .v2-tag {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
           padding: 2px 6px; border-radius: var(--v2-radius-sm);
-          background: rgba(255,255,255,0.05); color: var(--v2-text-secondary);
+          background: var(--v2-fill-2); color: var(--v2-text-secondary);
           border: 1px solid var(--v2-border);
         }
-        .v2-tag-magenta { color: var(--v2-accent-magenta); border-color: rgba(179,157,219,0.3); background: rgba(179,157,219,0.05); }
+        .v2-tag-magenta { color: var(--v2-accent-magenta); border-color: var(--v2-tint-magenta-strong); background: var(--v2-tint-magenta); }
 
         /* Confidence badges */
         .v2-conf-badge {
           font-family: var(--v2-font-data); font-size: 9px; font-weight: 500;
           padding: 2px 6px; border-radius: var(--v2-radius-sm);
         }
-        .v2-conf-high { color: var(--v2-accent-green); background: rgba(102,187,106,0.08); border: 1px solid rgba(102,187,106,0.2); }
-        .v2-conf-med { color: var(--v2-accent-amber); background: rgba(255,167,38,0.08); border: 1px solid rgba(255,167,38,0.2); }
-        .v2-conf-low { color: var(--v2-text-muted); background: rgba(255,255,255,0.03); border: 1px solid var(--v2-border); }
+        .v2-conf-high { color: var(--v2-accent-cyan); background: var(--v2-tint-cyan); border: 1px solid var(--v2-tint-cyan-strong); }
+        .v2-conf-med { color: var(--v2-accent-amber); background: var(--v2-tint-amber); border: 1px solid var(--v2-tint-amber-strong); }
+        .v2-conf-low { color: var(--v2-text-muted); background: var(--v2-fill-1); border: 1px solid var(--v2-border); }
 
         /* Anti-patterns */
         .v2-ap-row { padding: var(--v2-space-sm) 0; border-bottom: 1px solid var(--v2-border); }
@@ -443,7 +475,7 @@ export default function StrategyLab() {
         .v2-learning-item {
           border-left: 2px solid var(--v2-accent-magenta);
           padding: var(--v2-space-sm) var(--v2-space-md);
-          background: rgba(179,157,219,0.03);
+          background: var(--v2-tint-magenta);
           border-radius: 0 var(--v2-radius-sm) var(--v2-radius-sm) 0;
         }
         .v2-learning-header {
@@ -498,14 +530,14 @@ export default function StrategyLab() {
         .v2-so-cancel-btn {
           width: 100%; margin-top: var(--v2-space-md);
           padding: var(--v2-space-sm) var(--v2-space-md);
-          border: 1px solid rgba(239,83,80,0.3); border-radius: var(--v2-radius-sm);
+          border: 1px solid var(--v2-tint-red-strong); border-radius: var(--v2-radius-sm);
           background: transparent; color: var(--v2-accent-red);
           font-family: var(--v2-font-data); font-size: 10px; font-weight: 600;
           text-transform: uppercase; letter-spacing: 1px;
           cursor: pointer; transition: all var(--v2-duration-fast);
         }
         .v2-so-cancel-btn:hover {
-          background: rgba(239,83,80,0.08);
+          background: var(--v2-tint-red);
           border-color: var(--v2-accent-red);
         }
         .v2-so-cancel-btn:disabled { opacity: 0.5; cursor: not-allowed; }

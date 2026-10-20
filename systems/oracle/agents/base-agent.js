@@ -1,10 +1,8 @@
 'use strict';
 
-const Anthropic = require('@anthropic-ai/sdk');
-const aiCosts   = require('../../../shared/ai-costs');
-const { query } = require('../../../db/connection');
-
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const llm = require('../../../shared/llm-client');
+const { MODELS } = require('../../../shared/models');
+const { validateThesis, UNTRUSTED_INSTRUCTION } = require('./validation');
 
 // ORACLE thesis output schema — all domain agents must return this structure
 const THESIS_SCHEMA = `
@@ -30,121 +28,67 @@ class OracleBaseAgent {
   constructor(opts = {}) {
     this.name       = opts.name || 'oracle-base';
     this.domain     = opts.domain || 'macro';
-    this.model      = opts.model || 'claude-sonnet-4-5';
+    this.model      = opts.model || MODELS.oracle_domain;
     this.costTier   = opts.costTier || 'oracle_domain';
-    this.maxRetries = 3;
+    this.cycleId    = Number.isInteger(opts.cycleId) ? opts.cycleId : null;
+    this.maxRetries = llm.MAX_ATTEMPTS; // retry policy lives in shared/llm-client
   }
 
   /**
-   * Call Claude with a thesis generation prompt.
-   * Returns parsed thesis object or null on failure.
+   * Call Claude (budget gates, retry w/ jitter, timeout and cost recording via shared/llm-client).
+   * Returns the raw response text. Throws BudgetExceededError / API errors.
    */
   async callClaude(systemPrompt, userPrompt, opts = {}) {
-    const budget   = aiCosts.getBudget(this.costTier);
-    const maxTokens = opts.maxTokens
-      ? Math.min(opts.maxTokens, budget.max_output)
-      : budget.max_output;
+    const cycleId = Number.isInteger(opts.cycleId) ? opts.cycleId : this.cycleId;
+    const result = await llm.callClaude({
+      source: 'oracle',
+      agentName: this.name,
+      cycleId,
+      model: this.model,
+      costTier: this.costTier,
+      system: systemPrompt,
+      user: userPrompt,
+      maxTokens: opts.maxTokens,
+    });
 
-    let lastError;
-    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
-      try {
-        const response = await client.messages.create({
-          model:      this.model,
-          max_tokens: maxTokens,
-          system:     systemPrompt,
-          messages:   [{ role: 'user', content: userPrompt }],
-        });
+    // Tag the decision log with source_system so GRID analytics can exclude it
+    await llm.logForeignDecision({
+      source: 'oracle', agentName: this.name, layer: 'knowledge', model: result.model,
+      inputTokens: result.inputTokens, outputTokens: result.outputTokens, costUsd: result.costUsd,
+      text: result.text, cycleId,
+    });
 
-        // Record cost
-        const usage = response.usage;
-        aiCosts.recordUsage({
-          source_system: 'oracle',
-          agent_name:    this.name,
-          model:         response.model,
-          input_tokens:  usage.input_tokens,
-          output_tokens: usage.output_tokens,
-        }).catch(() => {});
+    return result.text;
+  }
 
-        const content = response.content[0]?.text || '';
+  /** Append the untrusted-data handling rule to a system prompt (use for any agent fed external text). */
+  withInjectionGuard(systemPrompt) {
+    return `${systemPrompt}\n\n${UNTRUSTED_INSTRUCTION}`;
+  }
 
-        // Store agent decision (adapt to actual agent_decisions schema)
-        try {
-          await query(
-            `INSERT INTO agent_decisions
-               (agent_name, agent_layer, model_used, input_tokens, output_tokens,
-                cost_usd, output_json, created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
-            [
-              this.name, 'knowledge', response.model,
-              usage.input_tokens, usage.output_tokens,
-              aiCosts.calculateCost(response.model, usage.input_tokens, usage.output_tokens),
-              JSON.stringify({ raw_output: content.slice(0, 2000) }),
-            ]
-          );
-        } catch { /* non-critical */ }
-
-        return content;
-
-      } catch (err) {
-        lastError = err;
-        if (err.status === 429) {
-          const wait = attempt === 1 ? 15000 : attempt === 2 ? 30000 : 60000;
-          console.warn(`[${this.name}] Rate limit, waiting ${wait}ms (attempt ${attempt})`);
-          await new Promise(r => setTimeout(r, wait));
-        } else {
-          console.error(`[${this.name}] API error:`, err.message);
-          throw err;
-        }
-      }
+  /** Generic JSON-object parse (fence stripping, outermost-object slice). Returns object or null. */
+  parseJsonObject(rawContent) {
+    const res = llm.extractJson(rawContent);
+    if (!res.ok) {
+      console.error(`[${this.name}] JSON parse failed: ${res.error}`);
+      return null;
     }
-    throw lastError;
+    return res.value;
   }
 
   /**
-   * Parse a Claude response into a Thesis Object.
-   * Handles markdown code blocks and raw JSON.
+   * Parse + validate a Claude response into a Thesis Object (enums, conviction 0..10, asset arrays).
+   * Returns the validated thesis or null (reason logged).
    */
   parseThesis(rawContent) {
-    try {
-      // Strip markdown code fences if present
-      const clean = rawContent
-        .replace(/```json\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-
-      // Find JSON object
-      const start = clean.indexOf('{');
-      const end   = clean.lastIndexOf('}');
-      if (start === -1 || end === -1) throw new Error('No JSON object found');
-
-      const thesis = JSON.parse(clean.slice(start, end + 1));
-
-      // Recover name from summary if missing (LLM occasionally omits it)
-      if (!thesis.name && thesis.summary) {
-        const firstSentence = thesis.summary.split(/[.!?]/)[0].trim();
-        thesis.name = firstSentence.length > 8
-          ? firstSentence.slice(0, 80)
-          : `${thesis.domain} thesis`;
-        console.warn(`[${this.name}] name missing — recovered from summary: "${thesis.name}"`);
-      }
-
-      // Validate required fields
-      const required = ['name', 'domain', 'direction', 'conviction', 'time_horizon', 'summary'];
-      for (const field of required) {
-        if (!thesis[field]) throw new Error(`Missing required field: ${field}`);
-      }
-
-      // Normalise
-      thesis.conviction   = Math.max(0, Math.min(10, parseFloat(thesis.conviction)));
-      thesis.long_assets  = thesis.long_assets  || [];
-      thesis.short_assets = thesis.short_assets || [];
-      thesis.watch_assets = thesis.watch_assets || [];
-
-      return thesis;
-    } catch (err) {
-      console.error(`[${this.name}] Thesis parse failed:`, err.message);
+    const obj = this.parseJsonObject(rawContent);
+    if (!obj) return null;
+    const v = validateThesis(obj, { expectedDomain: this.domain });
+    if (!v.ok) {
+      console.error(`[${this.name}] Thesis rejected: ${v.error}`);
       return null;
     }
+    return v.thesis;
   }
 
   getThesisSchema() { return THESIS_SCHEMA; }

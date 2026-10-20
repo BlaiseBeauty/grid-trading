@@ -15,10 +15,26 @@ export default function GlowCard({
   onClick,
   padding,
 }) {
+  // A clickable card is a keyboard-operable button (Enter/Space), but only when the card itself
+  // has focus: keys pressed inside nested controls must not toggle it.
+  const interactive = typeof onClick === 'function';
+  const onKeyDown = interactive
+    ? (e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onClick(e);
+        }
+      }
+    : undefined;
+
   return (
     <div
-      className={`v2-glow-card v2-glow-card--${glowColor} ${className}`}
+      className={`v2-glow-card v2-glow-card--${glowColor} ${interactive ? 'v2-glow-card--clickable' : ''} ${className}`}
       onClick={onClick}
+      onKeyDown={onKeyDown}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
       style={padding ? { padding } : undefined}
     >
       {children}
@@ -39,7 +55,7 @@ export default function GlowCard({
           border-color: var(--v2-border-hover);
           background: var(--v2-bg-card);
         }
-        .v2-glow-card[onClick] { cursor: pointer; }
+        .v2-glow-card--clickable { cursor: pointer; }
 
         .v2-glow-card--cyan:hover  { box-shadow: var(--v2-glow-cyan); }
         .v2-glow-card--green:hover { box-shadow: var(--v2-glow-green); }

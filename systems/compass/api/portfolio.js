@@ -1,6 +1,7 @@
 'use strict';
 
 const { queryAll, queryOne, query } = require('../../../db/connection');
+const cycleGate = require('../../../shared/cycle-gate');
 
 module.exports = async function (fastify) {
 
@@ -115,6 +116,10 @@ module.exports = async function (fastify) {
   fastify.post('/cycle/run', { preHandler: fastify.authenticate, config: { rateLimit: { max: 3, timeWindow: '1 hour' } } },
     async (request, reply) => {
       const { runCycle } = require('../agents/orchestrator');
+      const gate = await cycleGate.gate({ override: request.body?.override === true });
+      if (!gate.ok) {
+        return reply.code(gate.status).send({ error: gate.error });
+      }
       try {
         const result = await runCycle();
         return reply.send({

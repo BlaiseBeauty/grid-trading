@@ -1,19 +1,29 @@
-import { useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import usePlatformStore from '../../stores/platform';
-import { api } from '../../lib/api';
+import useApiResource from '../../hooks/useApiResource';
+import { ErrorState } from '../../components/StateBlock';
+import { fmtMoney } from '../../lib/format';
 
 export default function PlatformOverview() {
-  const { platformHealth, oracleTheses, compassPortfolio, compassRisk } = usePlatformStore();
-  const [costs, setCosts] = useState(null);
-  const [busStats, setBusStats] = useState(null);
-
-  useEffect(() => {
-    api('/platform/costs/summary').then(r => setCosts(r)).catch(() => {});
-    api('/platform/health').then(r => setBusStats(r?.intelligence_bus)).catch(() => {});
-  }, []);
+  const { platformHealth, oracleTheses, compassPortfolio, compassRisk } = usePlatformStore(useShallow(s => ({
+    platformHealth: s.platformHealth,
+    oracleTheses: s.oracleTheses,
+    compassPortfolio: s.compassPortfolio,
+    compassRisk: s.compassRisk,
+  })));
+  const costsRes = useApiResource('/platform/costs/summary', { initial: null });
+  const healthRes = useApiResource('/platform/health', { initial: null });
+  const costs = costsRes.data;
+  const busStats = healthRes.data?.intelligence_bus;
 
   return (
     <div style={{ padding: '24px', maxWidth: 1400, margin: '0 auto' }}>
+      {healthRes.error && !healthRes.loaded && (
+        <ErrorState error={healthRes.error} onRetry={healthRes.reload} title="Could not load platform health" />
+      )}
+      {costsRes.error && !costsRes.loaded && (
+        <ErrorState error={costsRes.error} onRetry={costsRes.reload} title="Could not load AI costs" />
+      )}
 
       {/* Page header */}
       <div style={{ marginBottom: 24 }}>
@@ -31,7 +41,7 @@ export default function PlatformOverview() {
 
       {/* System health cards */}
       <div style={{
-        display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, marginBottom: 24,
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(260px, 100%), 1fr))', gap: 12, marginBottom: 24,
       }}>
         <SystemCard system="oracle"  label="ORACLE"  accent="var(--oc)" health={platformHealth?.systems?.oracle}  theses={oracleTheses} />
         <SystemCard system="compass" label="COMPASS" accent="var(--cc)" health={platformHealth?.systems?.compass} portfolio={compassPortfolio} risk={compassRisk} />
@@ -50,8 +60,8 @@ export default function PlatformOverview() {
           }}>
             Intelligence Bus
           </div>
-          <div style={{ display: 'flex', gap: 32 }}>
-            <Stat label="Total Events"    value={busStats.total_events} />
+          <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
+            <Stat label="Total Events"   value={busStats.total_events} />
             <Stat label="Events (24h)"    value={busStats.events_24h} />
             <Stat label="Grid Events"     value={busStats.by_system?.grid} />
             <Stat label="Oracle Events"   value={busStats.by_system?.oracle} accent="var(--oc)" />
@@ -73,7 +83,7 @@ export default function PlatformOverview() {
             AI Costs — Month to Date
           </div>
           <div style={{ display: 'flex', gap: 32, flexWrap: 'wrap' }}>
-            <Stat label="Total Spend"   value={`$${parseFloat(costs.month_to_date?.total_usd || 0).toFixed(4)}`} />
+            <Stat label="Total Spend"   value={fmtMoney(costs.month_to_date?.total_usd || 0, 4)} />
             <Stat label="API Calls"     value={costs.month_to_date?.total_calls} />
             <Stat label="Input Tokens"  value={Number(costs.month_to_date?.total_input || 0).toLocaleString()} />
             <Stat label="Output Tokens" value={Number(costs.month_to_date?.total_output || 0).toLocaleString()} />
@@ -89,7 +99,7 @@ export default function PlatformOverview() {
                     {s.source_system.toUpperCase()}
                   </div>
                   <div style={{ fontFamily: 'IBM Plex Mono', fontSize: 13, color: 'var(--t1)' }}>
-                    ${parseFloat(s.cost_usd).toFixed(4)}
+                    {fmtMoney(s.cost_usd, 4)}
                   </div>
                 </div>
               ))}
@@ -143,7 +153,7 @@ function SystemCard({ system, label, accent, health, theses, portfolio, risk }) 
           {portfolio.risk_posture?.toUpperCase()} · {risk ? `Risk ${parseFloat(risk.risk_score).toFixed(1)}/10` : ''}
         </div>
       )}
-      {system === 'grid' && health?.cycle_duration_ms && (
+      {system === 'grid' && parseFloat(health?.cycle_duration_ms) > 0 && (
         <div style={{ fontFamily: 'IBM Plex Mono', fontSize: 10, color: 'var(--t3)' }}>
           Cycle: {(health.cycle_duration_ms / 1000).toFixed(1)}s
           {health.agents_succeeded != null && ` · ${health.agents_succeeded} agents`}

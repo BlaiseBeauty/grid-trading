@@ -1,18 +1,27 @@
 import { useEffect } from 'react';
 import { useCycleReportStore } from '../stores/cycleReport';
 import { timeAgo } from '../lib/format';
+import { ErrorState } from './StateBlock';
 
 export default function CycleReport() {
   const report = useCycleReportStore(s => s.latestReport);
+  const loaded = useCycleReportStore(s => s.loaded);
+  const error = useCycleReportStore(s => s.error);
   const fetchHistory = useCycleReportStore(s => s.fetchHistory);
 
-  useEffect(() => { fetchHistory(); }, []);
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
   if (!report) {
     return (
       <div className="cr-panel">
         <div className="cr-title">LAST CYCLE REPORT</div>
-        <div className="cr-skeleton"><div className="cr-shimmer" /></div>
+        {error ? (
+          <ErrorState error={error} onRetry={fetchHistory} title="Could not load the cycle report" />
+        ) : loaded ? (
+          <div className="state-block">No cycle report yet</div>
+        ) : (
+          <div className="cr-skeleton"><div className="cr-shimmer" /></div>
+        )}
         <Style />
       </div>
     );
@@ -41,7 +50,7 @@ export default function CycleReport() {
         {r.knowledge_agents.map(a => (
           <span
             key={a.name}
-            className={`cr-agent-badge ${a.status === 'error' ? 'cr-badge-loss' : a.signals === 0 ? 'cr-badge-warn' : 'cr-badge-profit'}`}
+            className={`cr-agent-badge ${a.status === 'error' ? 'cr-badge-loss' : a.signals === 0 ? 'cr-badge-warn' : 'cr-badge-ok'}`}
           >
             {a.name} <span className="cr-badge-count">{a.signals}</span>
           </span>
@@ -182,17 +191,17 @@ function Style() {
       .cr-badge-count {
         font-variant-numeric: tabular-nums;
       }
-      .cr-badge-profit {
-        color: var(--v2-accent-green, #66bb6a);
-        background: rgba(102, 187, 106, 0.10);
+      .cr-badge-ok {
+        color: var(--v2-accent-cyan);
+        background: var(--v2-tint-cyan);
       }
       .cr-badge-warn {
-        color: var(--v2-accent-amber, #ffa726);
-        background: rgba(255, 167, 38, 0.10);
+        color: var(--v2-accent-amber);
+        background: var(--v2-tint-amber);
       }
       .cr-badge-loss {
-        color: var(--v2-accent-red, #ef5350);
-        background: rgba(239, 83, 80, 0.10);
+        color: var(--v2-accent-red);
+        background: var(--v2-tint-red);
       }
 
       /* Pipeline summary */
@@ -249,7 +258,7 @@ function Style() {
         font-family: 'IBM Plex Mono', monospace;
         font-size: 11px;
       }
-      .cr-status-ok { color: var(--v2-accent-green, #66bb6a); }
+      .cr-status-ok { color: var(--v2-accent-cyan); }
       .cr-status-error { color: var(--v2-accent-red, #ef5350); }
       .cr-status-skip { color: var(--v2-text-muted, #5c5f6b); }
 

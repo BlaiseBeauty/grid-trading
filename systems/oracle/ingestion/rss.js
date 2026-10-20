@@ -1,9 +1,12 @@
 'use strict';
 
-const https = require('https');
-const http  = require('http');
 const { query } = require('../../../db/connection');
 const crypto = require('crypto');
+const { fetchText, recordSource } = require('./http-fetch');
+const { sanitizeExternal } = require('../agents/validation');
+
+const HEADLINE_MAX = 300;
+const DESCRIPTION_MAX = 800;
 
 const RSS_FEEDS = [
   // Finance & macro
@@ -50,21 +53,9 @@ function detectSentiment(text) {
   return 'neutral';
 }
 
+// https-only, 10s timeout, 3 redirects max, 2MB max body (see ./http-fetch.js)
 function fetchRSS(url) {
-  return new Promise((resolve, reject) => {
-    const lib = url.startsWith('https') ? https : http;
-    const req = lib.get(url, { headers: { 'User-Agent': 'GRID-ORACLE/1.0' } }, (res) => {
-      // Follow redirects
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return fetchRSS(res.headers.location).then(resolve).catch(reject);
-      }
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(data));
-    });
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('RSS fetch timeout')); });
-  });
+  return fetchText(url);
 }
 
 function parseRSSItems(xmlText) {
@@ -82,11 +73,14 @@ function parseRSSItems(xmlText) {
                      item.match(/<description>([\s\S]*?)<\/description>/) || [])[1] || '';
 
     if (title.trim()) {
+      // External text: strip tags/control chars and cap lengths at ingestion time (prompt-injection hygiene)
+      const cleanTitle = sanitizeExternal(title, HEADLINE_MAX);
+      if (!cleanTitle) continue;
       items.push({
-        title:   title.replace(/<[^>]+>/g, '').trim(),
-        link:    link.trim(),
-        pubDate: pubDate.trim(),
-        description: desc.replace(/<[^>]+>/g, '').slice(0, 500).trim(),
+        title:   cleanTitle,
+        link:    /^https?:\/\//i.test(link.trim()) ? link.trim().slice(0, 500) : '',
+        pubDate: pubDate.trim().slice(0, 60),
+        description: sanitizeExternal(desc, DESCRIPTION_MAX),
       });
     }
   }
@@ -97,12 +91,15 @@ async function ingestRSS() {
   console.log('[RSS] Starting news feed ingestion...');
   let totalIngested = 0;
   let totalDupes = 0;
+  let itemErrors = 0;
+  let feedsFailed = 0;
 
   for (const feed of RSS_FEEDS) {
     try {
       await new Promise(r => setTimeout(r, 500)); // 500ms between feeds
       const xml   = await fetchRSS(feed.url);
       const items = parseRSSItems(xml);
+      recordSource(`rss:${feed.name}`, true);
 
       for (const item of items) {
         const contentHash = crypto
@@ -113,7 +110,8 @@ async function ingestRSS() {
         const relevance = scoreRelevance(item.title, item.description);
         const sentiment = detectSentiment(`${item.title} ${item.description}`);
         let publishedAt = null;
-        try { publishedAt = item.pubDate ? new Date(item.pubDate) : null; } catch {}
+        publishedAt = item.pubDate ? new Date(item.pubDate) : null;
+        if (publishedAt && Number.isNaN(publishedAt.getTime())) publishedAt = null; // invalid date -> null, not a crash
 
         try {
           const result = await query(
@@ -151,18 +149,21 @@ async function ingestRSS() {
             totalDupes++;
           }
         } catch (err) {
-          // Skip individual item failures — don't abort the feed
+          // Skip individual item failures — don't abort the feed, but count and log them
+          itemErrors++;
+          console.warn(`[RSS] ${feed.name}: item insert failed: ${err.message}`);
         }
       }
 
       console.log(`[RSS] ${feed.name}: ${items.length} items processed`);
     } catch (err) {
-      console.error(`[RSS] ${feed.name} failed:`, err.message);
+      feedsFailed++;
+      recordSource(`rss:${feed.name}`, false, err);
     }
   }
 
-  console.log(`[RSS] Complete: ${totalIngested} new, ${totalDupes} duplicates`);
-  return { ingested: totalIngested, duplicates: totalDupes };
+  console.log(`[RSS] Complete: ${totalIngested} new, ${totalDupes} duplicates, ${feedsFailed}/${RSS_FEEDS.length} feeds failed, ${itemErrors} item errors`);
+  return { ingested: totalIngested, duplicates: totalDupes, feeds_failed: feedsFailed, feeds_total: RSS_FEEDS.length, item_errors: itemErrors };
 }
 
 module.exports = { ingestRSS, RSS_FEEDS };

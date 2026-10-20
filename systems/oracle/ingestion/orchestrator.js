@@ -4,6 +4,10 @@ const { ingestFred  } = require('./fred');
 const { ingestRSS   } = require('./rss');
 const { ingestGDELT } = require('./gdelt');
 const { query }       = require('../../../db/connection');
+const { getSourceStats } = require('./http-fetch');
+
+// Guards against overlapping runs and backs isIngestionRunning() (re-exported by agents/orchestrator).
+let ingestionRunning = false;
 
 /**
  * Run all ingestion feeds.
@@ -11,6 +15,19 @@ const { query }       = require('../../../db/connection');
  * Always runs feeds independently — one failure never blocks others.
  */
 async function runIngestion() {
+  if (ingestionRunning) {
+    console.warn('[INGESTION] Skipping — previous ingestion still running');
+    return { skipped: true, reason: 'already_running' };
+  }
+  ingestionRunning = true;
+  try {
+    return await runIngestionInner();
+  } finally {
+    ingestionRunning = false;
+  }
+}
+
+async function runIngestionInner() {
   const start = Date.now();
   console.log('[INGESTION] Starting all feeds...');
   const results = {};
@@ -42,17 +59,25 @@ async function runIngestion() {
   const duration = Date.now() - start;
   console.log(`[INGESTION] Complete in ${duration}ms`, results);
 
-  // Record to platform health
+  // Record to platform health under its OWN component so a successful ingestion can never
+  // overwrite the ORACLE agent-cycle heartbeat (which may legitimately be 'down'/'degraded').
   try {
     const { recordHeartbeat } = require('../../../shared/system-health');
+    const feedErrors = Object.values(results).filter(r => r && r.error).length;
+    const feedCount = Object.keys(results).length;
     await recordHeartbeat({
-      system_name: 'oracle',
-      status: 'healthy',
+      system_name: 'oracle_ingestion',
+      status: feedErrors === 0 ? 'healthy' : (feedErrors >= feedCount ? 'down' : 'degraded'),
       last_cycle_at: new Date(start),
+      next_cycle_at: new Date(start + 6 * 60 * 60 * 1000),
       cycle_duration_ms: duration,
-      metadata: { type: 'ingestion', ...results },
+      agents_succeeded: feedCount - feedErrors,
+      agents_failed: feedErrors,
+      metadata: { type: 'ingestion', results, sources: getSourceStats() },
     });
-  } catch {}
+  } catch (err) {
+    console.error('[INGESTION] Heartbeat recording failed:', err.message);
+  }
 
   return results;
 }
@@ -88,4 +113,4 @@ async function getEvidenceSummary() {
   return { recent, bySource, byDomain };
 }
 
-module.exports = { runIngestion, getEvidenceSummary };
+module.exports = { runIngestion, getEvidenceSummary, isIngestionRunning: () => ingestionRunning };

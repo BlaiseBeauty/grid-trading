@@ -4,6 +4,9 @@ const OracleBaseAgent   = require('./base-agent');
 const { getActiveTheses } = require('../db/theses');
 const { query, queryOne } = require('../../../db/connection');
 const bus               = require('../../../shared/intelligence-bus');
+const llm               = require('../../../shared/llm-client');
+const { MODELS }        = require('../../../shared/models');
+const { validateSynthesis, sanitizeExternal, wrapUntrusted, UNTRUSTED_INSTRUCTION } = require('./validation');
 
 const SYNTHESIS_SYSTEM_PROMPT = `You are the ORACLE Synthesis Agent.
 You receive all active investment theses from 6 domain specialists and your job is to:
@@ -58,8 +61,8 @@ OUTPUT: Return ONLY a valid JSON object with this exact schema:
   }
 }`;
 
-async function runSynthesis() {
-  console.log('[ORACLE-SYNTHESIS] Running cross-thesis synthesis...');
+async function runSynthesis({ cycleId = null } = {}) {
+  console.log(`[ORACLE-SYNTHESIS${cycleId != null ? ` c${cycleId}` : ''}] Running cross-thesis synthesis...`);
 
   const activeTheses = await getActiveTheses();
   if (activeTheses.length < 2) {
@@ -70,38 +73,44 @@ async function runSynthesis() {
   const agent = new OracleBaseAgent({
     name:     'oracle-synthesis',
     domain:   'synthesis',
-    model:    'claude-opus-4-5',
+    model:    MODELS.oracle_synthesis,
     costTier: 'oracle_synthesis',
+    cycleId,
   });
 
+  // Theses were LLM-written from external text: sanitise + delimit (second-order injection).
   const thesisContext = activeTheses.map(t => `
-THESIS: ${t.thesis_id}
-Name: ${t.name}
-Domain: ${t.domain}
-Direction: ${t.direction} | Conviction: ${t.conviction}/10 | Horizon: ${t.time_horizon}
-Long: ${(t.long_assets || []).join(', ') || 'none'}
-Short: ${(t.short_assets || []).join(', ') || 'none'}
-Summary: ${t.summary}
-Catalyst: ${t.catalyst || 'not specified'}
+THESIS: ${sanitizeExternal(t.thesis_id, 60)}
+Name: ${sanitizeExternal(t.name, 120)}
+Domain: ${sanitizeExternal(t.domain, 30)}
+Direction: ${sanitizeExternal(t.direction, 10)} | Conviction: ${Number(t.conviction)}/10 | Horizon: ${sanitizeExternal(t.time_horizon, 20)}
+Long: ${(t.long_assets || []).map(a => sanitizeExternal(a, 15)).join(', ') || 'none'}
+Short: ${(t.short_assets || []).map(a => sanitizeExternal(a, 15)).join(', ') || 'none'}
+Summary: ${sanitizeExternal(t.summary, 800)}
+Catalyst: ${sanitizeExternal(t.catalyst || 'not specified', 400)}
 `).join('\n---\n');
 
   const userPrompt = `
 ACTIVE THESES (${activeTheses.length} total):
-${thesisContext}
+${wrapUntrusted('theses', thesisContext)}
 
 Analyse these theses for confluences, conflicts, cascade chains, and build
 the opportunity map. Return ONLY valid JSON matching the schema.`;
 
   try {
-    const rawText = await agent.callClaude(SYNTHESIS_SYSTEM_PROMPT, userPrompt);
+    const rawText = await agent.callClaude(`${SYNTHESIS_SYSTEM_PROMPT}\n\n${UNTRUSTED_INSTRUCTION}`, userPrompt);
 
-    // Parse synthesis output
-    const clean = rawText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-    const start = clean.indexOf('{');
-    const end   = clean.lastIndexOf('}');
-    if (start === -1) throw new Error('No JSON in synthesis output');
-
-    const synthesis = JSON.parse(clean.slice(start, end + 1));
+    // Parse + SCHEMA-VALIDATE before anything is persisted or published
+    const parsed = llm.extractJson(rawText, { arrayKeys: ['opportunity_map', 'confluences', 'conflicts', 'cascade_chains'] });
+    if (!parsed.ok) throw new Error(`Synthesis output not parseable: ${parsed.error}`);
+    const checked = validateSynthesis(parsed.value);
+    if (!checked.ok) {
+      console.error(`[ORACLE-SYNTHESIS] Output REJECTED by validation: ${checked.error}`);
+      return null;
+    }
+    if (checked.dropped > 0) console.warn(`[ORACLE-SYNTHESIS] ${checked.dropped} malformed item(s) dropped by validation`);
+    if (parsed.recovered) console.warn('[ORACLE-SYNTHESIS] Output was truncated — published only the recovered arrays');
+    const synthesis = checked.synthesis;
 
     // Save opportunity map to DB
     if (synthesis.opportunity_map?.length > 0) {
@@ -114,9 +123,10 @@ the opportunity map. Return ONLY valid JSON matching the schema.`;
       // Publish to bus
       await bus.publish({
         source_system: 'oracle',
-        event_type:    'opportunity_map_update',
+        event_type:    'opportunity_map_update', // bus.getLatestOpportunityMap reads this name
         payload:       synthesis,
         expires_at:    new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+        dedupe_key:    cycleId != null ? `oracle:opportunity_map:${cycleId}` : undefined,
       });
 
       console.log(
@@ -133,6 +143,7 @@ the opportunity map. Return ONLY valid JSON matching the schema.`;
         event_type:    'macro_regime_update',
         payload:       synthesis.macro_regime_summary,
         expires_at:    new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString(),
+        dedupe_key:    cycleId != null ? `oracle:macro_regime:${cycleId}` : undefined,
       });
     }
 

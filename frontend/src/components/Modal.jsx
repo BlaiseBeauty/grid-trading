@@ -1,21 +1,66 @@
-import { useEffect } from 'react';
+import { useEffect, useId, useRef } from 'react';
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Centered modal dialog. For side detail views use DetailPanel instead (wider, resizable).
+// role="dialog" + aria-modal, Escape closes, focus moves in and is trapped, then restored on close.
 export default function Modal({ open, onClose, title, children }) {
+  const dialogRef = useRef(null);
+  const titleId = useId();
+  // Latest onClose without re-running the focus effect on every parent render
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; });
+
   useEffect(() => {
-    if (!open) return;
-    const handler = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [open, onClose]);
+    if (!open) return undefined;
+    const previouslyFocused = document.activeElement;
+    dialogRef.current?.focus();
+
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab' || !dialogRef.current) return;
+      const items = Array.from(dialogRef.current.querySelectorAll(FOCUSABLE));
+      if (items.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') previouslyFocused.focus();
+    };
+  }, [open]);
 
   if (!open) return null;
 
   return (
     <div className="v2-modal-overlay" onClick={onClose}>
-      <div className="v2-modal-content v2-animate-in" onClick={e => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        className="v2-modal-content v2-animate-in"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onClick={e => e.stopPropagation()}
+      >
         <div className="v2-modal-header">
-          <span className="v2-modal-title">{title}</span>
-          <button className="v2-modal-close" onClick={onClose}>&times;</button>
+          <span id={titleId} className="v2-modal-title">{title}</span>
+          <button type="button" className="v2-modal-close" onClick={onClose} aria-label="Close dialog">&times;</button>
         </div>
         <div className="v2-modal-body">{children}</div>
       </div>
@@ -24,11 +69,11 @@ export default function Modal({ open, onClose, title, children }) {
         .v2-modal-overlay {
           position: fixed;
           inset: 0;
-          background: rgba(0,0,0,0.75);
+          background: var(--v2-overlay);
           display: flex;
           align-items: center;
           justify-content: center;
-          z-index: 100;
+          z-index: 1100; /* above the platform shell (1000-1002) */
           backdrop-filter: blur(8px);
         }
         .v2-modal-content {
@@ -39,7 +84,8 @@ export default function Modal({ open, onClose, title, children }) {
           width: 92%;
           max-height: 85vh;
           overflow-y: auto;
-          box-shadow: 0 24px 80px rgba(0,0,0,0.6), var(--v2-glow-cyan);
+          box-shadow: var(--v2-shadow-lg), var(--v2-glow-cyan);
+          outline: none;
         }
         .v2-modal-header {
           display: flex;

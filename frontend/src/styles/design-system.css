@@ -1,52 +1,196 @@
 /* ============================================================
-   VAZOM V2 Design System — Soft Dark Theme
-   Dark but not black. Easy on the eyes, professional.
+   GRID Design System — theme tokens (LIGHT default, DARK opt-in)
 
-   All tokens use --v2- prefix to coexist with V1 tokens.
-   Import AFTER index.css in main.jsx.
+   Single source of truth: the --v2-* tokens below.
+   The short tokens (--surface, --t1, --border-1 ...) in index.css are
+   ALIASES of these, so there is only one palette per theme.
+
+   Light  = :root (default, no attribute needed)
+   Dark   = [data-theme="dark"]  (set on <html> by src/lib/theme.js)
+
+   Colour rules (DESIGN-SYSTEM.md): green/red ONLY for profit/loss,
+   cyan = interactive UI, purple = AI, amber = warnings.
    ============================================================ */
 
+/* ── Theme-independent tokens ── */
 :root {
-  /* ── Backgrounds ── */
+  /* Spacing */
+  --v2-space-xs: 4px;
+  --v2-space-sm: 8px;
+  --v2-space-md: 12px;
+  --v2-space-lg: 16px;
+  --v2-space-xl: 24px;
+  --v2-space-2xl: 32px;
+  --v2-space-3xl: 48px;
+
+  /* Border radius */
+  --v2-radius-sm: 6px;
+  --v2-radius-md: 10px;
+  --v2-radius-lg: 16px;
+  --v2-radius-full: 9999px;
+
+  /* Transitions */
+  --v2-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --v2-ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
+  --v2-duration-fast: 150ms;
+  --v2-duration-normal: 300ms;
+  --v2-duration-slow: 500ms;
+
+  /* Typography */
+  --v2-font-data: 'JetBrains Mono', 'IBM Plex Mono', monospace;
+  --v2-font-body: 'Outfit', sans-serif;
+  --v2-font-heading: 'Outfit', sans-serif;
+
+  --v2-glass-blur: blur(12px);
+}
+
+/* ── LIGHT (default) ── */
+:root {
+  color-scheme: light;
+
+  /* Backgrounds */
+  --v2-bg-primary: #f4f5f8;
+  --v2-bg-abyss: #eceef2;
+  --v2-bg-secondary: #ffffff;
+  --v2-bg-tertiary: #eef0f4;
+  --v2-bg-card: rgba(255, 255, 255, 0.92);
+  --v2-bg-elevated: #ffffff;
+  --v2-bg-raised: #e6e9ef;
+  --v2-bg-shelf: #dde1e9;
+  --v2-bg-hover: rgba(15, 20, 35, 0.045);
+
+  /* Neutral fills (hover rows, chips, track backgrounds) */
+  --v2-fill-1: rgba(15, 20, 35, 0.03);
+  --v2-fill-2: rgba(15, 20, 35, 0.05);
+  --v2-fill-3: rgba(15, 20, 35, 0.09);
+  --v2-overlay: rgba(20, 24, 36, 0.45);
+
+  /* Accent colours (darkened for AA contrast on white) */
+  --v2-accent-cyan: #0277bd;
+  --v2-accent-green: #2e7d32;
+  --v2-accent-red: #c62828;
+  --v2-accent-amber: #a85a00;
+  --v2-accent-magenta: #6a4fb3;
+
+  /* Tint backgrounds (subtle) */
+  --v2-tint-cyan: rgba(2, 119, 189, 0.08);
+  --v2-tint-green: rgba(46, 125, 50, 0.09);
+  --v2-tint-red: rgba(198, 40, 40, 0.08);
+  --v2-tint-amber: rgba(168, 90, 0, 0.09);
+  --v2-tint-magenta: rgba(106, 79, 179, 0.08);
+
+  /* Tint backgrounds (strong) */
+  --v2-tint-cyan-strong: rgba(2, 119, 189, 0.15);
+  --v2-tint-green-strong: rgba(46, 125, 50, 0.16);
+  --v2-tint-red-strong: rgba(198, 40, 40, 0.15);
+  --v2-tint-amber-strong: rgba(168, 90, 0, 0.16);
+  --v2-tint-magenta-strong: rgba(106, 79, 179, 0.15);
+
+  /* Text */
+  --v2-text-primary: #1b1f29;
+  --v2-text-secondary: #4a5063;
+  --v2-text-muted: #667085;
+  --v2-text-disabled: #8a90a0;
+  --v2-text-ghost: #c2c7d2;
+
+  /* Borders */
+  --v2-border: rgba(15, 20, 35, 0.10);
+  --v2-border-hover: rgba(15, 20, 35, 0.18);
+  --v2-border-active: rgba(15, 20, 35, 0.28);
+  --v2-border-faint: rgba(15, 20, 35, 0.05);
+
+  /* Glow effects (very soft in light) */
+  --v2-glow-cyan: 0 0 16px rgba(2, 119, 189, 0.08);
+  --v2-glow-green: 0 0 16px rgba(46, 125, 50, 0.08);
+  --v2-glow-red: 0 0 16px rgba(198, 40, 40, 0.08);
+  --v2-glow-amber: 0 0 16px rgba(168, 90, 0, 0.08);
+  --v2-glow-magenta: 0 0 16px rgba(106, 79, 179, 0.08);
+  --v2-glow-cyan-strong: 0 0 24px rgba(2, 119, 189, 0.16);
+  --v2-glow-green-strong: 0 0 24px rgba(46, 125, 50, 0.16);
+  --v2-glow-red-strong: 0 0 24px rgba(198, 40, 40, 0.16);
+
+  /* Glass morphism */
+  --v2-glass-bg: rgba(255, 255, 255, 0.82);
+  --v2-glass-border: rgba(15, 20, 35, 0.10);
+
+  /* Shadows */
+  --v2-shadow-sm: 0 1px 3px rgba(20, 28, 50, 0.10);
+  --v2-shadow-md: 0 4px 12px rgba(20, 28, 50, 0.12);
+  --v2-shadow-lg: 0 8px 24px rgba(20, 28, 50, 0.16);
+
+  /* Text on a filled accent (primary buttons) */
+  --v2-on-accent: #ffffff;
+
+  /* Text-shadow used on brand wordmarks */
+  --v2-brand-glow: none;
+
+  /* System accents (GRID / COMPASS / ORACLE) */
+  --gc: #0277bd;
+  --cc: #a85a00;
+  --oc: #5b4bd6;
+  --gc-tint: rgba(2, 119, 189, 0.05);
+  --cc-tint: rgba(168, 90, 0, 0.05);
+  --oc-tint: rgba(91, 75, 214, 0.05);
+  --gc-border: rgba(2, 119, 189, 0.30);
+  --cc-border: rgba(168, 90, 0, 0.30);
+  --oc-border: rgba(91, 75, 214, 0.30);
+
+  /* Chart palette (read by lib/chartConfig.js) */
+  --chart-bg: #ffffff;
+  --chart-text: #667085;
+  --chart-grid: rgba(15, 20, 35, 0.06);
+  --chart-border: rgba(15, 20, 35, 0.12);
+  --chart-crosshair: rgba(15, 20, 35, 0.35);
+}
+
+/* ── DARK ── */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
   --v2-bg-primary: #1b1d23;
+  --v2-bg-abyss: #1f2128;
   --v2-bg-secondary: #22242b;
   --v2-bg-tertiary: #2a2c34;
   --v2-bg-card: rgba(34, 36, 43, 0.85);
   --v2-bg-elevated: #31333c;
+  --v2-bg-raised: #33353e;
+  --v2-bg-shelf: #3a3d47;
   --v2-bg-hover: rgba(255, 255, 255, 0.04);
 
-  /* ── Accent Colors ── */
+  --v2-fill-1: rgba(255, 255, 255, 0.03);
+  --v2-fill-2: rgba(255, 255, 255, 0.05);
+  --v2-fill-3: rgba(255, 255, 255, 0.10);
+  --v2-overlay: rgba(0, 0, 0, 0.6);
+
   --v2-accent-cyan: #4fc3f7;
   --v2-accent-green: #66bb6a;
   --v2-accent-red: #ef5350;
   --v2-accent-amber: #ffa726;
   --v2-accent-magenta: #b39ddb;
 
-  /* ── Tint Backgrounds (subtle) ── */
   --v2-tint-cyan: rgba(79, 195, 247, 0.08);
   --v2-tint-green: rgba(102, 187, 106, 0.08);
   --v2-tint-red: rgba(239, 83, 80, 0.08);
   --v2-tint-amber: rgba(255, 167, 38, 0.08);
   --v2-tint-magenta: rgba(179, 157, 219, 0.08);
 
-  /* ── Tint Backgrounds (strong) ── */
   --v2-tint-cyan-strong: rgba(79, 195, 247, 0.15);
   --v2-tint-green-strong: rgba(102, 187, 106, 0.15);
   --v2-tint-red-strong: rgba(239, 83, 80, 0.15);
   --v2-tint-amber-strong: rgba(255, 167, 38, 0.15);
   --v2-tint-magenta-strong: rgba(179, 157, 219, 0.15);
 
-  /* ── Text ── */
   --v2-text-primary: #e0e2e7;
   --v2-text-secondary: #8b8e99;
   --v2-text-muted: #5c5f6b;
+  --v2-text-disabled: #555868;
+  --v2-text-ghost: #3a3d4a;
 
-  /* ── Borders ── */
   --v2-border: rgba(255, 255, 255, 0.07);
   --v2-border-hover: rgba(255, 255, 255, 0.12);
   --v2-border-active: rgba(255, 255, 255, 0.18);
+  --v2-border-faint: rgba(255, 255, 255, 0.04);
 
-  /* ── Glow Effects ── */
   --v2-glow-cyan: 0 0 16px rgba(79, 195, 247, 0.10);
   --v2-glow-green: 0 0 16px rgba(102, 187, 106, 0.10);
   --v2-glow-red: 0 0 16px rgba(239, 83, 80, 0.10);
@@ -56,40 +200,29 @@
   --v2-glow-green-strong: 0 0 24px rgba(102, 187, 106, 0.20);
   --v2-glow-red-strong: 0 0 24px rgba(239, 83, 80, 0.20);
 
-  /* ── Spacing ── */
-  --v2-space-xs: 4px;
-  --v2-space-sm: 8px;
-  --v2-space-md: 12px;
-  --v2-space-lg: 16px;
-  --v2-space-xl: 24px;
-  --v2-space-2xl: 32px;
-  --v2-space-3xl: 48px;
-
-  /* ── Border Radius ── */
-  --v2-radius-sm: 6px;
-  --v2-radius-md: 10px;
-  --v2-radius-lg: 16px;
-  --v2-radius-full: 9999px;
-
-  /* ── Transitions ── */
-  --v2-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --v2-ease-in-out: cubic-bezier(0.45, 0, 0.55, 1);
-  --v2-duration-fast: 150ms;
-  --v2-duration-normal: 300ms;
-  --v2-duration-slow: 500ms;
-
-  /* ── Typography ── */
-  --v2-font-data: 'JetBrains Mono', 'IBM Plex Mono', monospace;
-  --v2-font-body: 'Outfit', sans-serif;
-  --v2-font-heading: 'Outfit', sans-serif;
-
-  /* ── Glass Morphism ── */
   --v2-glass-bg: rgba(27, 29, 35, 0.7);
-  --v2-glass-blur: blur(12px);
   --v2-glass-border: rgba(255, 255, 255, 0.07);
 
-  /* ── Shadows ── */
   --v2-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --v2-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
   --v2-shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+
+  --v2-on-accent: #1b1d23;
+  --v2-brand-glow: 0 0 24px rgba(79, 195, 247, 0.25);
+
+  --gc: #00e5ff;
+  --cc: #f59e0b;
+  --oc: #7c6af7;
+  --gc-tint: rgba(0, 229, 255, 0.04);
+  --cc-tint: rgba(245, 158, 11, 0.04);
+  --oc-tint: rgba(124, 106, 247, 0.04);
+  --gc-border: rgba(0, 229, 255, 0.20);
+  --cc-border: rgba(245, 158, 11, 0.20);
+  --oc-border: rgba(124, 106, 247, 0.20);
+
+  --chart-bg: #1b1d23;
+  --chart-text: #8b8e99;
+  --chart-grid: rgba(255, 255, 255, 0.04);
+  --chart-border: rgba(255, 255, 255, 0.07);
+  --chart-crosshair: rgba(255, 255, 255, 0.25);
 }

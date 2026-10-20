@@ -96,3 +96,34 @@ module.exports = {
 
   getRiskLimits,
 };
+
+// ---------------------------------------------------------------------------
+// SCRAM helpers (pure)
+// ---------------------------------------------------------------------------
+
+const SCRAM_RANK = { elevated: 1, crisis: 2, emergency: 3 };
+
+/** A SCRAM raised by hand (POST /system/scram/activate) — never auto-cleared. */
+function isManualScram(row) {
+  return !!row && (row.is_manual === true || row.trigger_name === 'manual');
+}
+
+/**
+ * Which close action (if any) a SCRAM row requests: 'all' | 'losing' | null.
+ *  - An explicit row.close_mode always wins.
+ *  - Manual SCRAMs default to "block new entries only" (no closing) unless close_mode is set.
+ *  - Automatic SCRAMs follow the level config (CLOSE_ALL_POSITIONS / CLOSE_LOSING_POSITIONS).
+ */
+function scramCloseMode(row) {
+  if (!row) return null;
+  if (row.close_mode === 'all' || row.close_mode === 'losing') return row.close_mode;
+  if (isManualScram(row)) return null;
+  const cfg = module.exports.SCRAM[row.level];
+  if (cfg?.CLOSE_ALL_POSITIONS) return 'all';
+  if (cfg?.CLOSE_LOSING_POSITIONS) return 'losing';
+  return null;
+}
+
+module.exports.SCRAM_RANK = SCRAM_RANK;
+module.exports.isManualScram = isManualScram;
+module.exports.scramCloseMode = scramCloseMode;

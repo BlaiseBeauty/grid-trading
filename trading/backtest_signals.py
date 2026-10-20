@@ -20,6 +20,8 @@ import psycopg2.extras
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
+import indicator_core as core
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 
@@ -94,28 +96,13 @@ def bollinger_bands(close, period=20, std_dev=2):
 
 
 def atr(high, low, close, period=14):
-    """Average True Range."""
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    return tr.rolling(window=period, min_periods=period).mean()
+    """Average True Range — Wilder smoothing, shared with live (indicator_core)."""
+    return core.atr(high, low, close, period)
 
 
 def adx(high, low, close, period=14):
-    """Average Directional Index."""
-    plus_dm = high.diff()
-    minus_dm = -low.diff()
-    plus_dm = plus_dm.where((plus_dm > minus_dm) & (plus_dm > 0), 0.0)
-    minus_dm = minus_dm.where((minus_dm > plus_dm) & (minus_dm > 0), 0.0)
-
-    atr_val = atr(high, low, close, period)
-    plus_di = 100 * ema(plus_dm, period) / atr_val.replace(0, np.nan)
-    minus_di = 100 * ema(minus_dm, period) / atr_val.replace(0, np.nan)
-
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
-    adx_val = ema(dx, period)
-    return adx_val
+    """Average Directional Index — Wilder smoothing, shared with live (indicator_core)."""
+    return core.adx_components(high, low, close, period)[2]
 
 
 def obv(close, volume):
@@ -162,6 +149,13 @@ def precompute_indicators(df):
 
     # Bollinger Bands
     ind['bb_mid'], ind['bb_upper'], ind['bb_lower'], ind['bb_width'] = bollinger_bands(df['close'])
+    # Same definitions as live indicators.py (templates reference these names):
+    #   bb_pct       = %B in 0..1 (live 'bb_pct')
+    #   bb_bandwidth = (upper-lower)/mid as a RATIO (live 'bb_bandwidth'); bb_width stays in percent
+    _, _, _, ind['bb_bandwidth'], ind['bb_pct'] = core.bollinger(df['close'], 20, 2.0)
+
+    # Stochastic %K/%D (14, 3) — real calculation, not an RSI proxy
+    ind['stoch_k'], ind['stoch_d'] = core.stochastic(df['high'], df['low'], df['close'], 14, 3)
 
     # ATR
     ind['atr14'] = atr(df['high'], df['low'], df['close'], 14)

@@ -1,6 +1,25 @@
-import { useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import usePlatformStore from '../stores/platform';
 import { api } from '../lib/api';
+import { fmtMoney } from '../lib/format';
+
+// Inline "unavailable + retry" line for a strip whose data failed to load
+function StripError({ message, onRetry }) {
+  return (
+    <span role="alert" style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: 'var(--warn)' }}>
+      Unavailable{' '}
+      <button
+        type="button"
+        onClick={onRetry}
+        title={message}
+        style={{ color: 'var(--cyan)', fontSize: 11, textDecoration: 'underline' }}
+      >
+        retry
+      </button>
+    </span>
+  );
+}
 
 // Refresh God View data every 5 minutes
 const REFRESH_INTERVAL = 5 * 60 * 1000;
@@ -13,33 +32,62 @@ export default function GodView() {
     compassRisk, setCompassRisk,
     platformHealth, setPlatformHealth,
     setMonthlyCostUsd,
-  } = usePlatformStore();
+    godViewTick,
+  } = usePlatformStore(useShallow(s => ({
+    oracleTheses: s.oracleTheses, setOracleTheses: s.setOracleTheses,
+    oracleRegime: s.oracleRegime, setOracleRegime: s.setOracleRegime,
+    compassPortfolio: s.compassPortfolio, setCompassPortfolio: s.setCompassPortfolio,
+    compassRisk: s.compassRisk, setCompassRisk: s.setCompassRisk,
+    platformHealth: s.platformHealth, setPlatformHealth: s.setPlatformHealth,
+    setMonthlyCostUsd: s.setMonthlyCostUsd,
+    godViewTick: s.godViewTick,
+  })));
 
+  // Per-strip { loaded, error }: a failed fetch must read as "unavailable", never as "nothing here"
+  const [status, setStatus] = useState({
+    oracle: { loaded: false, error: null },
+    compass: { loaded: false, error: null },
+    health: { loaded: false, error: null },
+  });
+
+  const fetchAll = useCallback(async () => {
+    const results = await Promise.allSettled([
+      api('/oracle/theses'),
+      api('/oracle/macro-regime'),
+      api('/compass/portfolio'),
+      api('/compass/risk'),
+      api('/platform/health'),
+      api('/platform/costs/summary'),
+    ]);
+    const [theses, regime, portfolio, risk, health, costs] = results;
+
+    if (theses.status === 'fulfilled')    setOracleTheses(theses.value?.theses || []);
+    if (regime.status === 'fulfilled')    setOracleRegime(regime.value?.regime || null);
+    if (portfolio.status === 'fulfilled') setCompassPortfolio(portfolio.value?.portfolio || null);
+    if (risk.status === 'fulfilled')      setCompassRisk(risk.value?.assessment || null);
+    if (health.status === 'fulfilled')    setPlatformHealth(health.value || null);
+    if (costs.status === 'fulfilled')     setMonthlyCostUsd(costs.value?.month_to_date?.total_usd ?? null);
+
+    for (const r of results) {
+      if (r.status === 'rejected') console.error('[GodView] fetch failed:', r.reason?.message || r.reason);
+    }
+    const errOf = (...rs) => {
+      const failed = rs.find(r => r.status === 'rejected');
+      return failed ? (failed.reason?.message || 'Request failed') : null;
+    };
+    setStatus(prev => ({
+      oracle: { loaded: prev.oracle.loaded || theses.status === 'fulfilled', error: errOf(theses, regime) },
+      compass: { loaded: prev.compass.loaded || portfolio.status === 'fulfilled', error: errOf(portfolio, risk) },
+      health: { loaded: prev.health.loaded || health.status === 'fulfilled', error: errOf(health) },
+    }));
+  }, [setOracleTheses, setOracleRegime, setCompassPortfolio, setCompassRisk, setPlatformHealth, setMonthlyCostUsd]);
+
+  // Initial load, 5-minute refresh, and an immediate refresh when a bus event bumps godViewTick
   useEffect(() => {
     fetchAll();
     const interval = setInterval(fetchAll, REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, []);
-
-  async function fetchAll() {
-    try {
-      const [theses, regime, portfolio, risk, health, costs] = await Promise.allSettled([
-        api('/oracle/theses'),
-        api('/oracle/macro-regime'),
-        api('/compass/portfolio'),
-        api('/compass/risk'),
-        api('/platform/health'),
-        api('/platform/costs/summary'),
-      ]);
-
-      if (theses.status === 'fulfilled')    setOracleTheses(theses.value?.theses || []);
-      if (regime.status === 'fulfilled')    setOracleRegime(regime.value?.regime || null);
-      if (portfolio.status === 'fulfilled') setCompassPortfolio(portfolio.value?.portfolio || null);
-      if (risk.status === 'fulfilled')      setCompassRisk(risk.value?.assessment || null);
-      if (health.status === 'fulfilled')    setPlatformHealth(health.value || null);
-      if (costs.status === 'fulfilled')     setMonthlyCostUsd(costs.value?.month_to_date?.total_usd || null);
-    } catch { /* silent fail — God View is enhancement only */ }
-  }
+  }, [fetchAll, godViewTick]);
 
   return (
     <div style={{
@@ -57,23 +105,23 @@ export default function GodView() {
     }}>
 
       {/* ORACLE strip */}
-      <OracleStrip theses={oracleTheses} regime={oracleRegime} />
+      <OracleStrip theses={oracleTheses} regime={oracleRegime} status={status.oracle} onRetry={fetchAll} />
 
       <div style={{ background: 'var(--border-1)' }} />
 
       {/* COMPASS strip */}
-      <CompassStrip portfolio={compassPortfolio} risk={compassRisk} />
+      <CompassStrip portfolio={compassPortfolio} risk={compassRisk} status={status.compass} onRetry={fetchAll} />
 
       <div style={{ background: 'var(--border-1)' }} />
 
       {/* GRID strip */}
-      <GridStrip health={platformHealth} />
+      <GridStrip health={platformHealth} status={status.health} onRetry={fetchAll} />
     </div>
   );
 }
 
 // ── ORACLE strip ──────────────────────────────────────────────────────────────
-function OracleStrip({ theses, regime }) {
+function OracleStrip({ theses, regime, status, onRetry }) {
   const topThesis  = theses?.[0];
   const regimeLabel = regime?.payload?.overall || regime?.overall || null;
 
@@ -113,12 +161,14 @@ function OracleStrip({ theses, regime }) {
           </span>
           <ConvictionBadge conviction={topThesis.conviction} />
         </div>
+      ) : status.error && !status.loaded ? (
+        <StripError message={status.error} onRetry={onRetry} />
       ) : (
         <span style={{
           fontFamily: 'Outfit, sans-serif', fontSize: 11,
-          color: 'var(--t4)',
+          color: 'var(--t3)',
         }}>
-          {theses === null ? '—' : 'No active theses'}
+          {!status.loaded ? '—' : 'No active theses'}
         </span>
       )}
 
@@ -135,13 +185,15 @@ function OracleStrip({ theses, regime }) {
 }
 
 // ── COMPASS strip ─────────────────────────────────────────────────────────────
-function CompassStrip({ portfolio, risk }) {
+function CompassStrip({ portfolio, risk, status, onRetry }) {
   const posture    = portfolio?.risk_posture || null;
-  const riskScore  = risk?.risk_score !== undefined ? parseFloat(risk.risk_score) : null;
-  const maxPos     = risk?.max_single_position_usd;
+  const rawScore   = risk?.risk_score !== undefined ? parseFloat(risk.risk_score) : null;
+  const riskScore  = Number.isFinite(rawScore) ? rawScore : null;
+  const maxPos     = parseFloat(risk?.max_single_position_usd);
 
+  // Green is reserved for profit/loss, so an aggressive posture uses the UI cyan
   const postureColour = {
-    aggressive: 'var(--profit)',
+    aggressive: 'var(--cyan)',
     neutral:    'var(--t2)',
     defensive:  'var(--warn)',
     cash:       'var(--loss)',
@@ -177,9 +229,11 @@ function CompassStrip({ portfolio, risk }) {
           }}>
             {posture}
           </span>
+        ) : status.error && !status.loaded ? (
+          <StripError message={status.error} onRetry={onRetry} />
         ) : (
-          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: 'var(--t4)' }}>
-            Not initialised
+          <span style={{ fontFamily: 'Outfit, sans-serif', fontSize: 11, color: 'var(--t3)' }}>
+            {!status.loaded ? '—' : 'Not initialised'}
           </span>
         )}
 
@@ -193,12 +247,12 @@ function CompassStrip({ portfolio, risk }) {
         )}
       </div>
 
-      {maxPos && (
+      {maxPos > 0 && (
         <span style={{
           fontFamily: 'IBM Plex Mono, monospace', fontSize: 9,
-          color: 'var(--t4)',
+          color: 'var(--t3)',
         }}>
-          MAX POS ${Number(maxPos).toLocaleString()}
+          MAX POS {fmtMoney(maxPos, 0)}
         </span>
       )}
     </div>
@@ -206,7 +260,7 @@ function CompassStrip({ portfolio, risk }) {
 }
 
 // ── GRID strip ────────────────────────────────────────────────────────────────
-function GridStrip({ health }) {
+function GridStrip({ health, status, onRetry }) {
   const gridHealth   = health?.systems?.grid;
   const lastCycle    = gridHealth?.last_cycle_at;
   const busEvents24h = health?.intelligence_bus?.events_24h;
@@ -235,13 +289,17 @@ function GridStrip({ health }) {
       </div>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{
-          fontFamily: 'Outfit, sans-serif', fontSize: 12, color: 'var(--t2)',
-        }}>
-          Last cycle: <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
-            {lastCycleLabel}
+        {status.error && !status.loaded ? (
+          <StripError message={status.error} onRetry={onRetry} />
+        ) : (
+          <span style={{
+            fontFamily: 'Outfit, sans-serif', fontSize: 12, color: 'var(--t2)',
+          }}>
+            Last cycle: <span style={{ fontFamily: 'IBM Plex Mono, monospace' }}>
+              {lastCycleLabel}
+            </span>
           </span>
-        </span>
+        )}
       </div>
 
       {busEvents24h !== undefined && (
@@ -268,7 +326,7 @@ function DirectionArrow({ direction }) {
 function ConvictionBadge({ conviction }) {
   const c = parseFloat(conviction);
   if (isNaN(c)) return null;
-  const colour = c >= 8 ? 'var(--profit)' : c >= 6 ? 'var(--warn)' : 'var(--t3)';
+  const colour = c >= 8 ? 'var(--cyan)' : c >= 6 ? 'var(--warn)' : 'var(--t3)';
   return (
     <span style={{
       fontFamily: 'IBM Plex Mono, monospace', fontWeight: 600,

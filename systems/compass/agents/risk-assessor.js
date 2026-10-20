@@ -4,6 +4,11 @@ const CompassBaseAgent     = require('./base-agent');
 const { buildCompassContext } = require('./context-builder');
 const { query, queryOne }  = require('../../../db/connection');
 const bus                  = require('../../../shared/intelligence-bus');
+const { MODELS }           = require('../../../shared/models');
+const { trackedBaseAssets, baseAsset } = require('../../../config/symbols');
+const { validateRisk, COMPASS_LIMITS } = require('./validation');
+
+const [SYM_A, SYM_B] = [trackedBaseAssets()[0] || 'BTC', trackedBaseAssets()[1] || 'ETH'];
 
 const RISK_SYSTEM_PROMPT = `You are the COMPASS Risk Assessor.
 You review the current GRID trading portfolio against macro context and
@@ -33,22 +38,22 @@ OUTPUT: Return ONLY valid JSON matching this schema:
     "scram_threshold_pct": 8.0
   },
   "flags": [
-    {"severity": "warn", "message": "BTC and ETH showing high correlation (0.89)"},
+    {"severity": "warn", "message": "${SYM_A} and ${SYM_B} showing high correlation (0.89)"},
     {"severity": "info", "message": "1 ORACLE conflict with current positions"}
   ],
   "assessment_summary": "2-3 sentence summary of current risk posture"
 }
 
 HARD CONSTRAINTS (never exceed regardless of context):
-- max_total_exposure_usd: never > 20000
-- max_single_position_usd: never > 10000
-- max_open_positions: never > 6
-- scram_threshold_pct: never < 5.0 (always keep SCRAM trigger active)
+- max_total_exposure_usd: never > ${COMPASS_LIMITS.MAX_TOTAL_EXPOSURE_USD}
+- max_single_position_usd: never > ${COMPASS_LIMITS.MAX_POSITION_USD}
+- max_open_positions: never > ${COMPASS_LIMITS.MAX_OPEN_POSITIONS}
+- scram_threshold_pct: never < ${COMPASS_LIMITS.MIN_SCRAM_THRESHOLD_PCT.toFixed(1)} (always keep SCRAM trigger active)
 
 If GRID has no open positions, risk_score should reflect macro environment only.`;
 
-async function runRiskAssessor() {
-  console.log('[COMPASS-RISK] Running risk assessor...');
+async function runRiskAssessor({ cycleId = null } = {}) {
+  console.log(`[COMPASS-RISK${cycleId != null ? ` c${cycleId}` : ''}] Running risk assessor...`);
 
   const context = await buildCompassContext();
 
@@ -60,13 +65,17 @@ async function runRiskAssessor() {
 
   const agent = new CompassBaseAgent({
     name:     'compass-risk-assessor',
-    model:    'claude-opus-4-5',
+    model:    MODELS.compass_risk, // default Sonnet (cost); override with MODEL_COMPASS[_RISK]
     costTier: 'compass_risk',
+    cycleId,
   });
 
-  // Calculate basic correlation (simplified — BTC/ETH correlation proxy)
+  // Correlation proxy: how many open positions are in the tracked crypto universe (config/symbols.js),
+  // which move together far more than they diversify.
+  const tracked = trackedBaseAssets();
+  const openTracked = [...new Set(context.openPositions.map(p => baseAsset(p.symbol)).filter(b => tracked.includes(b)))];
   const correlationNote = context.openPositions.length >= 2
-    ? `${context.openPositions.length} open positions — correlation analysis recommended`
+    ? `${context.openPositions.length} open positions (${openTracked.length} distinct tracked assets: ${openTracked.join(', ') || 'none'}) — correlation analysis recommended`
     : 'Fewer than 2 open positions — correlation risk low';
 
   const userPrompt = `
@@ -92,18 +101,16 @@ Return ONLY valid JSON.`;
 
   try {
     const raw    = await agent.callClaude(RISK_SYSTEM_PROMPT, userPrompt);
-    const result = agent.parseJSON(raw);
+    const parsed = agent.parseJSON(raw);
 
-    if (!result) throw new Error('Risk assessor produced invalid JSON');
+    if (!parsed) throw new Error('Risk assessor produced invalid JSON');
 
-    // Enforce hard constraints — never let Claude exceed these
-    const limits = result.limits || {};
-    limits.max_total_exposure_usd  = Math.min(parseFloat(limits.max_total_exposure_usd  || 15000), 20000);
-    limits.max_single_position_usd = Math.min(parseFloat(limits.max_single_position_usd || 5000),  10000);
-    limits.max_open_positions      = Math.min(parseInt(limits.max_open_positions         || 4),     6);
-    limits.scram_threshold_pct     = Math.max(parseFloat(limits.scram_threshold_pct      || 8),     5.0);
-    result.limits = limits;
-    result.risk_score = Math.min(10, Math.max(0, parseFloat(result.risk_score) || 5));
+    // Schema-validate + enforce hard constraints (risk_score finite 0..10; limits clamped)
+    const checked = validateRisk(parsed);
+    if (!checked.ok) throw new Error(`Risk output rejected: ${checked.error}`);
+    for (const w of checked.warnings) console.warn(`[COMPASS-RISK] validation: ${w}`);
+    const result = checked.result;
+    const limits = result.limits;
 
     // Persist
     const riskResult = await query(
@@ -117,11 +124,11 @@ Return ONLY valid JSON.`;
        RETURNING id`,
       [
         result.risk_score,
-        result.components?.market_risk         || null,
-        result.components?.concentration_risk  || null,
-        result.components?.correlation_risk    || null,
-        result.components?.drawdown_risk       || null,
-        result.components?.thesis_conflict_risk|| null,
+        result.components?.market_risk          ?? null,
+        result.components?.concentration_risk   ?? null,
+        result.components?.correlation_risk     ?? null,
+        result.components?.drawdown_risk        ?? null,
+        result.components?.thesis_conflict_risk ?? null,
         limits.max_total_exposure_usd,
         limits.max_single_position_usd,
         limits.max_open_positions,
@@ -145,6 +152,7 @@ Return ONLY valid JSON.`;
         assessment_summary:    result.assessment_summary || '',
       },
       expires_at: new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString(), // 4h
+      dedupe_key: cycleId != null ? `compass:portfolio_risk_state:${cycleId}` : undefined,
     }))?.id;
 
     await query(

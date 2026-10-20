@@ -7,6 +7,7 @@ import random
 import psycopg2
 from datetime import datetime, timezone
 from data import MarketData
+from common import compute_pnl, estimate_fee, validate_amend
 
 
 class PaperTrader:
@@ -66,7 +67,9 @@ class PaperTrader:
                 symbol,
                 trade_data.get('asset_class', 'crypto'),
                 trade_data.get('exchange', 'binance'),
-                side, quantity, entry_price,
+                # entry_price = the SLIPPED fill (P&L basis, same semantics as
+                # live); the requested price is kept in expected_fill_price.
+                side, quantity, actual_price,
                 trade_data.get('tp_price'),
                 trade_data.get('sl_price'),
                 trade_data.get('template_id'),
@@ -101,6 +104,45 @@ class PaperTrader:
             'mode': 'paper',
         }
 
+    def amend_stops(self, trade_id, sl_price=None, tp_price=None):
+        """Paper amend: validate (SL may only tighten) and update the DB row."""
+        conn = self._get_db()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT side, sl_price, tp_price, status, mode, symbol FROM trades "
+                        "WHERE id = %s FOR UPDATE", (trade_id,))
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(f'Trade {trade_id} not found')
+            side, old_sl, old_tp, status, mode, symbol = row
+            if status != 'open':
+                raise ValueError(f'Trade {trade_id} not open (status={status})')
+            if mode == 'live':
+                raise ValueError(f'Trade {trade_id} is a live trade')
+            ref_price = None
+            try:
+                ref_price = self.market_data.get_current_price(symbol.replace('-', '/'))
+            except Exception as e:
+                print(f'[PAPER] amend-stops: no reference price for {symbol} ({e}); skipping market-side check')
+            err = validate_amend(side, old_sl, sl_price, tp_price, ref_price)
+            if err:
+                raise ValueError(err)
+            cur.execute("""
+                UPDATE trades SET sl_price = COALESCE(%s, sl_price), tp_price = COALESCE(%s, tp_price)
+                WHERE id = %s AND status = 'open'
+            """, (sl_price, tp_price, trade_id))
+            conn.commit()
+            cur.close()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+        return {'trade_id': trade_id,
+                'sl_price': sl_price if sl_price is not None else (float(old_sl) if old_sl is not None else None),
+                'tp_price': tp_price if tp_price is not None else (float(old_tp) if old_tp is not None else None),
+                'mode': 'paper'}
+
     def close(self, trade_id):
         """Close an open trade with realistic exit slippage."""
         conn = self._get_db()
@@ -108,7 +150,7 @@ class PaperTrader:
             cur = conn.cursor()
 
             # Fetch the open trade
-            cur.execute("SELECT * FROM trades WHERE id = %s AND status = 'open'", (trade_id,))
+            cur.execute("SELECT * FROM trades WHERE id = %s AND status = 'open' FOR UPDATE", (trade_id,))
             cols = [desc[0] for desc in cur.description]
             row = cur.fetchone()
             if not row:
@@ -118,7 +160,7 @@ class PaperTrader:
             trade = dict(zip(cols, row))
 
             # Get current market price
-            current_price = self.market_data.get_current_price(trade['symbol'])
+            current_price = self.market_data.get_current_price(trade['symbol'].replace('-', '/'))
 
             # Simulate exit slippage (selling gets worse price, buying gets worse price)
             slippage_pct = random.gauss(self.SLIPPAGE_BPS / 10000, self.SLIPPAGE_BPS / 20000)
@@ -135,27 +177,23 @@ class PaperTrader:
             entry_price = float(trade['entry_price'])
             quantity = float(trade['quantity'])
 
-            if trade['side'] == 'buy':
-                pnl = (exit_price - entry_price) * quantity
-            else:
-                pnl = (entry_price - exit_price) * quantity
-
-            # Deduct round-trip fees from P&L
-            entry_fee = float(trade['entry_fee']) if trade.get('entry_fee') else quantity * entry_price * self.TAKER_FEE
+            # entry_price is the slipped entry fill (see execute()); round-trip
+            # fees are deducted from P&L.
+            entry_fee = float(trade['entry_fee']) if trade.get('entry_fee') else estimate_fee(quantity, entry_price)
             exit_fee = quantity * exit_price * self.TAKER_FEE
-            fees_paid = entry_fee + exit_fee
-            pnl -= fees_paid
-
-            pnl_pct = (pnl / (quantity * entry_price)) * 100
+            pnl, pnl_pct, fees_paid = compute_pnl(
+                trade['side'], quantity, entry_price, exit_price, entry_fee, exit_fee)
 
             # Update trade in DB
             cur.execute("""
                 UPDATE trades SET
                     exit_price = %s, pnl_realised = %s, pnl_pct = %s, fees_paid = %s,
                     status = 'closed', closed_at = NOW(), close_reason = 'position_review'
-                WHERE id = %s
+                WHERE id = %s AND status = 'open'
                 RETURNING id
             """, (round(exit_price, 8), round(pnl, 4), round(pnl_pct, 4), round(fees_paid, 4), trade_id))
+            if not cur.fetchone():
+                raise ValueError(f"Trade {trade_id} was closed concurrently")
 
             conn.commit()
             cur.close()

@@ -1,4 +1,5 @@
 import { useCycleStore } from '../stores/cycle';
+import DetailPanel from './DetailPanel';
 
 const LAYER_LABELS = {
   knowledge: 'KNOWLEDGE',
@@ -54,6 +55,7 @@ export default function CycleControl() {
   const dismissSuccess = useCycleStore(s => s.dismissSuccess);
   const togglePanel = useCycleStore(s => s.togglePanel);
   const expand = useCycleStore(s => s.expand);
+  const collapse = useCycleStore(s => s.collapse);
   const getProgress = useCycleStore(s => s.getProgress);
 
   const progress = (phase === 'running' || phase === 'success') ? getProgress() : 0;
@@ -72,16 +74,14 @@ export default function CycleControl() {
   if (phase === 'idle') {
     return (
       <div className="cc-root">
-        <div className="cc-pill cc-pill--idle" onClick={requestCycle}>
+        <button type="button" className="cc-pill cc-pill--idle" onClick={requestCycle} aria-label="Run agent cycle">
           <span className="cc-pill-dot cc-dot--idle" />
           <span className="cc-pill-text">
             {lastCycleNumber ? `CYCLE #${lastCycleNumber}` : 'NO CYCLES'}
             {lastCycleTime && <span className="cc-pill-ago"> {timeAgoShort(lastCycleTime)}</span>}
           </span>
-          <button className="cc-run-btn" onClick={(e) => { e.stopPropagation(); requestCycle(); }}>
-            RUN CYCLE
-          </button>
-        </div>
+          <span className="cc-run-btn">RUN CYCLE</span>
+        </button>
         <Style />
       </div>
     );
@@ -91,7 +91,7 @@ export default function CycleControl() {
   if (phase === 'confirming') {
     return (
       <div className="cc-root">
-        <div className="cc-panel cc-panel--confirm">
+        <div className="cc-panel cc-panel--confirm" role="alertdialog" aria-label="Confirm agent cycle">
           <div className="cc-confirm-text">Run full agent cycle (~14 min)?</div>
           <div className="cc-confirm-actions">
             <button className="cc-btn cc-btn--primary" onClick={confirmCycle}>CONFIRM</button>
@@ -107,7 +107,7 @@ export default function CycleControl() {
   if (phase === 'starting') {
     return (
       <div className="cc-root">
-        <div className="cc-pill cc-pill--starting">
+        <div className="cc-pill cc-pill--starting" role="status" aria-live="polite">
           <span className="cc-pill-dot cc-dot--starting" />
           <span className="cc-pill-text">STARTING...</span>
         </div>
@@ -120,7 +120,7 @@ export default function CycleControl() {
   if (phase === 'error') {
     return (
       <div className="cc-root">
-        <div className="cc-panel cc-panel--error">
+        <div className="cc-panel cc-panel--error" role="alert">
           <div className="cc-error-header">
             <span className="cc-error-icon">{STATUS_ICON.error}</span>
             <span className="cc-error-title">CYCLE ERROR</span>
@@ -137,7 +137,7 @@ export default function CycleControl() {
   if (phase === 'success') {
     return (
       <div className="cc-root">
-        <div className="cc-panel cc-panel--success">
+        <div className="cc-panel cc-panel--success" role="status" aria-live="polite">
           <div className="cc-success-header">
             <span className="cc-success-icon">{STATUS_ICON.done}</span>
             <span className="cc-success-title">CYCLE #{cycleNumber} COMPLETE</span>
@@ -173,13 +173,13 @@ export default function CycleControl() {
   if (phase === 'running' && panelMode === 'collapsed') {
     return (
       <div className="cc-root">
-        <div className="cc-pill cc-pill--running" onClick={expand}>
+        <button type="button" className="cc-pill cc-pill--running" onClick={expand} aria-label={`Cycle ${cycleNumber} running, ${doneCount} of ${agents.length} agents done. Open details`}>
           <span className="cc-pill-dot cc-dot--running" />
-          <span className="cc-pill-text">
+          <span className="cc-pill-text num">
             RUNNING #{cycleNumber} {formatElapsed(elapsed)} {doneCount}/{agents.length}
           </span>
-          <span className="cc-pill-expand" onClick={(e) => { e.stopPropagation(); expand(); }}>&#9650;</span>
-        </div>
+          <span className="cc-pill-expand" aria-hidden="true">&#9650;</span>
+        </button>
         <Style />
       </div>
     );
@@ -187,15 +187,18 @@ export default function CycleControl() {
 
   // --- RUNNING EXPANDED ---
   return (
-    <div className="cc-root">
-      <div className="cc-panel cc-panel--running">
-        {/* Header */}
-        <div className="cc-header">
-          <span className="cc-header-title">CYCLE #{cycleNumber}</span>
-          <span className="cc-header-elapsed">{formatElapsed(elapsed)}</span>
-          <span className="cc-header-cost">{formatCost(totalCost)}</span>
-        </div>
-
+    <div className="cc-root cc-root--panel">
+      {/* Opened running-cycle monitor: shared DetailPanel (>= 680px on desktop, resizable, expandable).
+          Non-modal so the page stays usable while the 14-minute cycle runs. */}
+      <DetailPanel
+        open
+        modal={false}
+        onClose={collapse}
+        zIndex={9998}
+        title={`CYCLE #${cycleNumber}`}
+        subtitle={`${formatElapsed(elapsed)} · ${formatCost(totalCost)}`}
+        ariaLabel={`Running cycle ${cycleNumber}`}
+      >
         <div className="cc-divider" />
 
         {/* Agent rows grouped by layer */}
@@ -236,10 +239,10 @@ export default function CycleControl() {
           <div className="cc-progress-track">
             <div className="cc-progress-fill" style={{ width: `${progress}%` }} />
           </div>
-          <span className="cc-progress-pct">{progress}%</span>
-          <button className="cc-collapse-btn" onClick={togglePanel}>&#9660;</button>
+          <span className="cc-progress-pct num">{progress}%</span>
+          <button type="button" className="cc-collapse-btn" onClick={togglePanel} aria-label="Collapse cycle panel">&#9660;</button>
         </div>
-      </div>
+      </DetailPanel>
       <Style />
     </div>
   );
@@ -310,7 +313,7 @@ function Style() {
         padding: 2px;
       }
       .cc-pill--running {
-        border-color: rgba(79, 195, 247, 0.2);
+        border-color: var(--v2-tint-cyan-strong);
       }
 
       /* ── Run Button ── */
@@ -319,7 +322,7 @@ function Style() {
         border: 1px solid var(--v2-accent-cyan, #4fc3f7);
         border-radius: 12px;
         background: var(--v2-accent-cyan, #4fc3f7);
-        color: var(--v2-bg-primary, #0a0a12);
+        color: var(--v2-on-accent);
         font-family: var(--v2-font-data, monospace);
         font-size: 9px;
         font-weight: 700;
@@ -332,7 +335,7 @@ function Style() {
 
       /* ── Panels ── */
       .cc-panel {
-        width: 380px;
+        width: min(380px, calc(100vw - 40px));
         background: var(--v2-glass-bg, rgba(10,10,18,0.95));
         backdrop-filter: blur(20px);
         -webkit-backdrop-filter: blur(20px);
@@ -343,20 +346,16 @@ function Style() {
       }
       .cc-panel--confirm {
         text-align: center;
-        width: 320px;
-      }
-      .cc-panel--running {
-        border-color: rgba(79, 195, 247, 0.15);
-        box-shadow: 0 0 30px rgba(79, 195, 247, 0.05);
+        width: min(320px, calc(100vw - 40px));
       }
       .cc-panel--success {
-        border-color: rgba(102, 187, 106, 0.3);
-        box-shadow: 0 0 30px rgba(102, 187, 106, 0.08);
+        border-color: var(--v2-tint-cyan-strong);
+        box-shadow: var(--v2-glow-cyan);
       }
       .cc-panel--error {
-        border-color: rgba(239, 83, 80, 0.3);
-        box-shadow: 0 0 30px rgba(239, 83, 80, 0.08);
-        width: 340px;
+        border-color: var(--v2-tint-red-strong);
+        box-shadow: var(--v2-glow-red);
+        width: min(340px, calc(100vw - 40px));
       }
 
       /* ── Confirm ── */
@@ -385,7 +384,7 @@ function Style() {
       }
       .cc-btn--primary {
         background: var(--v2-accent-cyan, #4fc3f7);
-        color: var(--v2-bg-primary, #0a0a12);
+        color: var(--v2-on-accent);
         border: 1px solid var(--v2-accent-cyan, #4fc3f7);
       }
       .cc-btn--primary:hover { opacity: 0.85; }
@@ -433,13 +432,13 @@ function Style() {
         margin-bottom: 12px;
       }
       .cc-success-icon {
-        color: var(--v2-accent-green, #66bb6a);
+        color: var(--v2-accent-cyan);
         font-size: 16px;
       }
       .cc-success-title {
         font-size: 11px;
         font-weight: 600;
-        color: var(--v2-accent-green, #66bb6a);
+        color: var(--v2-accent-cyan);
         letter-spacing: 1px;
       }
       .cc-success-stats {
@@ -535,10 +534,10 @@ function Style() {
         transition: background 0.15s;
       }
       .cc-agent--running {
-        background: rgba(79, 195, 247, 0.06);
+        background: var(--v2-tint-cyan);
       }
       .cc-agent--error {
-        background: rgba(239, 83, 80, 0.06);
+        background: var(--v2-tint-red);
       }
       .cc-agent-icon {
         font-size: 10px;
@@ -546,7 +545,7 @@ function Style() {
       }
       .cc-icon--pending { color: var(--v2-text-muted, #555); }
       .cc-icon--running { color: var(--v2-accent-cyan, #4fc3f7); animation: cc-pulse 1.5s ease-in-out infinite; }
-      .cc-icon--done { color: var(--v2-accent-green, #66bb6a); }
+      .cc-icon--done { color: var(--v2-accent-cyan); }
       .cc-icon--error { color: var(--v2-accent-red, #ef5350); }
 
       .cc-agent-name {
@@ -595,7 +594,7 @@ function Style() {
         background: var(--v2-accent-cyan, #4fc3f7);
         border-radius: var(--v2-radius-sm);
         transition: width 0.5s ease-out;
-        box-shadow: 0 0 6px rgba(79, 195, 247, 0.3);
+        box-shadow: var(--v2-glow-cyan);
       }
       .cc-progress-pct {
         font-size: 10px;

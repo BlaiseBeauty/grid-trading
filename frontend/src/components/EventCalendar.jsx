@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { StatusPulse } from './ui';
+import { ErrorState } from './StateBlock';
 
 const IMPACT_COLORS = {
   low: 'idle', medium: 'warning', high: 'error', critical: 'error',
@@ -16,22 +17,30 @@ const IMPACT_ACCENT = {
 export default function EventCalendar() {
   const [events, setEvents] = useState([]);
   const [blackout, setBlackout] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     event_type: 'economic', event_name: '', event_date: '', impact_estimate: 'medium',
   });
 
-  useEffect(() => { load(); }, []);
-
-  async function load() {
+  const load = useCallback(async () => {
+    setError(null);
     try {
       const [ev, bo] = await Promise.all([api('/events'), api('/events/blackout')]);
       setEvents(ev || []);
       setBlackout(bo);
-    } catch {}
-  }
+      setLoaded(true);
+    } catch (err) {
+      console.error('[EventCalendar] load failed:', err);
+      setError(err?.message || 'Failed to load events');
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
 
   async function createEvent() {
+    setError(null);
     try {
       await api('/events', {
         method: 'POST',
@@ -41,14 +50,21 @@ export default function EventCalendar() {
       setShowForm(false);
       setForm({ event_type: 'economic', event_name: '', event_date: '', impact_estimate: 'medium' });
       load();
-    } catch (err) { console.error('Create event failed:', err); }
+    } catch (err) {
+      console.error('Create event failed:', err);
+      setError(`Could not add event: ${err?.message || 'unknown error'}`);
+    }
   }
 
   async function deleteEvent(id) {
+    setError(null);
     try {
       await api(`/events/${id}`, { method: 'DELETE' });
       load();
-    } catch {}
+    } catch (err) {
+      console.error('[EventCalendar] delete failed:', err);
+      setError(`Could not delete event: ${err?.message || 'unknown error'}`);
+    }
   }
 
   const now = new Date();
@@ -62,7 +78,13 @@ export default function EventCalendar() {
             <span className="v2-ec-blackout-badge">BLACKOUT</span>
           )}
         </span>
-        <button className="v2-ec-add" onClick={() => setShowForm(!showForm)}>
+        <button
+          type="button"
+          className="v2-ec-add"
+          onClick={() => setShowForm(!showForm)}
+          aria-label={showForm ? 'Close the add-event form' : 'Add an event'}
+          aria-expanded={showForm}
+        >
           {showForm ? '\u00d7' : '+'}
         </button>
       </div>
@@ -90,7 +112,10 @@ export default function EventCalendar() {
         </div>
       )}
 
-      {events.length === 0 ? (
+      {error && <ErrorState error={error} onRetry={load} title={loaded ? 'Event action failed' : 'Could not load events'} />}
+      {!loaded && !error ? (
+        <div className="v2-ec-empty" role="status">Loading events…</div>
+      ) : !loaded ? null : events.length === 0 ? (
         <div className="v2-ec-empty">No upcoming events</div>
       ) : (
         <div className="v2-ec-list">
@@ -115,7 +140,7 @@ export default function EventCalendar() {
                     <span className="v2-ec-time">{eventDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                   </span>
                 </div>
-                <button className="v2-ec-delete" onClick={() => deleteEvent(e.id)}>{'\u00d7'}</button>
+                <button type="button" className="v2-ec-delete" onClick={() => deleteEvent(e.id)} aria-label={`Delete event ${e.event_name}`}>{'\u00d7'}</button>
               </div>
             );
           })}
@@ -135,8 +160,8 @@ export default function EventCalendar() {
         }
         .v2-ec-blackout-badge {
           font-size: 9px; font-weight: 700; padding: 2px 6px;
-          background: rgba(239,83,80,0.15); color: var(--v2-accent-red);
-          border: 1px solid rgba(239,83,80,0.3); border-radius: var(--v2-radius-sm);
+          background: var(--v2-tint-red-strong); color: var(--v2-accent-red);
+          border: 1px solid var(--v2-tint-red-strong); border-radius: var(--v2-radius-sm);
         }
         .v2-ec-add {
           font-size: 18px; color: var(--v2-text-muted);
@@ -161,17 +186,17 @@ export default function EventCalendar() {
           font-family: var(--v2-font-data); font-size: 10px; font-weight: 600;
           color: var(--v2-accent-cyan); cursor: pointer; padding: 4px 8px;
           border: 1px solid var(--v2-accent-cyan); border-radius: var(--v2-radius-sm);
-          background: rgba(79,195,247,0.05);
+          background: var(--v2-tint-cyan);
           transition: background var(--v2-duration-fast);
         }
-        .v2-ec-submit:hover { background: rgba(79,195,247,0.1); }
+        .v2-ec-submit:hover { background: var(--v2-tint-cyan-strong); }
         .v2-ec-list { display: flex; flex-direction: column; }
         .v2-ec-row {
           display: flex; align-items: center; gap: var(--v2-space-sm);
           padding: var(--v2-space-xs) 0; border-bottom: 1px solid var(--v2-border);
         }
         .v2-ec-row--blackout {
-          background: rgba(239,83,80,0.04);
+          background: var(--v2-tint-red);
           border-left: 2px solid var(--v2-accent-red);
           padding-left: var(--v2-space-sm);
         }

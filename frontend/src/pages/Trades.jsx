@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useDataStore } from '../stores/data';
 import { api } from '../lib/api';
-import { formatMoney, formatPct, formatPrice, formatDuration, timeAgo } from '../lib/format';
+import { formatMoney, formatPct, formatPrice, formatDuration, timeAgo, fmtSignedPct, fmtPlainPct } from '../lib/format';
+import { priceKey } from '../hooks/useDashboardData';
+import { ErrorState, LoadingState } from '../components/StateBlock';
 import {
   GlowCard, TickingNumber, ProgressRing, SignalBadge, RangeBar, StatusPulse,
 } from '../components/ui';
@@ -14,19 +16,26 @@ export default function Trades() {
   const openTrades = useDataStore(s => s.openTrades);
   const tradeStats = useDataStore(s => s.tradeStats);
   const prices = useDataStore(s => s.prices);
+  const tradesRes = useDataStore(s => s.resources.trades);
+  const portfolioRes = useDataStore(s => s.resources.portfolio);
   const [filter, setFilter] = useState('all');
   const [expanded, setExpanded] = useState(null);
   const [selectedTrade, setSelectedTrade] = useState(null);
   const [tradeSignals, setTradeSignals] = useState({});
+  const [signalError, setSignalError] = useState({});
 
-  useEffect(() => { fetchTrades(); fetchPortfolio(); }, []);
+  useEffect(() => { fetchTrades(); fetchPortfolio(); }, [fetchTrades, fetchPortfolio]);
 
   async function loadSignals(tradeId) {
     if (tradeSignals[tradeId]) return;
+    setSignalError(prev => ({ ...prev, [tradeId]: null }));
     try {
       const sigs = await api(`/trades/${tradeId}/signals`);
       setTradeSignals(prev => ({ ...prev, [tradeId]: sigs }));
-    } catch {}
+    } catch (err) {
+      console.error('[Trades] signals failed:', err);
+      setSignalError(prev => ({ ...prev, [tradeId]: err?.message || 'Failed to load signals' }));
+    }
   }
 
   function toggleExpand(trade) {
@@ -57,6 +66,10 @@ export default function Trades() {
           ))}
         </div>
       </div>
+
+      {portfolioRes?.error && !tradeStats && (
+        <ErrorState error={portfolioRes.error} onRetry={fetchPortfolio} title="Could not load trade statistics" />
+      )}
 
       {/* KPI Strip */}
       {tradeStats && (
@@ -98,7 +111,18 @@ export default function Trades() {
 
       {/* Trade Cards */}
       <div className="v2-trade-list">
-        {filtered.length === 0 && (
+        {tradesRes?.error && tradesRes.loadedAt == null && (
+          <GlowCard className="v2-animate-in v2-stagger-6">
+            <ErrorState error={tradesRes.error} onRetry={fetchTrades} title="Could not load trades" />
+          </GlowCard>
+        )}
+        {!tradesRes?.error && tradesRes?.loadedAt == null && (
+          <GlowCard className="v2-animate-in v2-stagger-6"><LoadingState /></GlowCard>
+        )}
+        {tradesRes?.error && tradesRes.loadedAt != null && (
+          <ErrorState error={`Showing the last loaded trades. ${tradesRes.error}`} onRetry={fetchTrades} title="Refresh failed" />
+        )}
+        {tradesRes?.loadedAt != null && filtered.length === 0 && (
           <GlowCard className="v2-animate-in v2-stagger-6">
             <div className="v2-empty">No trades to display</div>
           </GlowCard>
@@ -106,10 +130,10 @@ export default function Trades() {
         {filtered.map((t, i) => {
           const entry = parseFloat(t.actual_fill_price || t.entry_price);
           const qty = parseFloat(t.quantity);
-          const dashSymbol = t.symbol.replace('/', '-');
-          const curPrice = prices[dashSymbol]?.price;
+          const dashSymbol = priceKey(t.symbol);
+          const curPrice = dashSymbol ? prices[dashSymbol]?.price : undefined;
           const isOpen = t.status === 'open';
-          const unrealisedPnl = (isOpen && curPrice)
+          const unrealisedPnl = (isOpen && curPrice > 0)
             ? (t.side === 'buy' ? (curPrice - entry) * qty : (entry - curPrice) * qty)
             : null;
           const unrealisedPct = unrealisedPnl != null ? (unrealisedPnl / (entry * qty)) * 100 : null;
@@ -134,7 +158,9 @@ export default function Trades() {
                 <div className="v2-trade-left">
                   <span className="v2-trade-symbol">{t.symbol}</span>
                   <SignalBadge direction={t.side === 'buy' ? 'long' : 'short'} />
-                  {t.confidence && <span className="v2-trade-conf">{t.confidence}%</span>}
+                  {t.confidence != null && t.confidence !== '' && !isNaN(parseFloat(t.confidence)) && (
+                    <span className="v2-trade-conf num">{fmtPlainPct(t.confidence, 0)}</span>
+                  )}
                 </div>
                 <div className="v2-trade-prices">
                   <div className="v2-trade-col">
@@ -143,7 +169,7 @@ export default function Trades() {
                   </div>
                   <div className="v2-trade-col">
                     <span className="v2-trade-lbl">{isOpen ? 'Current' : 'Exit'}</span>
-                    {isOpen && curPrice
+                    {isOpen && curPrice > 0
                       ? <TickingNumber value={curPrice} format="money" colorize={false} />
                       : <span className="v2-trade-val">{t.exit_price ? formatPrice(t.exit_price) : '\u2014'}</span>
                     }
@@ -154,7 +180,7 @@ export default function Trades() {
                       ? <TickingNumber value={unrealisedPnl} format="money" />
                       : pnl != null
                         ? <span className={`v2-trade-val ${pnl >= 0 ? 'v2-profit' : 'v2-loss'}`}>{formatMoney(pnl)}</span>
-                        : <span className="v2-trade-val v2-muted">\u2014</span>
+                        : <span className="v2-trade-val v2-muted">{'\u2014'}</span>
                     }
                   </div>
                   <div className="v2-trade-col">
@@ -163,7 +189,7 @@ export default function Trades() {
                       ? <TickingNumber value={unrealisedPct} format="pct" />
                       : pnlPct != null
                         ? <span className={`v2-trade-val ${pnlPct >= 0 ? 'v2-profit' : 'v2-loss'}`}>{formatPct(pnlPct, 2)}</span>
-                        : <span className="v2-trade-val v2-muted">\u2014</span>
+                        : <span className="v2-trade-val v2-muted">{'\u2014'}</span>
                     }
                   </div>
                 </div>
@@ -185,7 +211,7 @@ export default function Trades() {
                         <span>Intended Entry</span>
                         <span className="v2-detail-num">{formatPrice(t.entry_price)}</span>
                       </div>
-                      {t.actual_fill_price && (
+                      {parseFloat(t.actual_fill_price) > 0 && (
                         <div className="v2-detail-row">
                           <span>Actual Fill</span>
                           <span className="v2-detail-num">{formatPrice(t.actual_fill_price)}</span>
@@ -195,11 +221,11 @@ export default function Trades() {
                         <div className="v2-detail-row">
                           <span>Slippage</span>
                           <span className={`v2-detail-num ${Math.abs(slippage) > 0.1 ? 'v2-loss' : ''}`}>
-                            {slippage > 0 ? '+' : ''}{slippage.toFixed(3)}%
+                            {fmtSignedPct(slippage, 3)}
                           </span>
                         </div>
                       )}
-                      {t.exit_price && (
+                      {parseFloat(t.exit_price) > 0 && (
                         <div className="v2-detail-row">
                           <span>Exit Price</span>
                           <span className="v2-detail-num">{formatPrice(t.exit_price)}</span>
@@ -216,7 +242,7 @@ export default function Trades() {
                         <div className="v2-detail-title">TP / SL Levels</div>
                         {sl > 0 && <div className="v2-detail-row"><span>Stop Loss</span><span className="v2-detail-num v2-loss">{formatPrice(sl)}</span></div>}
                         {tp > 0 && <div className="v2-detail-row"><span>Take Profit</span><span className="v2-detail-num v2-profit">{formatPrice(tp)}</span></div>}
-                        {sl > 0 && tp > 0 && (curPrice || t.exit_price) && (
+                        {sl > 0 && tp > 0 && (curPrice > 0 || parseFloat(t.exit_price) > 0) && (
                           <div style={{ marginTop: 'var(--v2-space-sm)' }}>
                             <RangeBar current={curPrice || parseFloat(t.exit_price)} low={Math.min(sl, tp)} high={Math.max(sl, tp)} side={t.side} />
                           </div>
@@ -225,6 +251,9 @@ export default function Trades() {
                     )}
                   </div>
 
+                  {signalError[t.id] && (
+                    <ErrorState error={signalError[t.id]} onRetry={() => loadSignals(t.id)} title="Could not load signals" />
+                  )}
                   {sigs.length > 0 && (
                     <div className="v2-detail-section" style={{ marginTop: 'var(--v2-space-md)' }}>
                       <div className="v2-detail-title">Contributing Signals <span className="v2-count">{sigs.length}</span></div>
@@ -283,8 +312,8 @@ export default function Trades() {
         .v2-pill:hover { border-color: var(--v2-border-hover); color: var(--v2-text-secondary); }
         .v2-pill.active {
           color: var(--v2-accent-cyan); border-color: var(--v2-accent-cyan);
-          background: rgba(79,195,247,0.06);
-          box-shadow: 0 0 12px rgba(79,195,247,0.15);
+          background: var(--v2-tint-cyan);
+          box-shadow: var(--v2-glow-cyan);
         }
 
         .v2-kpi-strip { display: flex; gap: var(--v2-space-sm); overflow-x: auto; scrollbar-width: none; }
@@ -325,9 +354,9 @@ export default function Trades() {
           text-transform: uppercase; letter-spacing: 1px;
           padding: 2px 8px; border-radius: var(--v2-radius-full); border: 1px solid;
         }
-        .v2-status--open { color: var(--v2-accent-cyan); border-color: rgba(79,195,247,0.3); background: rgba(79,195,247,0.06); }
-        .v2-status--win { color: var(--v2-accent-green); border-color: rgba(102,187,106,0.3); background: rgba(102,187,106,0.06); }
-        .v2-status--loss { color: var(--v2-accent-red); border-color: rgba(239,83,80,0.3); background: rgba(239,83,80,0.06); }
+        .v2-status--open { color: var(--v2-accent-cyan); border-color: var(--v2-tint-cyan-strong); background: var(--v2-tint-cyan); }
+        .v2-status--win { color: var(--v2-accent-green); border-color: var(--v2-tint-green-strong); background: var(--v2-tint-green); }
+        .v2-status--loss { color: var(--v2-accent-red); border-color: var(--v2-tint-red-strong); background: var(--v2-tint-red); }
         .v2-trade-time { font-family: var(--v2-font-data); font-size: 10px; color: var(--v2-text-muted); }
         .v2-trade-duration { font-family: 'IBM Plex Mono', var(--v2-font-data), monospace; font-size: 10px; color: var(--v2-text-muted); letter-spacing: 0.5px; }
 

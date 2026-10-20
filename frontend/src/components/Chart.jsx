@@ -1,9 +1,9 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { createChart, CandlestickSeries } from 'lightweight-charts';
 import { api } from '../lib/api';
 import { useDataStore } from '../stores/data';
 import { StatusPulse, TickingNumber } from './ui';
-import { CHART_OPTIONS, CANDLESTICK_OPTIONS, PRICE_LINE_OPTIONS } from '../lib/chartConfig';
+import { getChartOptions, getCandlestickOptions, getPriceLineOptions, useChartTheme } from '../lib/chartConfig';
 
 const SYMBOLS = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'];
 
@@ -11,24 +11,24 @@ function MiniChart({ symbol }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
-  const prices = useDataStore(s => s.prices);
-  const price = prices[symbol];
+  const price = useDataStore(s => s.prices[symbol]);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!containerRef.current) return undefined;
 
     const chart = createChart(containerRef.current, {
-      ...CHART_OPTIONS,
+      ...getChartOptions(),
     });
 
     const series = chart.addSeries(CandlestickSeries, {
-      ...CANDLESTICK_OPTIONS,
+      ...getCandlestickOptions(),
     });
 
     series.applyOptions({
       lastValueVisible: true,
       priceLineVisible: true,
-      ...PRICE_LINE_OPTIONS,
+      ...getPriceLineOptions(),
     });
 
     chartRef.current = chart;
@@ -46,36 +46,42 @@ function MiniChart({ symbol }) {
     };
   }, []);
 
-  useEffect(() => {
-    async function loadData() {
-      try {
-        const candles = await api(`/market-data/${symbol}?timeframe=5m&limit=200`);
-        if (!seriesRef.current || !candles?.length) return;
+  // Re-apply colours when the theme switches
+  useChartTheme(() => [
+    [chartRef.current, getChartOptions],
+    [seriesRef.current, () => ({ ...getCandlestickOptions(), ...getPriceLineOptions() })],
+  ]);
 
-        const data = candles
-          .map(c => ({
-            time: Math.floor(new Date(c.timestamp).getTime() / 1000),
-            open: parseFloat(c.open),
-            high: parseFloat(c.high),
-            low: parseFloat(c.low),
-            close: parseFloat(c.close),
-          }))
-          .sort((a, b) => a.time - b.time);
+  const loadData = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const candles = await api(`/market-data/${symbol}?timeframe=5m&limit=200`);
+      if (!seriesRef.current || !candles?.length) return;
 
-        seriesRef.current.setData(data);
-        chartRef.current?.timeScale().fitContent();
-      } catch (err) {
-        console.error(`Chart data load failed for ${symbol}:`, err);
-      }
+      const data = candles
+        .map(c => ({
+          time: Math.floor(new Date(c.timestamp).getTime() / 1000),
+          open: parseFloat(c.open),
+          high: parseFloat(c.high),
+          low: parseFloat(c.low),
+          close: parseFloat(c.close),
+        }))
+        .sort((a, b) => a.time - b.time);
+
+      seriesRef.current.setData(data);
+      chartRef.current?.timeScale().fitContent();
+    } catch (err) {
+      console.error(`Chart data load failed for ${symbol}:`, err);
+      setLoadError(err?.message || 'Failed to load candles');
     }
-    loadData();
   }, [symbol]);
+
+  useEffect(() => { loadData(); }, [loadData]);
 
   const ticker = symbol.split('-')[0];
   const currentPrice = price?.price;
   const change24h = price?.change24h;
   const hasChange = change24h != null;
-  const isPositive = change24h >= 0;
 
   return (
     <div className="v2-mini-chart">
@@ -95,6 +101,12 @@ function MiniChart({ symbol }) {
           )}
         </div>
       </div>
+      {loadError && (
+        <div className="state-block state-block--error" role="alert" style={{ padding: '6px 12px', flexDirection: 'row', gap: 8 }}>
+          <span>Chart data failed to load</span>
+          <button type="button" className="state-block__btn" onClick={loadData}>Retry</button>
+        </div>
+      )}
       <div ref={containerRef} className="v2-chart-container" />
     </div>
   );
