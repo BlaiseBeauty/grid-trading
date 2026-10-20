@@ -825,11 +825,16 @@ function setupCron() {
 // ---------- Boot ----------
 async function start() {
   // Validate required environment variables
-  const required = ['DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ANTHROPIC_API_KEY', 'ADMIN_PASSWORD'];
+  // ANTHROPIC_API_KEY is only needed once cycles are unpaused (observation mode spends nothing)
+  const required = ['DATABASE_URL', 'JWT_SECRET', 'JWT_REFRESH_SECRET', 'ADMIN_PASSWORD'];
+  if (!cycleGate.isPaused()) required.push('ANTHROPIC_API_KEY');
   const missing = required.filter(k => !process.env[k]);
   if (missing.length > 0) {
     console.error(`[GRID] FATAL: Missing required environment variables: ${missing.join(', ')}`);
     process.exit(1);
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn('[GRID] ANTHROPIC_API_KEY not set — AI features disabled (cycles are paused)');
   }
 
   // Warn if Python engine URL points to localhost (won't work on Railway)

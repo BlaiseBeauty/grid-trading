@@ -3,7 +3,9 @@ const { queryAll, queryOne } = require('../../../db/connection');
 const costsDb = require('../../../db/queries/costs');
 const Anthropic = require('@anthropic-ai/sdk');
 const { MODELS, calculateCost } = require('../../../shared/models');
-const anthropic = new Anthropic();
+// Lazy: the server must boot without an Anthropic key while cycles are paused
+let _anthropic = null;
+const getAnthropic = () => (_anthropic ||= new Anthropic());
 const bus = require('../../../shared/intelligence-bus');
 const { linkTradeToTheses } = require('../../../shared/thesis-linker');
 const { recordTradeCloseLearningOutcome } = require('../agents/orchestrator');
@@ -148,7 +150,10 @@ async function routes(fastify) {
     };
 
     try {
-      const response = await anthropic.messages.create({
+      if (!process.env.ANTHROPIC_API_KEY) {
+        return reply.code(503).send({ error: 'AI explanations unavailable: ANTHROPIC_API_KEY not set' });
+      }
+      const response = await getAnthropic().messages.create({
         model: MODELS.grid_explainer,
         max_tokens: 2048,
         system: `You are GRID's trade narrator. Given the full context of an autonomous trade decision, write a 200-300 word explanation structured as:

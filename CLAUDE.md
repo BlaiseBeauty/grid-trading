@@ -10,7 +10,7 @@
 cd trading && source venv/bin/activate && python engine.py  # port 5100
 
 # Terminal 2: Node.js server (auto-runs migrations)
-npm start   # port 3100
+npm run start:local   # port 3100 (loads secrets from Keychain). `npm start` is for Railway: secrets come from env
 
 # Terminal 3: Frontend dev server
 cd frontend && npm run dev   # port 5173
